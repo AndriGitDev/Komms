@@ -1,0 +1,161 @@
+{
+  "cases": [
+    {
+      "arguments": {},
+      "expected": {
+        "ok": true,
+        "result": {
+          "adapter_version": 1,
+          "operations": [
+            "adapter.capabilities",
+            "primitive.x25519",
+            "primitive.ed25519",
+            "primitive.hkdf_sha256",
+            "primitive.xchacha20poly1305",
+            "primitive.argon2id",
+            "content.encode_text",
+            "content.suite",
+            "content.decode",
+            "envelope.decode",
+            "token.delivery",
+            "group.origin_tag",
+            "group.message_trace",
+            "group.authority_trace",
+            "admission.puzzle",
+            "admission.trace",
+            "discovery.connect_code",
+            "discovery.locator",
+            "discovery.introduction_token",
+            "discovery.record_trace",
+            "mailbox.v2.trace",
+            "mailbox.v2.canonicalize",
+            "rendezvous.derive",
+            "rendezvous.seal",
+            "wake.trace",
+            "recovery_authority.trace",
+            "backup.root_free_trace",
+            "device_authority.trace",
+            "device_authority.verify",
+            "pqxdh.trace"
+          ],
+          "profile": "komms-stable-v1"
+        }
+      },
+      "id": "adapter-capabilities-v1",
+      "operation": "adapter.capabilities",
+      "purpose": "Pin the stable-v1 adapter profile, version, and operation inventory."
+    },
+    {
+      "arguments": {
+        "alice_secret_hex": "77076d0a7318a57d3c16c17251b26645df4c2f87ebc0992ab177fba51db92c2a",
+        "bob_secret_hex": "5dab087e624a8a4b79e17f8b83800ee66f3bb1292618b6fd1c2f8b27ff88e0eb"
+      },
+      "expected": {
+        "ok": true,
+        "result": {
+          "alice_public_hex": "8520f0098930a754748b7ddcb43ef75a0dbf3a0d26381af4eba4a98eaa9b4e6a",
+          "bob_public_hex": "de9edb7d7b7dc1b4d35b61c2ece435373f8343c85b78674dadfc7e146f882b4f",
+          "shared_secret_hex": "4a5d9d5ba4ce2de1728e3bf480350f25e07e21c947d19e3376f09b3c1e161742"
+        }
+      },
+      "id": "x25519-rfc7748-6.1",
+      "operation": "primitive.x25519",
+      "purpose": "RFC 7748 section 6.1 X25519 Diffie-Hellman known answer."
+    },
+    {
+      "arguments": {
+        "message_hex": "",
+        "secret_hex": "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60"
+      },
+      "expected": {
+        "ok": true,
+        "result": {
+          "public_hex": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+          "signature_hex": "e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e065224901555fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b"
+        }
+      },
+      "id": "ed25519-rfc8032-7.1",
+      "operation": "primitive.ed25519",
+      "purpose": "RFC 8032 section 7.1 Ed25519 empty-message known answer."
+    },
+    {
+      "arguments": {
+        "ikm_hex": "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
+        "info_hex": "f0f1f2f3f4f5f6f7f8f9",
+        "output_len": 42,
+        "salt_hex": "000102030405060708090a0b0c"
+      },
+      "expected": {
+        "ok": true,
+        "result": {
+          "okm_hex": "3cb25f25faacd57a90434f64d0362f2a2d2d0a90cf1a5a4c5db02d56ecc4c5bf34007208d5b887185865"
+        }
+      },
+      "id": "hkdf-sha256-rfc5869-a.1",
+      "operation": "primitive.hkdf_sha256",
+      "purpose": "RFC 5869 appendix A.1 HKDF-SHA-256 known answer."
+    },
+    {
+      "arguments": {
+        "aad_hex": "50515253c0c1c2c3c4c5c6c7",
+        "key_hex": "808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f",
+        "nonce_hex": "404142434445464748494a4b4c4d4e4f5051525354555657",
+        "plaintext_hex": {
+          "$utf8_hex": "Ladies and Gentlemen of the class of '99: If I could offer you only one tip for the future, sunscreen would be it."
+        }
+      },
+      "expected": {
+        "ok": true,
+        "result": {
+          "sealed_hex": "bd6d179d3e83d43b9576579493c0e939572a1700252bfaccbed2902c21396cbb731c7f1b0b4aa6440bf3a82f4eda7e39ae64c6708c54c216cb96b72e1213b4522f8c9ba40db5d945b11b69b982c1bb9e3f3fac2bc369488f76b2383565d3fff921f9664c97637da9768812f615c68b13b52ec0875924c1c7987947deafd8780acf49"
+        }
+      },
+      "id": "xchacha20poly1305-irtf-a.3",
+      "operation": "primitive.xchacha20poly1305",
+      "purpose": "draft-irtf-cfrg-xchacha appendix A.3 AEAD known answer."
+    },
+    {
+      "arguments": {
+        "associated_data_hex": {
+          "$repeat_hex": {
+            "byte_hex": "04",
+            "bytes": 12
+          }
+        },
+        "iterations": 3,
+        "memory_kib": 32,
+        "output_len": 32,
+        "parallelism": 4,
+        "password_hex": {
+          "$repeat_hex": {
+            "byte_hex": "01",
+            "bytes": 32
+          }
+        },
+        "salt_hex": {
+          "$repeat_hex": {
+            "byte_hex": "02",
+            "bytes": 16
+          }
+        },
+        "secret_hex": {
+          "$repeat_hex": {
+            "byte_hex": "03",
+            "bytes": 8
+          }
+        }
+      },
+      "expected": {
+        "ok": true,
+        "result": {
+          "output_hex": "0d640df58d78766c08c037a34a8b53c9d01ef0452d75b65eb52520e96b01e659"
+        }
+      },
+      "id": "argon2id-rfc9106-5.3",
+      "operation": "primitive.argon2id",
+      "purpose": "RFC 9106 section 5.3 Argon2id known answer with secret and associated data."
+    }
+  ],
+  "format_version": 1,
+  "profile": "komms-stable-v1"
+}

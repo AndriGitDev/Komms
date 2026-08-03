@@ -238,7 +238,7 @@ fan-out, mailbox, sneakernet, LAN, internet, and mesh scheduling behavior is
 unchanged. Mention is ordinary text-sized `QueueClass::Normal` content; it gets no
 special airtime or priority rule.
 
-Current `KKR7` backs up ordinary sealed group message bodies as opaque bytes, so no backup
+Current `KKR10` backs up ordinary sealed group message bodies as opaque bytes, so no backup
 format bump or migration is needed. Restored valid, unknown, and malformed
 Mention bodies retain exact bytes and re-decode locally. As required by ADR-0011
 and ADR-0012, live pairwise sessions, capability snapshots, and group chains are
@@ -254,10 +254,10 @@ payloads remain excluded from indexing.
 
 The shared node API, RPC, CLI, and UniFFI expose a decoded Mention record containing
 the ADR-0014 content id, exact fallback text, and ordered spans with `start`, `end`,
-and the full target peer id. Conversation and claimed author remain fields of
-the surrounding group message. Current sender-key protection authenticates that
-some member produced it, not which member; ADR-0029 defines the stronger origin
-required before stable. Raw protected payload bytes, group secrets, sender
+and the full target peer id. Conversation and author remain fields of
+the surrounding group message. ADR-0029 requires the node to derive that author
+from the verified pairwise sender device and recipient origin tag before a
+semantic mention can be accepted. Raw protected payload bytes, group secrets, sender
 chains, capability controls, and encryption state never cross those render-safe
 APIs.
 
@@ -422,7 +422,7 @@ accessibility, backup/restore, mixed-version, metadata-leakage, and diff checks.
 - Group Mention availability progresses at the least-capable current co-member.
   Users retain an explicit readable plain-text path with honestly reduced
   semantics and zero mention notification.
-- Storage and KKR7 need no content-row migration because exact ordinary bodies are already
+- Storage and KKR10 need no content-row migration because exact ordinary bodies are already
   sealed opaque bytes; APIs and shells do need new render-safe structured records.
 - Native shells must maintain byte-accurate semantic drafts despite UTF-16/String
   editing models, IME composition, restoration, accessibility, and bidi layout.

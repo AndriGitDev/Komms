@@ -1,16 +1,16 @@
 # ADR-0030: Bounded first-contact admission and consent
 
-- **Status**: Proposed
+- **Status**: Accepted; implemented for Alpha
 - **Date**: 2026-07-26
 
 ## Context
 
 A Komms address intentionally lets somebody obtain a signed prekey bundle and
-calculate its introduction delivery token. The current receive path performs
-Ed25519, X25519, ML-KEM, storage, and session work for that first contact and
-then creates a normal contact automatically. The documentation instead
-promises a request inbox, proof-of-work, blocking, and optional reputation
-inputs.
+calculate its introduction delivery token. Before this decision, the receive
+path performed Ed25519, X25519, ML-KEM, storage, and session work for that
+first contact and then created a normal contact automatically. The
+documentation instead promised a request inbox, proof-of-work, blocking, and
+optional reputation inputs.
 
 Open discovery without an admission boundary lets strangers spend endpoint
 CPU, battery, memory, one-time prekeys, disk, notifications, and operator relay
@@ -170,3 +170,40 @@ bounded message-request inbox.
 - Acceptance, rejection, blocking, group-invite consent, prekey exhaustion,
   flood, Sybil, battery, disk-full, replay, and delayed-carrier cases become
   release tests.
+
+## Alpha implementation and assurance boundary
+
+The Alpha implementation includes:
+
+- a signed descriptor with exact bundle binding, bounded clock window,
+  first-message limit, public puzzle profile, and invitation commitment;
+- a fixed bounded admission wrapper whose puzzle or invitation proof is
+  checked before ML-KEM work where possible;
+- global concurrency, puzzle, KEM, notification, per-tick, per-carrier,
+  provisional-row, and provisional-byte budgets;
+- atomic `AdmissionStage`, `AdmissionAccept`, `AdmissionDiscard`, and
+  `AdmissionSweep` store plans with sealed provisional sessions, identities,
+  safety numbers, previews, rows, replay tombstones, and block rules;
+- interactive direct-carrier settlement only after complete consumption or
+  exact durable staging, with bounded uniform refusal for invalid, duplicate,
+  expired, oversized, or over-budget introductions;
+- explicit message-request and group-invitation consent through RPC, CLI,
+  UniFFI, desktop, Android, and iOS surfaces; and
+- root-free `KKR10` preservation of bounded local block rules while provisional
+  requests, replay tombstones, invitation capabilities, one-time prekeys, and
+  live session/delivery secrets remain excluded.
+
+The fixed Alpha bounds are 32 live provisional requests, 512 KiB of provisional
+rows, a 4 KiB first content limit, a 2 KiB preview limit, 4,096 replay
+tombstones, and 4,096 local block rules. One lifecycle tick admits at most
+eight puzzle verifications, four KEM operations, four request notifications,
+and 16 expiries, subject to a 100 ms admission-work deadline and smaller
+per-carrier candidate ceilings. Direct ingress also retains no more than 256
+prefiltered envelopes or 8 MiB while settlement is pending.
+
+Automated Rust, RPC, UniFFI, desktop, Android host, and iOS simulator evidence
+covers the implemented boundary. Independent adversarial review, physical
+mobile battery/background/accessibility runs, durable mailbox-v2 operator
+qualification, and capability-scoped discovery remain open. Optional
+reputation subscriptions and evidence export are not implemented and are not
+part of the current consent claim.

@@ -188,7 +188,18 @@ class ChatActivity : SecureActivity() {
     override fun onResume() {
         super.onResume()
         if (::callController.isInitialized) callController.onResume()
-        refresh()
+        val session = NodeHolder.session ?: return
+        runNode(work = { session.setRendezvousConversationActive(peer, true) }) { refresh() }
+    }
+
+    override fun onPause() {
+        NodeHolder.session?.let { session ->
+            runNode(
+                work = { session.setRendezvousConversationActive(peer, false) },
+                onError = { _ -> },
+            ) {}
+        }
+        super.onPause()
     }
 
     private fun withMicrophonePermission(action: () -> Unit) {
@@ -383,7 +394,8 @@ private class MessagesAdapter(
                 append(context.getString(R.string.message_edited_revision, message.editRevision.toString()))
             }
             if (message.contentKind == ContentKind.DISAPPEARING_TEXT && message.expiresAt != null) {
-                append(" · removes ")
+                append(" · ")
+                append(context.getString(R.string.removes_prefix))
                 append(
                     DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT)
                         .format(Date(message.expiresAt!!.toLong() * 1000)),

@@ -20,11 +20,20 @@ are the node's own, verbatim.
   `SecureField`. Settings state that iOS has no per-field personalized-learning
   guarantee and non-secure third-party keyboards remain best effort.
 - **Create / unlock / restore** an encrypted store at the gate; restoring
-  takes a `.kkr` backup file plus its 24-word mnemonic.
+  current root-free `KKR10` or compatible root-free `KKR8`/`KKR9` takes the backup and
+  its phrase plus the separately held authority and phrase. A visibly separate
+  legacy `KKR1`–`KKR7` path
+  prepares a fresh address, requires identity-change confirmation, and imports
+  only the former-identity local archive.
+- **Make first contact** with the ordinary `kc2` Connect QR/code. It uses a
+  rotatable capability while the `kk1` account fingerprint and safety number
+  stay stable. The pairing view exposes explicit rotation and legacy
+  mailbox-only retirement with VoiceOver-labelled confirmation.
 - **Pair out-of-band**: show your prekey bundle as a compact, versioned
   Base45 QR, scan a friend's with the camera, or paste the interoperable
   hex used by the other shells and `kult bundle` / `kult add`. Legacy hex
-  QRs remain accepted. A kult address can also add a contact through DHT.
+  QRs remain accepted. New DHT lookup uses the Connect code; a legacy kult
+  address is accepted only through the visible Alpha compatibility path.
 - **Link and manage owned devices** without iCloud or another account service.
   The VoiceOver/Dynamic-Type manager lists exact physical devices, supports
   signed rename and permanently confirmed revoke, and drives both sides of the
@@ -35,7 +44,7 @@ are the node's own, verbatim.
   actions. SwiftUI targets the exact peer key, uses the shared incognito field,
   previews NFC normalization and duplicate/confusable/bidi/invisible warnings,
   and requires explicit acceptance for risk. Duplicate names remain distinct;
-  restart/`KKR7` preserves the local rename with zero delivery work.
+  restart/`KKR10` preserves the local rename with zero delivery work.
 - **Message** with honest delivery states: `queued` → `sent` (handed to a
   link) → `delivered` (end-to-end encrypted receipt came back). Sealed
   ciphertext retries passively after recent failures so fresh taps remain
@@ -100,7 +109,10 @@ are the node's own, verbatim.
   group history, send messages, add/remove members as the creator, and leave
   as any member while local history remains stored. Inbound rows name the
   sender; outbound rows show every recipient's actual delivery state instead
-  of a misleading group-level checkmark.
+  of a misleading group-level checkmark. A VoiceOver-labelled security banner
+  blocks the composer while current devices exchange recipient-specific
+  origins, then labels new rows as recipient-authenticated without relabelling
+  legacy membership-authenticated history.
 - **Create and vote in encrypted group polls** through dedicated VoiceOver and
   Dynamic Type-friendly cards. The bounded composer preserves exact Unicode;
   the creation roster is fixed, votes and identities are visible rather than
@@ -133,11 +145,11 @@ are the node's own, verbatim.
   note-to-self. The leading VoiceOver/Dynamic-Type block follows folder and
   label eligibility; conversation actions pin/unpin exact typed targets and the
   manager provides button reorder plus unavailable-record cleanup. The shared
-  8,192-pin limit, restart/`KKR7` behavior, and zero-network contract live in
+  8,192-pin limit, restart/`KKR10` behavior, and zero-network contract live in
   `KommsCore`, with no new permission or synchronized state.
 - **Choose System, Light, or Dark appearance** in Settings, including at the
   gate. SwiftUI applies the cached choice immediately, then treats the sealed F5
-  value as authoritative after unlock or `KKR7` restore. System follows iOS
+  value as authoritative after unlock or `KKR10` restore. System follows iOS
   changes live; adaptive semantic colors preserve Increase Contrast,
   Differentiate Without Color, Dynamic Type, and Reduce Motion behavior, while
   delivery/security meaning always retains text, symbols, or accessible labels.
@@ -148,13 +160,14 @@ are the node's own, verbatim.
   core produces only 256×256 RGBA PNGs re-encoded without source metadata and
   enforces the 512 KiB,
   1,024-record, and 64 MiB caps with safe corrupt fallback. Portability is limited
-  to `KKR7` and authenticated own-device C2 sync; icons never enter iCloud sync,
+  to `KKR10` and authenticated own-device C2 sync; icons never enter iCloud sync,
   URLs, peers, envelopes,
   capabilities, notifications, queues, or transports.
 - **Verify** contacts by safety number: identical digits and QR on both
   ends (all platforms), compared aloud or by scanning each other's code,
   with a visible verified badge. Key changes are surfaced, never hidden.
-- **Transport indicators**: kult address, NAT verdict, LAN peers via mDNS,
+- **Transport indicators**: stable kult fingerprint, current Connect code,
+  legacy-discovery state, NAT verdict, LAN peers via mDNS,
   scheduled, queued, and bridged-in-transit counts, live listen addresses.
 - **Backup** to a single encrypted file via the system share sheet; the
   sealing mnemonic is shown exactly once and stored nowhere. The data
@@ -163,6 +176,14 @@ are the node's own, verbatim.
 - **Network settings** persist as secret-free `settings.json` in the data
   directory: the same file format as the desktop and Android apps and
   the same knobs as `kultd`'s flags.
+- **Use optional best-effort native wake** through APNs directly and a
+  separately pinned gateway. The APNs token remains in process memory, only the
+  exact background or static “New activity” profile is accepted, per-contact
+  capabilities rotate on token/permission/relationship changes, and one
+  20-second generic collection pass runs when iOS grants execution. Background
+  App Refresh off, force-quit, throttling, and provider failure are explicit
+  limitations. PushKit is not used. Native wake never changes delivery state or
+  replaces ordinary direct/mailbox/fallback delivery.
 
 QR rendering is CoreImage, scanning is AVFoundation metadata; no
 third-party dependencies anywhere in the app: the only library it links
@@ -202,16 +223,16 @@ UI-only document-picker, recorder, and rendering glue.
 
 Mention acceptance pins byte-for-byte Rust/UniFFI semantics, invalid Unicode
 range rejection, exact peer targeting, restoration, and zero signal for plain
-text or similar petnames. Rendering requests no contacts or notification
-permission. Any notification remains on the existing user-controlled path, uses
-a private generic preview, and offers no server-push or online-delivery guarantee.
+text or similar petnames. Native wake uses only its user-selected static
+profile, remains subject to notification authorization and iOS scheduling, and
+offers no online-delivery guarantee.
 
 Label acceptance uses the same deterministic fixture as Rust RPC, UniFFI, and
 Kotlin, covering exact Unicode, stable ids/order, duplicate names, typed targets,
 any/all results, restart, and errors. Labels request no Contacts, Photos,
 notification, local-network, or other permission and never enter notification
 categories, Spotlight, widgets, Siri/App Intents, pasteboard, previews, logs,
-crash/analytics payloads, or ordinary scene restoration. `KKR7` preserves exact
+crash/analytics payloads, or ordinary scene restoration. `KKR10` preserves exact
 definitions and memberships; C2 can converge them only between authorized owned
 devices, while message labels remain deferred.
 
@@ -219,26 +240,26 @@ Folder acceptance uses the same B10 fixture as Rust RPC, UniFFI, and Kotlin,
 covering exact Unicode, duplicate names, stable manual order, typed
 peer/group/note targets, single membership, label composition, restart,
 deletion, and structured errors. Folder state requests no additional permission,
-never leaves sealed owned-device storage. Portability is limited to `KKR7` and
+never leaves sealed owned-device storage. Portability is limited to `KKR10` and
 authenticated own-device C2 sync.
 
 Pin acceptance uses the same B11 fixture as Rust RPC, UniFFI, and Kotlin,
 covering exact typed peer/group/note targets, append and exact complete-set
 reorder, folder/label composition, activity order, stale cleanup/reactivation,
-restart, structured errors, and zero delivery work. `KKR7` together with
+restart, structured errors, and zero delivery work. `KKR10` together with
 authenticated own-device C2 sync are the only portability paths; message pins
 remain deferred.
 
 Theme acceptance uses the same B12 fixture as Rust RPC, UniFFI, and Kotlin,
 covering the exact vocabulary/roles, first-run System, idempotency, restart,
-`KKR7`, one local change event, and zero queued or transport work. The ordinary
+`KKR10`, one local change event, and zero queued or transport work. The ordinary
 non-synchronizing `UserDefaults` cache contains only the pre-unlock theme token;
 it is not a portability or backup channel.
 
 Custom-icon acceptance uses the same B13 fixture as Rust RPC, UniFFI, and
 Kotlin, covering all exact target kinds, canonical PNG output that omits source
 metadata,
-quota accounting, restart/`KKR7`, safe initials fallback, local events, and zero
+quota accounting, restart/`KKR10`, safe initials fallback, local events, and zero
 delivery work. Security-scoped Files access lasts only for the explicit blocking
 import call; no selected path or plaintext image becomes synchronized state.
 
@@ -282,19 +303,26 @@ attached from a `meshtastic`-featured build).
 The local release matrix runs the `KommsCore` host e2e and, on a full Xcode
 host, assembles the XCFramework and unsigned simulator app. Per-push hosted CI
 also assembles the unsigned Simulator app as build evidence; neither path is a
-physical-device or distribution qualification.
+physical-device, APNs, or distribution qualification. The exact open physical
+rows and evidence form are in
+[38: Native-wake mobile qualification](../../docs/38-native-wake-mobile-qualification.md).
 
 ## Version and distribution boundary
 
 The generated app targets iOS 16 or newer, uses bundle identifier
 `is.andri.komms`, and reports short version `0.3.0` / build `3`, aligned with the
 Rust, desktop, and Android surfaces. The documented gate is an unsigned
-Simulator build. No distribution certificate, provisioning profile, App Store
-metadata, notarized artifact, or supported update channel is configured in this
-repository; those remain M6 distribution work.
+Simulator build. Tagged validation runs retain that exact artifact, its builder
+record, SBOM, checksums, and hosted attestation, but never treat it as an IPA or
+physical-device result. No distribution certificate, provisioning profile, App
+Store role, production IPA, or supported update channel is enrolled. The
+protected credential boundary and required named-device
+install/upgrade/rollback evidence are in
+[release security and recovery](../../docs/39-release-security-and-recovery.md)
+and [release evidence bundles](../../docs/40-release-evidence-bundles.md).
 
 ## Not yet
 
-Push-style wake-ups and continuous background delivery (iOS offers no
-equivalent of Android's foreground service), BLE radios, and store
-distribution (M6).
+Production APNs credentials/default gateway, named physical-device native-wake
+qualification, continuous background delivery (iOS offers no equivalent of
+Android's foreground service), BLE radios, and store distribution (M6).

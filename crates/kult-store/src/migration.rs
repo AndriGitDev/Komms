@@ -1012,11 +1012,14 @@ fn ensure_workspace(path: &Path, snapshot: &SourceSnapshot) -> Result<()> {
 }
 
 pub(crate) fn sync_database_for_replacement(conn: &Connection) -> Result<()> {
-    conn.execute_batch(
-        "PRAGMA synchronous = FULL;
-         PRAGMA wal_checkpoint(TRUNCATE);
-         PRAGMA journal_mode = DELETE;",
-    )?;
+    conn.pragma_update(None, "synchronous", "FULL")?;
+    let (busy, wal_frames, checkpointed): (i64, i64, i64) =
+        conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        })?;
+    if busy != 0 || wal_frames != checkpointed {
+        return Err(StoreError::MigrationValidation);
+    }
     Ok(())
 }
 
@@ -1114,17 +1117,24 @@ pub(crate) fn atomic_replace(_source: &Path, _destination: &Path) -> Result<()> 
 }
 
 #[cfg(test)]
-static FAILPOINT: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+std::thread_local! {
+    static FAILPOINT: std::cell::Cell<u8> = const { std::cell::Cell::new(0) };
+}
 
 #[cfg(test)]
 pub(crate) fn set_failpoint(phase: u8) {
-    FAILPOINT.store(phase, std::sync::atomic::Ordering::SeqCst);
+    FAILPOINT.with(|failpoint| failpoint.set(phase));
 }
 
 fn failpoint(phase: u8) -> Result<()> {
     #[cfg(test)]
-    if FAILPOINT.load(std::sync::atomic::Ordering::SeqCst) == phase {
-        FAILPOINT.store(0, std::sync::atomic::Ordering::SeqCst);
+    if FAILPOINT.with(|failpoint| {
+        let armed = failpoint.get() == phase;
+        if armed {
+            failpoint.set(0);
+        }
+        armed
+    }) {
         return Err(StoreError::MigrationValidation);
     }
     let _ = phase;

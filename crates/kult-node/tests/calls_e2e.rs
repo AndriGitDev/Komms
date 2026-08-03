@@ -368,11 +368,13 @@ async fn first_linked_device_answer_wins_and_later_answer_ends_elsewhere() {
 
     let phone_bundle = phone.handshake_bundle(NOW + 10, &mut rng).unwrap();
     let laptop_bundle = laptop.handshake_bundle(NOW + 10, &mut rng).unwrap();
-    let carol_bundle = carol.handshake_bundle(NOW + 10, &mut rng).unwrap();
+    // Each physical initiator gets its own one-time prekey bundle.
+    let carol_phone_bundle = carol.handshake_bundle(NOW + 10, &mut rng).unwrap();
+    let carol_laptop_bundle = carol.handshake_bundle(NOW + 10, &mut rng).unwrap();
     let carol_for_phone = phone
         .add_contact(
             "Carol",
-            &carol_bundle,
+            &carol_phone_bundle,
             &[DeliveryHint::Multiaddr(CAROL_ADDR.to_owned())],
             NOW + 10,
             &mut rng,
@@ -381,7 +383,7 @@ async fn first_linked_device_answer_wins_and_later_answer_ends_elsewhere() {
     let carol_for_laptop = laptop
         .add_contact(
             "Carol",
-            &carol_bundle,
+            &carol_laptop_bundle,
             &[DeliveryHint::Multiaddr(CAROL_ADDR.to_owned())],
             NOW + 10,
             &mut rng,

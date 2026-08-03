@@ -133,9 +133,9 @@ and removal notices cannot regress a newer generation or owner epoch.
 
 ### Poll moderation
 
-Ordinary poll closure remains creator-claimed under ADR-0022 and is vulnerable
-to sender-key member forgery until ADR-0029. An admin may request moderation;
-the owner emits a separately typed owner-signed moderation closure containing
+Ordinary poll closure remains creator-authenticated under ADR-0022 and ADR-0029.
+An admin may request moderation; the owner emits a separately typed
+owner-signed moderation closure containing
 the exact group id, poll author/id target, authority generation, and final
 visible vote-head snapshot, signed under
 `Komms-group-poll-moderation-v1`. Poll resolution accepts it only
@@ -152,8 +152,8 @@ versions remain unsupported and malformed/trailing/noncanonical encodings fail
 closed. Generic raw group or pairwise send APIs reject canonical kind `0x0007`.
 
 `KKR6` introduced the sealed authority record, owner-transfer chain, consumed request
-ids, and authority events. `KKR1`–`KKR5` remain restorable as legacy
-creator-managed groups. Sender chains are still never backed up. The authority
+ids, and authority events. Current `KKR10` restores that state; ADR-0026's
+fresh-identity legacy archive reset omits groups. Sender chains are still never backed up. The authority
 table is sealed under the existing group-storage key and adds no public index,
 transport header, DHT record, delivery token, or relay-visible field.
 
@@ -186,4 +186,5 @@ Release acceptance covers signature and bound failures, stale/deduplicated
 requests, concurrent admin requests, owner transfer and conflicting transfer
 certificates, last-owner safeguards, offline delivery, removal/exclusion,
 mandatory rotation, poll moderation, deterministic reorder convergence,
-`KKR1`–`KKR7`, RPC/CLI, UniFFI, and accessible desktop/Android/iOS role controls.
+current `KKR10` restore, legacy archive omission of groups, RPC/CLI, UniFFI, and
+accessible desktop/Android/iOS role controls.

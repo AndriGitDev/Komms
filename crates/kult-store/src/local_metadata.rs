@@ -13,9 +13,14 @@ use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
-use crate::{decode_exact, store_v2, Result, Store, StoreError};
+use crate::{
+    decode_exact, store_v2, DeviceAuthorityConflictKind, Result, Store, StoreError,
+    MAX_DEVICE_AUTHORITY_CONFLICTS,
+};
 
 const RECORD_MAGIC_V1: &[u8; 4] = b"KLM1";
+const AUTHORITY_RESET_RECORD_MAGIC_V1: &[u8; 4] = b"KAR1";
+const CONTACT_AUTHORITY_CONFLICT_MAGIC_V1: &[u8; 4] = b"KAC1";
 
 /// Maximum UTF-8 bytes in a folder name, label name, color token, media type,
 /// preference key, or similar local-metadata string.
@@ -46,6 +51,14 @@ pub const MAX_DRAFT_BYTES: usize = 1024 * 1024;
 pub const MAX_UI_PREFERENCE_VALUE_BYTES: usize = 64 * 1024;
 /// Stable sealed preference key shared by every shipped shell for B12.
 pub const THEME_PREFERENCE_KEY: &str = "appearance.theme";
+/// Reserved sealed metadata key for the visible copied-root Alpha reset.
+pub const AUTHORITY_RESET_HISTORY_KEY: &str = "security.authority-reset.v1";
+/// Reserved sealed metadata key for bounded contact-authority conflict evidence.
+pub const CONTACT_AUTHORITY_CONFLICTS_KEY: &str = "security.contact-authority-conflicts.v1";
+/// Maximum preserved contacts that one copied-root reset may require the user
+/// to re-verify. The complete pending set remains inside one bounded sealed
+/// record so verification and marker removal can commit atomically.
+pub const MAX_AUTHORITY_RESET_CONTACTS: usize = 1_024;
 /// Canonical theme preference tokens accepted at every public boundary.
 pub const THEME_PREFERENCES: [&str; 3] = ["system", "light", "dark"];
 /// Cross-shell semantic roles; shells map these to native adaptive colors.
@@ -337,6 +350,158 @@ pub struct UiPreferenceRecord {
     pub value: Vec<u8>,
 }
 
+/// Durable, local-only account of one copied-root Alpha authority reset.
+///
+/// Pairwise and note history named here is an archive copied from
+/// `former_account`; it is not newly authenticated history of `new_account`.
+/// Every preserved contact remains in `pending_reverification` until the user
+/// compares the new safety number out of band.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AuthorityResetHistoryRecord {
+    /// Former account whose copied root could no longer be revoked.
+    pub former_account: [u8; 32],
+    /// Fresh account created by the explicit reset.
+    pub new_account: [u8; 32],
+    /// User-confirmed reset time, in Unix seconds, for display only.
+    pub reset_at: u64,
+    /// Number of local petnames retained with cleared routes and trust bits.
+    pub preserved_contacts: u32,
+    /// Number of non-ephemeral pairwise history rows retained as local archive.
+    pub preserved_pairwise_messages: u64,
+    /// Number of device-local note rows retained.
+    pub preserved_note_messages: u64,
+    /// Active group records deliberately omitted rather than transferred to
+    /// the new identity.
+    pub omitted_groups: u64,
+    /// Group history rows deliberately omitted with the old group authority.
+    pub omitted_group_messages: u64,
+    /// Contacts still requiring a new safety-number comparison.
+    pub pending_reverification: Vec<[u8; 32]>,
+}
+
+impl AuthorityResetHistoryRecord {
+    fn validate(&self) -> Result<()> {
+        let unique = self
+            .pending_reverification
+            .iter()
+            .copied()
+            .collect::<HashSet<_>>();
+        let valid = self.former_account != [0u8; 32]
+            && self.new_account != [0u8; 32]
+            && self.former_account != self.new_account
+            && self.pending_reverification.len() <= MAX_AUTHORITY_RESET_CONTACTS
+            && unique.len() == self.pending_reverification.len()
+            && !unique.contains(&[0u8; 32])
+            && u32::try_from(self.pending_reverification.len())
+                .is_ok_and(|pending| pending <= self.preserved_contacts);
+        if valid {
+            Ok(())
+        } else {
+            Err(StoreError::LocalMetadataBounds)
+        }
+    }
+
+    fn encode(&self) -> Result<Vec<u8>> {
+        self.validate()?;
+        let encoded = postcard::to_allocvec(self).map_err(|_| StoreError::Serialization)?;
+        let mut value = Vec::with_capacity(AUTHORITY_RESET_RECORD_MAGIC_V1.len() + encoded.len());
+        value.extend_from_slice(AUTHORITY_RESET_RECORD_MAGIC_V1);
+        value.extend_from_slice(&encoded);
+        if value.len() > MAX_UI_PREFERENCE_VALUE_BYTES {
+            return Err(StoreError::LocalMetadataBounds);
+        }
+        Ok(value)
+    }
+
+    fn decode(value: &[u8]) -> Result<Self> {
+        let encoded = value
+            .strip_prefix(AUTHORITY_RESET_RECORD_MAGIC_V1)
+            .ok_or(StoreError::Serialization)?;
+        let record: Self = decode_exact(encoded)?;
+        record.validate()?;
+        Ok(record)
+    }
+}
+
+/// Durable local evidence that one contact presented a conflicting authority
+/// branch. The accepted branch remains authoritative until a later valid
+/// recovery transition resolves the fork.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContactAuthorityConflictRecord {
+    /// Stable contact account whose authority diverged.
+    pub account: [u8; 32],
+    /// Conflict category shown by clients.
+    pub kind: DeviceAuthorityConflictKind,
+    /// Locally retained authority tip.
+    pub accepted_state: [u8; 32],
+    /// Rejected conflicting authority tip.
+    pub conflicting_state: [u8; 32],
+    /// Recovery epoch shared by the conflicting branches.
+    pub recovery_epoch: u64,
+    /// Coarse local observation time.
+    pub observed_at: u64,
+}
+
+impl ContactAuthorityConflictRecord {
+    fn validate(&self) -> Result<()> {
+        if self.account == [0u8; 32]
+            || self.accepted_state == [0u8; 32]
+            || self.conflicting_state == [0u8; 32]
+            || self.accepted_state == self.conflicting_state
+        {
+            return Err(StoreError::LocalMetadataBounds);
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+struct ContactAuthorityConflictHistory {
+    conflicts: Vec<ContactAuthorityConflictRecord>,
+}
+
+impl ContactAuthorityConflictHistory {
+    fn validate(&self) -> Result<()> {
+        if self.conflicts.len() > MAX_DEVICE_AUTHORITY_CONFLICTS {
+            return Err(StoreError::LocalMetadataBounds);
+        }
+        for (index, conflict) in self.conflicts.iter().enumerate() {
+            conflict.validate()?;
+            if self.conflicts[..index].iter().any(|prior| {
+                prior.account == conflict.account
+                    && prior.kind == conflict.kind
+                    && prior.accepted_state == conflict.accepted_state
+                    && prior.conflicting_state == conflict.conflicting_state
+            }) {
+                return Err(StoreError::LocalMetadataBounds);
+            }
+        }
+        Ok(())
+    }
+
+    fn encode(&self) -> Result<Vec<u8>> {
+        self.validate()?;
+        let encoded = postcard::to_allocvec(self).map_err(|_| StoreError::Serialization)?;
+        let mut value =
+            Vec::with_capacity(CONTACT_AUTHORITY_CONFLICT_MAGIC_V1.len() + encoded.len());
+        value.extend_from_slice(CONTACT_AUTHORITY_CONFLICT_MAGIC_V1);
+        value.extend_from_slice(&encoded);
+        if value.len() > MAX_UI_PREFERENCE_VALUE_BYTES {
+            return Err(StoreError::LocalMetadataBounds);
+        }
+        Ok(value)
+    }
+
+    fn decode(value: &[u8]) -> Result<Self> {
+        let encoded = value
+            .strip_prefix(CONTACT_AUTHORITY_CONFLICT_MAGIC_V1)
+            .ok_or(StoreError::Serialization)?;
+        let history: Self = decode_exact(encoded)?;
+        history.validate()?;
+        Ok(history)
+    }
+}
+
 /// The shared B12 appearance choice. Resolution of `System` remains native
 /// to each shell so live platform changes do not require a node mutation.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -490,6 +655,147 @@ impl LocalMetadataRecord {
 }
 
 impl Store {
+    /// Return the visible copied-root Alpha reset record, if this profile was
+    /// created by that compatibility path.
+    pub fn authority_reset_history(&self) -> Result<Option<AuthorityResetHistoryRecord>> {
+        let Some(LocalMetadataRecord::UiPreference(record)) = self.get_local_metadata(
+            &LocalMetadataKey::UiPreference(AUTHORITY_RESET_HISTORY_KEY.to_owned()),
+        )?
+        else {
+            return Ok(None);
+        };
+        let history = AuthorityResetHistoryRecord::decode(&record.value)?;
+        if self
+            .get_account_identity()?
+            .is_none_or(|account| account.ed != history.new_account)
+        {
+            return Err(StoreError::LogicalKeyMismatch);
+        }
+        Ok(Some(history))
+    }
+
+    /// Bounded contact-authority conflicts retained across restart.
+    pub fn contact_authority_conflicts(&self) -> Result<Vec<ContactAuthorityConflictRecord>> {
+        let Some(LocalMetadataRecord::UiPreference(record)) = self.get_local_metadata(
+            &LocalMetadataKey::UiPreference(CONTACT_AUTHORITY_CONFLICTS_KEY.to_owned()),
+        )?
+        else {
+            return Ok(Vec::new());
+        };
+        Ok(ContactAuthorityConflictHistory::decode(&record.value)?.conflicts)
+    }
+
+    /// Atomically retain one conflict and clear the affected contact's
+    /// verification bit. Exact duplicates do not create event storms.
+    pub fn record_contact_authority_conflict(
+        &self,
+        conflict: &ContactAuthorityConflictRecord,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<bool> {
+        conflict.validate()?;
+        let mut history = ContactAuthorityConflictHistory {
+            conflicts: self.contact_authority_conflicts()?,
+        };
+        let duplicate = history.conflicts.iter().any(|prior| {
+            prior.account == conflict.account
+                && prior.kind == conflict.kind
+                && prior.accepted_state == conflict.accepted_state
+                && prior.conflicting_state == conflict.conflicting_state
+        });
+        if !duplicate {
+            if history.conflicts.len() == MAX_DEVICE_AUTHORITY_CONFLICTS {
+                history.conflicts.remove(0);
+            }
+            history.conflicts.push(conflict.clone());
+        }
+        let mut contact = self
+            .get_contact(&conflict.account)?
+            .ok_or(StoreError::InvalidTransition)?;
+        if duplicate && !contact.verified {
+            return Ok(false);
+        }
+        contact.verified = false;
+        let contact_plain =
+            postcard::to_allocvec(&contact).map_err(|_| StoreError::Serialization)?;
+        let conflict_record = LocalMetadataRecord::UiPreference(UiPreferenceRecord {
+            key: CONTACT_AUTHORITY_CONFLICTS_KEY.to_owned(),
+            value: history.encode()?,
+        });
+        let tx = self.conn.unchecked_transaction()?;
+        self.put_equality_on::<store_v2::ContactRows>(
+            &tx,
+            &store_v2::AccountKey::new(contact.peer),
+            &contact_plain,
+            store_v2::IndexKeys::none(),
+            rng,
+        )?;
+        self.put_local_metadata_on(&tx, &conflict_record, rng)?;
+        tx.commit()?;
+        Ok(!duplicate)
+    }
+
+    pub(crate) fn put_authority_reset_history(
+        &self,
+        record: &AuthorityResetHistoryRecord,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<()> {
+        self.put_local_metadata(
+            &LocalMetadataRecord::UiPreference(UiPreferenceRecord {
+                key: AUTHORITY_RESET_HISTORY_KEY.to_owned(),
+                value: record.encode()?,
+            }),
+            rng,
+        )
+    }
+
+    /// Whether a preserved petname still needs a new safety-number comparison.
+    pub fn authority_reset_reverification_required(&self, peer: &[u8; 32]) -> Result<bool> {
+        Ok(self
+            .authority_reset_history()?
+            .is_some_and(|record| record.pending_reverification.contains(peer)))
+    }
+
+    /// Atomically set the contact's new verification bit and remove it from
+    /// the copied-root reset's pending set.
+    pub fn confirm_authority_reset_contact(
+        &self,
+        peer: &[u8; 32],
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<bool> {
+        let Some(mut reset) = self.authority_reset_history()? else {
+            return Ok(false);
+        };
+        let Some(index) = reset
+            .pending_reverification
+            .iter()
+            .position(|candidate| candidate == peer)
+        else {
+            return Ok(false);
+        };
+        let mut contact = self
+            .get_contact(peer)?
+            .ok_or(StoreError::InvalidTransition)?;
+        contact.verified = true;
+        reset.pending_reverification.remove(index);
+        let contact_plain =
+            postcard::to_allocvec(&contact).map_err(|_| StoreError::Serialization)?;
+        let reset_record = LocalMetadataRecord::UiPreference(UiPreferenceRecord {
+            key: AUTHORITY_RESET_HISTORY_KEY.to_owned(),
+            value: reset.encode()?,
+        });
+        let tx = self.conn.unchecked_transaction()?;
+        self.put_equality_on::<store_v2::ContactRows>(
+            &tx,
+            &store_v2::AccountKey::new(contact.peer),
+            &contact_plain,
+            store_v2::IndexKeys::none(),
+            rng,
+        )?;
+        self.put_local_metadata_on(&tx, &reset_record, rng)?;
+        tx.commit()?;
+        Ok(true)
+    }
+
     /// Read the canonical sealed theme preference.
     ///
     /// Missing and unknown legacy values both return `None`; callers render

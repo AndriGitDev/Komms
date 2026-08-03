@@ -42,5 +42,6 @@ tokio = { version = "1", features = [
 ] }
 
 [dev-dependencies]
+kult-store = { version = "0.3.0", path = "../kult-store", features = ["legacy-test-fixtures"] }
 tempfile = "3"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "sync", "time", "io-util", "test-util"] }

@@ -1,6 +1,6 @@
 ---
 name: Release visual approval
-about: Record the required human review of Android, iOS, macOS, and Linux release previews
+about: Record the required human review of Android, iOS, macOS, Windows, and Linux release previews
 title: "Visual approval: vMAJOR.MINOR.PATCH"
 labels: release-visual-approval
 ---
@@ -67,9 +67,25 @@ labels: release-visual-approval
 - [ ] No clipping, overlap, unreadable contrast, or stale pre-release styling
 - [ ] Approved
 
+## Windows packaged preview
+
+- Windows release and architecture:
+- Package type (`msi` or `exe`):
+- Theme(s):
+- Launch-smoke run:
+- Evidence (attach current screenshots/recording, or record a live reviewer
+  attestation when screen-capture protection redacts the app):
+- [ ] The packaged app installs, launches, and remains running
+- [ ] Locked and unlocked layouts are usable
+- [ ] Pairing bundle, animated frames, address, and both QR modes render
+- [ ] Every animated pairing frame assembles with a second device's camera
+- [ ] Conversation and Settings layouts are usable
+- [ ] No clipping, overlap, unreadable contrast, or stale pre-release styling
+- [ ] Approved
+
 ## Decision
 
-- [ ] All four previews were built from the candidate above
+- [ ] All five previews were built from the candidate above
 - [ ] Any visual findings are fixed or explicitly documented as release blockers
 - [ ] I approve this candidate for publication
 

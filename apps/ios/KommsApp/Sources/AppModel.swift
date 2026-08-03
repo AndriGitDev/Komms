@@ -6,10 +6,12 @@
 // node's own words (`reasonText`), key changes are surfaced as banners,
 // never hidden, and the backup mnemonic passes through exactly once.
 
+import CryptoKit
 import Foundation
 import KommsCore
 import SwiftUI
 import UIKit
+import UserNotifications
 
 private enum ThemePreferenceStore {
     static let key = "komms.appearance.theme"
@@ -46,11 +48,14 @@ extension ThemePreference {
 final class AppModel: ObservableObject {
     @Published private(set) var session: Session?
     @Published private(set) var contacts: [Contact] = []
+    @Published private(set) var messageRequests: [MessageRequest] = []
     @Published private(set) var histories: [String: [Message]] = [:] // peer → history
     @Published private(set) var groups: [KommsCore.Group] = []
+    @Published private(set) var groupInvitations: [GroupInvitation] = []
     @Published private(set) var groupHistories: [String: [GroupMessage]] = [:]
     @Published private(set) var groupPolls: [String: [GroupPoll]] = [:]
     @Published private(set) var groupAuthorities: [String: GroupAuthority] = [:]
+    @Published private(set) var groupSecurities: [String: GroupSecurity] = [:]
     @Published private(set) var scheduledMessages: [ScheduledMessage] = []
     @Published private(set) var attachments: [Attachment] = []
     @Published private(set) var noteHistory: [NoteMessage] = []
@@ -71,8 +76,13 @@ final class AppModel: ObservableObject {
     @Published private(set) var customIcons: [CustomIconTarget: CustomIcon] = [:]
     @Published private(set) var customIconUsage = CustomIconQuotaUsage(records: 0, bytes: 0)
     @Published private(set) var linkedDevices: [LinkedDevice] = []
+    @Published private(set) var deviceAuthorityConflicts: [DeviceAuthorityConflict] = []
+    @Published private(set) var contactAuthorityConflicts: [ContactAuthorityConflict] = []
+    @Published private(set) var authorityResetHistory: AuthorityResetHistory?
+    @Published private(set) var requiresRecoveryAuthorityExport = false
     @Published private(set) var calls: [KommsCore.Call] = []
     @Published private(set) var callAvailability: [String: CallAvailability] = [:]
+    @Published private(set) var nativeWakePreference = NativeWakePreferenceStore.load()
     /// Surfaced node happenings: key changes, held-for-faster-link verdicts.
     @Published var notices: [String] = []
 
@@ -88,6 +98,12 @@ final class AppModel: ObservableObject {
     private var lifecycleObservers: [NSObjectProtocol] = []
     private var callAudio: CallAudioController?
     private var callAudioAllowed = true
+    private var nativeWakeToken: Data?
+    private var nativeWakeSnapshot: NativeWakeSnapshot?
+    private var nativeWakeSyncInFlight = false
+    private var nativeWakeSyncPending = false
+    private var nativeWakeCollectionInFlight = false
+    private var nativeWakeNetworkConfigurationStale = false
 
     init() {
         callAudioAllowed = UIApplication.shared.applicationState == .active
@@ -123,13 +139,21 @@ final class AppModel: ObservableObject {
         let entries = try? FileManager.default.contentsOfDirectory(
             at: temporary, includingPropertiesForKeys: nil
         )
-        let plaintextPrefixes = [
+        let transientPrefixes = [
             "komms-audio-", "komms-attachment-", "komms-image-final-",
             "komms-render-preview-", "komms-render-image-", "komms-export-",
+            "komms-account-authority-",
         ]
         entries?.filter { url in
-            plaintextPrefixes.contains { url.lastPathComponent.hasPrefix($0) }
+            transientPrefixes.contains { url.lastPathComponent.hasPrefix($0) }
         }.forEach { try? FileManager.default.removeItem(at: $0) }
+        NativeWakeBridge.shared.install(
+            tokenHandler: { [weak self] token in
+                Task { @MainActor in await self?.receivedNativeWakeToken(token) }
+            },
+            wakeHandler: { [weak self] completion in
+                Task { @MainActor in self?.collectAfterNativeWake(completion: completion) }
+            })
     }
 
     deinit {
@@ -175,6 +199,152 @@ final class AppModel: ObservableObject {
         }
     }
 
+    func setNativeWakePreference(_ preference: NativeWakePreference) async {
+        nativeWakePreference = preference
+        NativeWakePreferenceStore.save(preference)
+        if preference == .genericVisible {
+            _ = try? await UNUserNotificationCenter.current().requestAuthorization(
+                options: [.alert, .sound])
+        }
+        NativeWakeBridge.shared.requestCurrentToken()
+        await synchronizeNativeWake(forceRefresh: true)
+    }
+
+    func nativeWakeBecameActive() async {
+        NativeWakeBridge.shared.requestCurrentToken()
+        await synchronizeNativeWake(forceRefresh: false)
+    }
+
+    func nativeWakeNetworkSettingsChanged() async {
+        guard session != nil else { return }
+        nativeWakeNetworkConfigurationStale = true
+        await synchronizeNativeWake(forceRefresh: false)
+    }
+
+    private func receivedNativeWakeToken(_ token: Data?) async {
+        nativeWakeToken = token
+        await synchronizeNativeWake(forceRefresh: true)
+    }
+
+    private func collectAfterNativeWake(
+        completion: @escaping (UIBackgroundFetchResult) -> Void
+    ) {
+        guard let session, !nativeWakeCollectionInFlight else {
+            completion(.noData)
+            return
+        }
+        nativeWakeCollectionInFlight = true
+        Task {
+            let count = (try? await run {
+                try session.collectAfterNativeWake(budgetMs: 20_000)
+            }) ?? 0
+            nativeWakeCollectionInFlight = false
+            completion(count > 0 ? .newData : .noData)
+        }
+    }
+
+    private func synchronizeNativeWake(forceRefresh: Bool) async {
+        guard let session else { return }
+        if nativeWakeSyncInFlight {
+            nativeWakeSyncPending = nativeWakeSyncPending || forceRefresh
+            return
+        }
+        nativeWakeSyncInFlight = true
+        var scheduleContinuation = false
+        defer {
+            nativeWakeSyncInFlight = false
+            let pending = nativeWakeSyncPending || scheduleContinuation
+            nativeWakeSyncPending = false
+            if pending, UIApplication.shared.applicationState == .active {
+                Task {
+                    try? await Task.sleep(nanoseconds: 500_000_000)
+                    await self.synchronizeNativeWake(forceRefresh: true)
+                }
+            }
+        }
+
+        if nativeWakeNetworkConfigurationStale {
+            let unavailable = L10n.text("native_wake_temporarily_unavailable")
+            do {
+                _ = try await run { try session.revokeNativeWake() }
+                nativeWakeSnapshot = nativeWakeSnapshot?.withAdvertised(false)
+            } catch {
+                if notices.last != unavailable {
+                    notices.append(unavailable)
+                }
+            }
+            return
+        }
+
+        let settings = (try? NetworkSettings.load(from: dataDir)) ?? NetworkSettings()
+        let notificationSettings =
+            await UNUserNotificationCenter.current().notificationSettings()
+        let permission: NativeWakePermission
+        if nativeWakePreference != .genericVisible {
+            permission = .notRequired
+        } else {
+            permission = switch notificationSettings.authorizationStatus {
+            case .authorized, .provisional, .ephemeral: .granted
+            default: .denied
+            }
+        }
+        let digest = nativeWakeToken.map {
+            SHA256.hash(data: $0).map { String(format: "%02x", $0) }.joined()
+        }
+        let current = NativeWakeSnapshot(
+            mode: settings.mode,
+            gatewayCount: settings.wake.count,
+            preference: nativeWakePreference,
+            permission: permission,
+            backgroundRefreshAvailable:
+                UIApplication.shared.backgroundRefreshStatus == .available,
+            tokenDigest: digest,
+            // A fresh process conservatively assumes sealed issued state may
+            // exist so an unavailable path publishes explicit revocation.
+            advertised: nativeWakeSnapshot?.advertised ?? true)
+        let decision = NativeWakePolicy.decide(
+            previous: nativeWakeSnapshot,
+            current: current,
+            forceRefresh: forceRefresh)
+
+        do {
+            switch decision.action {
+            case .register:
+                guard let token = nativeWakeToken,
+                      let topic = Bundle.main.bundleIdentifier else { return }
+                #if DEBUG
+                let environment = NativeWakeEnvironment.development
+                #else
+                let environment = NativeWakeEnvironment.production
+                #endif
+                let profile: NativeWakeProfile =
+                    nativeWakePreference == .genericVisible
+                    ? .genericVisible
+                    : .backgroundOnly
+                let result = try await run {
+                    try session.registerNativeWake(
+                        platform: .apns,
+                        environment: environment,
+                        profile: profile,
+                        providerToken: token,
+                        appTopic: topic)
+                }
+                nativeWakeSnapshot = current.withAdvertised(true)
+                scheduleContinuation = result.remaining
+            case .revoke:
+                _ = try await run { try session.revokeNativeWake() }
+                nativeWakeSnapshot = current.withAdvertised(false)
+            case .none:
+                nativeWakeSnapshot = current.withAdvertised(decision.advertise)
+            }
+        } catch {
+            let unavailable = L10n.text("native_wake_temporarily_unavailable")
+            if notices.last != unavailable {
+                notices.append(unavailable)
+            }
+        }
+    }
+
     private func sink() -> EventSink {
         { [weak self] event in
             Task { @MainActor in self?.handle(event) }
@@ -186,6 +356,10 @@ final class AppModel: ObservableObject {
     /// startup error.
     func unlock(passphrase: String) async throws {
         let dir = dataDir
+        let creating = !storeExists
+        if creating {
+            UserDefaults.standard.set(true, forKey: "komms.recovery-authority.pending")
+        }
         let settings = try NetworkSettings.load(from: dir)
         let sink = sink()
         let session = try await run {
@@ -194,12 +368,21 @@ final class AppModel: ObservableObject {
                 settings: settings, kdf: .mobile, sink: sink)
         }
         await adopt(session)
+        requiresRecoveryAuthorityExport =
+            UserDefaults.standard.bool(forKey: "komms.recovery-authority.pending")
         try? excludeFromBackup(dir)
     }
 
     /// First run only: restore identity, contacts, and history from an
-    /// encrypted `.kkr` backup plus its 24-word mnemonic.
-    func restore(backup: URL, mnemonic: String, passphrase: String) async throws {
+    /// encrypted root-free `.kkr` backup plus the separately held offline
+    /// account authority and its different phrase.
+    func restore(
+        backup: URL,
+        mnemonic: String,
+        recoveryAuthority: URL,
+        recoveryMnemonic: String,
+        passphrase: String
+    ) async throws {
         let dir = dataDir
         let settings = try NetworkSettings.load(from: dir)
         let sink = sink()
@@ -207,6 +390,67 @@ final class AppModel: ObservableObject {
             try Session.restore(
                 dataDir: dir, passphrase: passphrase,
                 backupPath: backup, mnemonic: mnemonic,
+                recoveryPackagePath: recoveryAuthority,
+                recoveryMnemonic: recoveryMnemonic,
+                settings: settings, kdf: .mobile, sink: sink)
+        }
+        await adopt(session)
+        UserDefaults.standard.set(false, forKey: "komms.recovery-authority.pending")
+        requiresRecoveryAuthorityExport = false
+        try? excludeFromBackup(dir)
+    }
+
+    func prepareAuthorityMigration(
+        passphrase: String,
+        recoveryPath: URL
+    ) async throws -> String {
+        let dir = dataDir
+        return try await run {
+            try Session.prepareAlphaAuthorityMigration(
+                dataDir: dir, passphrase: passphrase, recoveryPath: recoveryPath)
+        }
+    }
+
+    func prepareAuthorityReset(
+        passphrase: String,
+        recoveryPath: URL
+    ) async throws -> AuthorityResetPreparation {
+        let dir = dataDir
+        return try await run {
+            try Session.prepareAlphaAuthorityReset(
+                dataDir: dir, passphrase: passphrase, recoveryPath: recoveryPath)
+        }
+    }
+
+    func prepareLegacyBackupAuthorityReset(
+        recoveryPath: URL
+    ) async throws -> AuthorityResetPreparation {
+        try await run {
+            try Session.prepareLegacyArchiveReset(recoveryPath: recoveryPath)
+        }
+    }
+
+    func completeAuthorityUpgrade(
+        reset: Bool,
+        passphrase: String,
+        recoveryPath: URL,
+        recoveryMnemonic: String
+    ) async throws {
+        let dir = dataDir
+        let settings = try NetworkSettings.load(from: dir)
+        let sink = sink()
+        let session = try await run {
+            if reset {
+                return try Session.resetAuthority(
+                    dataDir: dir, passphrase: passphrase,
+                    recoveryPackagePath: recoveryPath,
+                    recoveryMnemonic: recoveryMnemonic,
+                    settings: settings, kdf: .mobile, sink: sink)
+            }
+            return try Session.migrateAuthority(
+                dataDir: dir, passphrase: passphrase,
+                recoveryPackagePath: recoveryPath,
+                recoveryMnemonic: recoveryMnemonic,
                 settings: settings, kdf: .mobile, sink: sink)
         }
         await adopt(session)
@@ -220,9 +464,15 @@ final class AppModel: ObservableObject {
         callAudio?.stop()
         session?.stop()
         session = nil
+        nativeWakeToken = nil
+        nativeWakeSnapshot = nil
+        nativeWakeSyncPending = false
+        nativeWakeCollectionInFlight = false
         contacts = []
+        messageRequests = []
         histories = [:]
         groups = []
+        groupInvitations = []
         groupHistories = [:]
         scheduledMessages = []
         attachments = []
@@ -241,6 +491,9 @@ final class AppModel: ObservableObject {
         customIcons = [:]
         customIconUsage = CustomIconQuotaUsage(records: 0, bytes: 0)
         linkedDevices = []
+        deviceAuthorityConflicts = []
+        contactAuthorityConflicts = []
+        authorityResetHistory = nil
         calls = []
         callAvailability = [:]
     }
@@ -256,11 +509,17 @@ final class AppModel: ObservableObject {
             }
         }
         self.session = session
+        nativeWakeNetworkConfigurationStale = false
+        NativeWakeBridge.shared.requestCurrentToken()
+        await synchronizeNativeWake(forceRefresh: true)
         refreshTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) {
             [weak self] _ in
             Task { @MainActor in await self?.refresh() }
         }
-        Task { await refresh() }
+        Task {
+            await refreshDevices()
+            await refresh()
+        }
     }
 
     private func excludeFromBackup(_ dir: URL) throws {
@@ -277,12 +536,32 @@ final class AppModel: ObservableObject {
         case .callUpdated(let call):
             receive(call)
         case .devicesChanged:
+            Task {
+                await refreshDevices()
+                await synchronizeNativeWake(forceRefresh: true)
+            }
+        case .deviceAuthorityFork(_, _, let recoveryEpoch):
+            notices.append(
+                L10n.text(
+                    "device_authority_fork_notice",
+                    Int(clamping: recoveryEpoch)))
+            Task { await refreshDevices() }
+        case .deviceRecoveryConflict(_, _, let recoveryEpoch):
+            notices.append(
+                L10n.text(
+                    "device_authority_recovery_notice",
+                    Int(clamping: recoveryEpoch)))
             Task { await refreshDevices() }
         case .deviceLinkCompleted:
             Task {
                 await refreshDevices()
                 await refresh()
+                await synchronizeNativeWake(forceRefresh: true)
             }
+        case .rendezvousConflict:
+            notices.append(L10n.text("rendezvous_conflict"))
+        case .wakeConflict:
+            notices.append(L10n.text("wake_conflict"))
         case .themeChanged:
             Task { await refreshTheme() }
         case .customIconsChanged:
@@ -298,27 +577,45 @@ final class AppModel: ObservableObject {
              .attachmentUpdated, .ephemeralRemoved,
              .foldersChanged, .labelsChanged, .pinsChanged:
             Task { await refresh() }
-        case .mentionReceived:
-            notices.append("You were mentioned in a group.")
+        case .messageRequestReceived:
+            notices.append(L10n.text("message_request_received"))
             Task { await refresh() }
-        case .groupAdminRequestResolved(_, _, let accepted, _, _, let reason):
+        case .messageRequestAccepted, .messageRequestDeleted,
+             .messageRequestBlocked, .messageRequestExpired:
+            Task {
+                await refresh()
+                await synchronizeNativeWake(forceRefresh: true)
+            }
+        case .groupInvitationReceived:
+            notices.append(L10n.text("group_invitation_received"))
+            Task { await refresh() }
+        case .groupInvitationAccepted, .groupInvitationDeleted, .groupInvitationExpired:
+            Task { await refresh() }
+        case .mentionReceived:
+            notices.append(L10n.text("mention_notification_private"))
+            Task { await refresh() }
+        case .groupAdminRequestResolved(_, _, let accepted, _, _, _):
             notices.append(accepted
-                ? "The owner accepted your group administration request."
-                : "The owner rejected your group administration request (reason \(reason)).")
+                ? L10n.text("group_admin_request_accepted")
+                : L10n.text("group_admin_request_rejected"))
             Task { await refresh() }
         case .contactAdded, .contactRenamed:
-            Task { await refresh() }
+            Task {
+                await refresh()
+                await synchronizeNativeWake(forceRefresh: true)
+            }
         case .sessionEstablished(let peer):
             // A re-establishment for a known contact means their key or
             // device changed — say so, next to their name.
             if let known = contacts.first(where: { $0.peer == peer }) {
-                notices.append(
-                    "Session with \(known.name) re-established — their key or device "
-                    + "may have changed. Verify safety numbers again.")
+                notices.append(L10n.text("key_changed_body", known.name))
             }
-            Task { await refresh() }
+            Task {
+                await refresh()
+                await synchronizeNativeWake(forceRefresh: true)
+            }
         case .awaitingFasterLink:
-            notices.append("A message is held — will send when a faster link exists.")
+            notices.append(L10n.text("message_held_notice"))
         }
     }
 
@@ -396,7 +693,9 @@ final class AppModel: ObservableObject {
     private func activateAudio(_ call: KommsCore.Call) {
         guard let session else { return }
         guard callAudioAllowed else {
-            callAudioFailed(call: call.id, reason: "Komms left the foreground")
+            callAudioFailed(
+                call: call.id,
+                reason: L10n.text("call_audio_foreground_exit"))
             return
         }
         do {
@@ -407,7 +706,7 @@ final class AppModel: ObservableObject {
     }
 
     private func callAudioFailed(call: String, reason: String) {
-        notices.append("Live call audio stopped: \(reason)")
+        notices.append(L10n.text("call_audio_stopped_notice", reason))
         callAudio?.stop(call: call)
         guard let session else { return }
         Task { try? await run { try session.hangupCall(call: call) } }
@@ -436,8 +735,18 @@ final class AppModel: ObservableObject {
 
     func refreshDevices() async {
         guard let session,
-              let devices = try? await run({ try session.linkedDevices() }) else { return }
-        linkedDevices = devices
+              let snapshot = try? await run({
+                  (
+                    try session.linkedDevices(),
+                    try session.deviceAuthorityConflicts(),
+                    try session.contactAuthorityConflicts(),
+                    try session.authorityResetHistory()
+                  )
+              }) else { return }
+        linkedDevices = snapshot.0
+        deviceAuthorityConflicts = snapshot.1
+        contactAuthorityConflicts = snapshot.2
+        authorityResetHistory = snapshot.3
     }
 
     func beginDeviceLink() async throws -> String {
@@ -473,6 +782,21 @@ final class AppModel: ObservableObject {
         }
     }
 
+    func deviceLinkApprovalRequest() async throws -> String {
+        guard let session else { throw InputError("locked") }
+        return try await run { try session.deviceLinkApprovalRequest() }
+    }
+
+    func approveDeviceLinkRequest(_ requestHex: String) async throws -> String {
+        guard let session else { throw InputError("locked") }
+        return try await run { try session.approveDeviceLinkRequest(requestHex: requestHex) }
+    }
+
+    func acceptDeviceLinkApproval(_ approvalHex: String) async throws -> String? {
+        guard let session else { throw InputError("locked") }
+        return try await run { try session.acceptDeviceLinkApproval(approvalHex: approvalHex) }
+    }
+
     func completeDeviceLink(packageHex: String, confirmed: Bool) async throws {
         guard let session else { throw InputError("locked") }
         try await run { try session.completeDeviceLink(packageHex: packageHex, confirmed: confirmed) }
@@ -490,6 +814,27 @@ final class AppModel: ObservableObject {
         guard let session else { throw InputError("locked") }
         try await run { try session.revokeLinkedDevice(device: device, confirmed: confirmed) }
         await refreshDevices()
+    }
+
+    func deviceAuthorityApprovalRequest() async throws -> String {
+        guard let session else { throw InputError("locked") }
+        return try await run { try session.deviceAuthorityApprovalRequest() }
+    }
+
+    func approveDeviceAuthorityRequest(_ requestHex: String) async throws -> String {
+        guard let session else { throw InputError("locked") }
+        return try await run {
+            try session.approveDeviceAuthorityRequest(requestHex: requestHex)
+        }
+    }
+
+    func acceptDeviceAuthorityApproval(_ approvalHex: String) async throws -> Bool {
+        guard let session else { throw InputError("locked") }
+        let committed = try await run {
+            try session.acceptDeviceAuthorityApproval(approvalHex: approvalHex)
+        }
+        if committed { await refreshDevices() }
+        return committed
     }
 
     func exportDeviceSync(device: String) async throws -> String {
@@ -539,8 +884,10 @@ final class AppModel: ObservableObject {
                 var freshGroups: [String: [GroupMessage]] = [:]
                 var freshPolls: [String: [GroupPoll]] = [:]
                 var freshAuthorities: [String: GroupAuthority] = [:]
+                var freshSecurities: [String: GroupSecurity] = [:]
                 for group in liveGroups {
                     freshAuthorities[group.id] = try session.groupAuthority(group: group.id)
+                    freshSecurities[group.id] = try session.groupSecurity(group: group.id)
                 }
                 for group in followedGroups where liveIds.contains(group) {
                     freshGroups[group] = try session.groupMessages(group: group)
@@ -586,10 +933,14 @@ final class AppModel: ObservableObject {
                     if let icon = try session.customIcon(target: target) { icons[target] = icon }
                 }
                 return AppRefreshSnapshot(
-                    status: try session.status(), contacts: liveContacts, histories: fresh,
-                    groups: liveGroups, groupHistories: freshGroups,
+                    status: try session.status(), contacts: liveContacts,
+                    messageRequests: try session.messageRequests(), histories: fresh,
+                    groups: liveGroups,
+                    groupInvitations: try session.groupInvitations(),
+                    groupHistories: freshGroups,
                     groupPolls: freshPolls,
                     groupAuthorities: freshAuthorities,
+                    groupSecurities: freshSecurities,
                     scheduled: try session.scheduledMessages(), attachments: try session.attachments(),
                     notes: try session.noteToSelfMessages(), folders: folders,
                     staleFolders: try session.staleFolders(), folderWasMissing: missingFolder,
@@ -600,11 +951,14 @@ final class AppModel: ObservableObject {
             }
             status = snapshot.status
             contacts = snapshot.contacts
+            messageRequests = snapshot.messageRequests
             histories.merge(snapshot.histories) { _, new in new }
             groups = snapshot.groups
+            groupInvitations = snapshot.groupInvitations
             groupHistories.merge(snapshot.groupHistories) { _, new in new }
             groupPolls.merge(snapshot.groupPolls) { _, new in new }
             groupAuthorities = snapshot.groupAuthorities
+            groupSecurities = snapshot.groupSecurities
             scheduledMessages = snapshot.scheduled
             attachments = snapshot.attachments
             noteHistory = snapshot.notes
@@ -621,10 +975,13 @@ final class AppModel: ObservableObject {
             customIcons = snapshot.customIcons
             customIconUsage = snapshot.customIconUsage
             if snapshot.folderWasMissing {
-                notices.append("The selected private folder is unavailable; showing All conversations.")
+                notices.append(L10n.text("folder_selection_unavailable"))
             }
             if snapshot.filter.unavailableLabels.isEmpty == false {
-                notices.append("\(snapshot.filter.unavailableLabels.count) unavailable selected label(s) were removed.")
+                notices.append(
+                    L10n.text(
+                        "label_filter_unavailable",
+                        snapshot.filter.unavailableLabels.count))
             }
             selectedLabelIds = snapshot.filter.selectedLabels
             persistLabelFilter()
@@ -636,8 +993,20 @@ final class AppModel: ObservableObject {
     /// Start following a conversation (loads its history).
     func follow(peer: String) async throws {
         guard let session else { return }
-        let history = try await run { try session.messages(peer: peer) }
+        let history = try await run {
+            try session.setRendezvousConversationActive(peer: peer, active: true)
+            return try session.messages(peer: peer)
+        }
         histories[peer] = history
+    }
+
+    /// Stop the runtime-only route-maintenance trigger when the conversation
+    /// leaves the foreground. Retained history remains available to the list.
+    func unfollow(peer: String) async {
+        guard let session else { return }
+        _ = try? await run {
+            try session.setRendezvousConversationActive(peer: peer, active: false)
+        }
     }
 
     /// Start following a group conversation (loads its persisted history).
@@ -645,8 +1014,16 @@ final class AppModel: ObservableObject {
         guard let session else { return }
         let history = try await run { try session.groupMessages(group: group) }
         let polls = try await run { try session.groupPolls(group: group) }
+        let security = try await run { try session.groupSecurity(group: group) }
         groupHistories[group] = history
         groupPolls[group] = polls
+        groupSecurities[group] = security
+    }
+
+    func upgradeGroupSecurity(group: String) async throws {
+        guard let session else { throw InputError("node is locked") }
+        try await run { try session.upgradeGroupSecurity(group: group) }
+        await refresh()
     }
 
     /// Stable identity used by the local note-to-self route in every shell.
@@ -707,7 +1084,7 @@ final class AppModel: ObservableObject {
                 if isPinned(target) { _ = try await run { try session.unpinConversation(target: target) } }
                 else { _ = try await run { try session.pinConversation(target: target) } }
                 await refresh()
-            } catch { notices.append(error.localizedDescription) }
+            } catch { notices.append(L10n.error(error)) }
         }
     }
 
@@ -719,9 +1096,10 @@ final class AppModel: ObservableObject {
         guard pins.indices.contains(destination) else { return }
         var order = pins.map(\.target)
         order.swapAt(index, destination)
+        let reordered = order
         Task {
-            do { _ = try await run { try session.reorderPins(targets: order) }; await refresh() }
-            catch { notices.append(error.localizedDescription) }
+            do { _ = try await run { try session.reorderPins(targets: reordered) }; await refresh() }
+            catch { notices.append(L10n.error(error)) }
         }
     }
 
@@ -729,7 +1107,7 @@ final class AppModel: ObservableObject {
         guard let session else { return }
         Task {
             do { _ = try await run { try session.cleanupStalePin(target: target) }; await refresh() }
-            catch { notices.append(error.localizedDescription) }
+            catch { notices.append(L10n.error(error)) }
         }
     }
 
@@ -1197,6 +1575,21 @@ final class AppModel: ObservableObject {
         return id
     }
 
+    func acceptGroupInvitation(_ invitation: String) async throws -> String {
+        guard let session else { throw InputError("node is locked") }
+        let group = try await run {
+            try session.acceptGroupInvitation(invitation: invitation)
+        }
+        await refresh()
+        return group
+    }
+
+    func deleteGroupInvitation(_ invitation: String) async throws {
+        guard let session else { throw InputError("node is locked") }
+        try await run { try session.deleteGroupInvitation(invitation: invitation) }
+        await refresh()
+    }
+
     func sendGroup(group: String, body: String) async throws {
         guard let session else { return }
         _ = try await run { try session.sendGroup(group: group, body: body) }
@@ -1324,6 +1717,25 @@ final class AppModel: ObservableObject {
         return try await run { try session.myBundleHex() }
     }
 
+    func connectCode() async throws -> String {
+        guard let session else { throw InputError("node is locked") }
+        return try await run { try session.connectCode }
+    }
+
+    func rotateConnectCode() async throws -> String {
+        guard let session else { throw InputError("node is locked") }
+        let code = try await run { try session.rotateConnectCode() }
+        await refresh()
+        return code
+    }
+
+    func retireLegacyDiscovery() async throws -> String {
+        guard let session else { throw InputError("node is locked") }
+        let code = try await run { try session.retireLegacyDiscovery() }
+        await refresh()
+        return code
+    }
+
     func addContact(name: String, bundleHex: String, hints: [HintSpec]) async throws {
         guard let session else { return }
         _ = try await run {
@@ -1335,6 +1747,27 @@ final class AppModel: ObservableObject {
     func addContact(name: String, address: String) async throws {
         guard let session else { return }
         _ = try await run { try session.addContact(name: name, address: address) }
+        await refresh()
+    }
+
+    func acceptMessageRequest(_ request: String, name: String) async throws -> String {
+        guard let session else { throw InputError("node is locked") }
+        let peer = try await run {
+            try session.acceptMessageRequest(request: request, name: name)
+        }
+        await refresh()
+        return peer
+    }
+
+    func deleteMessageRequest(_ request: String) async throws {
+        guard let session else { throw InputError("node is locked") }
+        try await run { try session.deleteMessageRequest(request: request) }
+        await refresh()
+    }
+
+    func blockMessageRequest(_ request: String) async throws {
+        guard let session else { throw InputError("node is locked") }
+        try await run { try session.blockMessageRequest(request: request) }
         await refresh()
     }
 
@@ -1363,6 +1796,7 @@ final class AppModel: ObservableObject {
     func markVerified(peer: String) async throws {
         guard let session else { return }
         try await run { try session.markVerified(peer: peer) }
+        await refreshDevices()
         await refresh()
     }
 
@@ -1473,16 +1907,29 @@ final class AppModel: ObservableObject {
         guard let session else { throw InputError("node is locked") }
         return try await run { try session.exportBackup(to: path) }
     }
+
+    func exportAccountRecoveryAuthority(to path: URL) async throws -> String {
+        guard let session else { throw InputError("node is locked") }
+        return try await run { try session.exportAccountRecoveryAuthority(to: path) }
+    }
+
+    func completeRecoveryAuthorityOnboarding() {
+        UserDefaults.standard.set(false, forKey: "komms.recovery-authority.pending")
+        requiresRecoveryAuthorityExport = false
+    }
 }
 
 private struct AppRefreshSnapshot: Sendable {
     let status: Status
     let contacts: [Contact]
+    let messageRequests: [MessageRequest]
     let histories: [String: [Message]]
     let groups: [KommsCore.Group]
+    let groupInvitations: [GroupInvitation]
     let groupHistories: [String: [GroupMessage]]
     let groupPolls: [String: [GroupPoll]]
     let groupAuthorities: [String: GroupAuthority]
+    let groupSecurities: [String: GroupSecurity]
     let scheduled: [ScheduledMessage]
     let attachments: [Attachment]
     let notes: [NoteMessage]
@@ -1645,11 +2092,16 @@ private func outputImageName(_ filename: String?) -> String {
     return (stem.isEmpty ? "edited-image" : stem) + ".png"
 }
 
+private extension NativeWakeSnapshot {
+    func withAdvertised(_ advertised: Bool) -> NativeWakeSnapshot {
+        var copy = self
+        copy.advertised = advertised
+        return copy
+    }
+}
+
 /// One error string for any failure the UI shows: the node's words for FFI
 /// errors, this layer's words for input it rejected.
 func errorText(_ error: Error) -> String {
-    if let ffi = error as? FfiError { return ffi.reasonText }
-    if let input = error as? InputError { return input.message }
-    if let settings = error as? SettingsError { return settings.message }
-    return String(describing: error)
+    L10n.error(error)
 }

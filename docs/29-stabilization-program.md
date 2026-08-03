@@ -39,8 +39,9 @@ The stabilization work must preserve these boundaries:
    format, user identity, or cryptographic trust root.
 4. **DHT first contact and durable store-and-forward mailboxes remain core
    protocol roles.** Bootstrap peers and mailbox operators may be chosen or
-   self-hosted. Current Alpha provider configuration and mailbox persistence
-   still require qualification.
+   self-hosted. Mailbox-v2 persistence has local crash/restart evidence;
+   provider defaults, independent operator behavior, upgrades, backups, costs,
+   abuse response, and real-network operation still require qualification.
 5. **Post-pairing rendezvous and content-free native wake remain optional.**
    They may improve mobile reachability after a relationship exists, as proposed
    in ADR-0017 through ADR-0019, but are not prerequisites for pure-core
@@ -123,7 +124,7 @@ and stable claim is tracked in the
 | **P0-03 Stabilized core product profile** | FND + PROD + SEC | A frozen v1 profile covers install, contact establishment, pairwise text, groups at a stated bound, attachments at stated limits, backup/recovery, blocking, and honest delivery. Additional roadmap work remains isolated from the stable profile until its applicable evidence closes. | Coherent beta scope |
 | **P0-04 Clean-install and real-network golden path** | NET + PROD + EXT | On fresh supported devices, two users on distinct ordinary NATs can install, establish first contact, exchange messages, go offline, and receive later without editing addresses or configuration. Standard defaults are disclosed and replaceable; default blackhole, alternate-bootstrap, replacement-operator, and pure-core/self-hosted journeys are exercised separately. | Credible everyday internet use |
 | **P0-05 Unsolicited-contact abuse admission** | SEC + NET + PROD + EXT | Before a first payload creates durable contact/session state or consumes scarce prekeys, the accepted contact gate, bounded proof-of-work or equivalent cost, rate limits, block controls, storage quotas, and recovery behavior pass adversarial and usability tests. | Safe public discovery |
-| **P0-06 Independent crypto and protocol assurance** | SEC + EXT | Normative external vectors cover PQXDH, Double Ratchet state transitions, sealed envelopes, downgrade behavior, backup/recovery, and malformed inputs; an independent reviewer publishes scope, findings, fixes, and residual risks. Self-tests remain useful but are labelled accordingly. | Stable security claims |
+| **P0-06 Independent crypto and protocol assurance** | SEC + EXT | Normative external vectors cover PQXDH, Double Ratchet state transitions, sealed envelopes, downgrade behavior, backup/recovery, and malformed inputs; an independent reviewer publishes scope, findings, fixes, retest, and residual risks. The revision-bound review package is prepared, but no reviewer is assigned and preparation is not assurance. Self-tests remain useful but are labelled accordingly. | Stable security claims |
 | **P0-07 Signed and recoverable distribution** | REL + SEC + EXT | Production-signed supported artifacts, protected release keys, provenance/SBOM, reproducible-build measurements, verified install/upgrade/rollback, and an authenticated update or clearly bounded manual-update path are exercised from a clean device. | Stable binary distribution |
 | **P0-08 Durable mailbox and operator qualification** | NET + SEC + EXT | Mailbox ciphertext survives restart/crash within declared retention and quota rules; expiry, deletion hints, overload, abuse, upgrade, backup, observability, and multi-operator failure behavior are tested. RAM-only discovery/rendezvous nodes do not count as mailbox-durability evidence. A maintained self-hosting path identifies costs and responsibilities. | Trustworthy asynchronous delivery |
 | **P0-09 Field qualification across supported claims** | PROD + NET + REL + EXT | A published matrix covers named Android and iOS devices, desktop systems, background/lock lifecycle, NAT classes, network handoff, accessibility, recovery, and the two-radio hardware bench. Unsupported combinations are stated instead of inferred from simulator or CI results. | Supported-platform declaration |
@@ -134,12 +135,13 @@ envelope limit, an explicit accept/refuse contract on `/komms/envelope/2`, and a
 direct inbox bounded to 256 items and 8 MiB. The encrypted deferred inbox is
 also capped at 2,048 rows / 64 MiB and suppresses exact multipath duplicates.
 Global libp2p connection counts, fragment/NACK work, courier bundles, directory
-ingress, and mailbox-v1 page/token/lifecycle work now have explicit interim
-bounds; large mailbox and token lists rotate without front-of-list starvation.
-These paths have local automated tests, but the evidence is not yet tied to a
-published revision or independently reviewed, so P0-05 remains open. They bound
-carrier and disk surfaces but do not by themselves provide pre-acknowledgement
-first-contact admission, identity blocking, or mailbox abuse controls.
+ingress, and mailbox-v2 request/page/lease/lifecycle work have explicit bounds;
+large mailbox and token lists rotate without front-of-list starvation. The
+mailbox relay persists opaque-indexed, row-bound deposits and deletes exact
+leased rows only after typed endpoint staging. ADR-0030 separately implements
+pre-work admission, identity blocking, and bounded provisional consent. These
+paths have local automated tests, but the evidence is not yet tied to a
+published revision or independently reviewed, so P0-05 and P0-08 remain open.
 
 ## 5. P1 — adoption and ecosystem readiness
 
@@ -221,26 +223,28 @@ This table prevents a prior concern from disappearing into roadmap prose.
 | Potential similar-name overlap, including komms.app, requires monitoring and a documented founder risk decision; it is not by itself a legal conclusion or automatic rename requirement | P0-02, P1-05 |
 | Feature breadth presented ahead of audit, distribution, field qualification, and stable core profile | P0-01, P0-03, P0-09 |
 | Fresh installs have no practical internet bootstrap/mailbox defaults; hybrid reachability is design-only | P0-04 |
-| First payload can create state while contact-gating and abuse cost are only promised elsewhere | P0-05 |
-| Unsigned/debug packages, no updater, incomplete reproducibility and store distribution | P0-07 |
+| ADR-0030 now confines a valid first payload to bounded provisional state with explicit consent; independent adversarial, physical-device, accessibility, discovery, and mailbox-operator qualification remain open | P0-05 |
+| Revision-bound release/SBOM/signing/qualification controls now fail closed, but production keys, store paths, signed install/upgrade/rollback evidence, independent reproduction, and a safe authenticated or bounded manual update execution remain open | P0-07 |
+| The consent-based Alpha pilot, aggregate-only metric contract, final-candidate reruns, P0 closure audit, support/update window, rollback decision, and candidate-only founder go/no-go are fail-closed release records, but no pilot or final decision has run | P0-01, P0-04, P0-07, P0-09, P0-10 |
 | Absolute blocking, erasure, cryptographic-audit, and current-law wording exceeds demonstrated guarantees | P0-01, P0-06, P1-07 |
-| Mailbox state and the operator path are not yet qualified as durable production infrastructure | P0-08, P1-04 |
+| Mailbox v2 now has local durable-custody evidence plus a dedicated single-protocol artifact, hardened profile, and backup/upgrade/incident runbook, but no public operator, observed backup/upgrade/cost record, live abuse exercise, or real-network path is qualified as production infrastructure | P0-08, P1-04 |
 | Simulator/CI evidence is described beside unresolved device, NAT, radio, background, and accessibility work | P0-01, P0-09 |
-| Localization is claimed without a shared localization system or cross-shell locale evidence | P1-02 |
-| Contribution rules require release-scale validation and maintainer authorization for ordinary work | P1-01 |
-| AGPL reciprocity and the nonprofit mission are clear, but software/documentation/artwork scope, trademark use, contribution rights, and exact section-13 obligations still need a policy | P0-02, P1-05 |
-| No durable nonprofit funding, plural-operator, incident, or transparency program is established | P1-04, P1-06, P1-07 |
-| No stand-alone conformance suite or independent implementation yet supports a durable ecosystem claim | P0-06, P1-03 |
+| A shared English/Icelandic localization and cross-shell accessibility contract is implemented, but fluent review, named physical assistive-technology runs, disabled-user assessment, and independent accessibility review remain open | P1-02 |
+| Bounded credential-free contributor profiles and issue/review orientation are implemented, but no independent newcomer completion is yet retained | P1-01 |
+| AGPL repository scope, bounded section-13 obligations, commercial/government rights, contributions, trademark use, package identifiers, and known assets now have a policy; qualified legal/trademark review and artwork provenance attestation remain open | P0-02, P1-05 |
+| Operator, funding, provider-data, lawful-request, and incident programs now have machine-readable records and deterministic dry-runs; real plural operators, financial attestation, qualified counsel, human tabletop, and continuity evidence remain open | P1-04, P1-06, P1-07 |
+| A stand-alone versioned conformance kit now fixes the candidate wire/state contract and Komms consumes its fixtures; a deterministic full-source review package, four-work-package scope, finding/disposition format, and uncontacted candidate shortlist are prepared, but no separately produced implementation, external execution, assigned reviewer, finding set, or retest yet supports an independent ecosystem or security claim | P0-06, P1-03 |
 | Video, large groups, new carriers, federation, and governance expansion could distract from everyday reliability | P0-03, P2 |
-| Direct transport currently acknowledges volatile RAM before bounded durable admission can accept or refuse an unknown token | P0-05 |
+| Direct transport now holds its fixed response until exact durable admission/consumption and refuses invalid, duplicate, or over-budget introductions; independent network/adversarial qualification remains open | P0-05 |
 | Stable identity-derived DHT locators and public route hints permit polling and network-location correlation | P0-04, P0-05, P0-06 |
-| Typed atomic plans and restart injection now cover profile bootstrap, pairwise, group, attachment, scheduled activation, bounded maintenance and the current linked-device transition implementation; the authority design, first-contact admission/legacy bridge, leased relay custody and independent/power-loss evidence remain open in the recorded inventory | P0-03, P0-06 |
-| Mailbox collection deletes relay custody before the endpoint durably stages and acknowledges a leased page | P0-04, P0-08 |
-| Unix store writer exclusion now combines a no-follow sidecar with a database-inode lock; equivalent alias resistance and hostile-filesystem qualification remain open on other supported platforms | P0-06, P0-09 |
+| Typed atomic plans and restart injection now cover root-free profile bootstrap/migration, pairwise, group, attachment, scheduled activation, bounded maintenance, ADR-0026 device authority/link/sync/contact projection, ADR-0030 stage/accept/discard/sweep, and complete-envelope `PendingStage`; the quarantined pre-C2 alias bridge and independent/power-loss evidence remain open in the recorded inventory | P0-03, P0-06 |
+| ADR-0032 durable deposits, bounded idempotent leases, exact acknowledgement-after-endpoint-commit, restart persistence, row-bound storage, overload/failpoint behavior, aggregate observability, and multi-operator deduplication have local evidence; public operator, upgrade/backup/cost, real-network, independent, and physical-filesystem qualification remain open | P0-04, P0-08 |
+| Unix store writer exclusion now combines a no-follow sidecar with an owner-only no-follow lock file derived from the database device and inode; equivalent alias resistance and hostile-filesystem qualification remain open on other supported platforms | P0-06, P0-09 |
 | The Unix RPC sidecar is no-follow and owner-only, but portable stale-socket replacement still requires a daemon-owned parent directory to exclude hostile rename/unlink races | P0-07, P0-09 |
-| Current linked devices copy the account root, so a compromised revoked device can mint a replacement credential; ADR-0026 requires offline-root migration and majority-authorized manifests | P0-03, P0-06 |
+| ADR-0026 offline-root migration/reset, strict-majority manifests, recovery epochs and root-free `KKR10` are implemented with local crash/cross-shell/simulator evidence; revision-bound CI, physical-device, independent interoperability and independent security evidence remain open | P0-03, P0-06, P0-09 |
 | ADR-0027 removes sensitive plaintext SQLite equality identifiers and binds every sealed row, but independent storage review and real macOS, Windows, mobile, power-loss, backup-exclusion, and forensic qualification remain open | P0-03, P0-06, P0-09 |
-| Current sender-key group content proves membership, not individual origin, so a malicious member can forge another member's text, edit, vote, or ephemeral event; ADR-0029 requires recipient-verifiable group origins | P0-03, P0-06 |
+| ADR-0029 recipient-authenticated group origins are implemented across content, state, sync, RPC/UniFFI and shells with malicious-member, replay/reorder, rotation, restore, shared-mesh and crash evidence; revision-bound CI, independent cryptographic/interoperability review, and physical qualification remain open | P0-03, P0-06, P0-09 |
+| ADR-0030 bounded first-contact admission is implemented across signed bundles, pre-KEM proof checks, direct settlement, sealed provisional storage, explicit Accept/Delete/Block and group-invite consent, RPC/UniFFI and all shells with local crash/flood/replay/simulator evidence; independent adversarial/usability review, physical battery/background/accessibility runs, mailbox-v2 operator evidence, and capability-scoped discovery remain open | P0-03, P0-05, P0-06, P0-09 |
 | RAM-only storage, disabled logs, and aggregate metrics reduce retention but remain deployment controls; a cloud operator can still observe network metadata, running memory, and availability | P0-01, P0-04, P1-07 |
 
 Until the relevant gates close, Komms is an ambitious public Alpha with

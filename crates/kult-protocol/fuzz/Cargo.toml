@@ -20,6 +20,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "admission_envelope_decode"
+path = "fuzz_targets/admission_envelope_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "bundle_import"
 path = "fuzz_targets/bundle_import.rs"
 test = false
@@ -104,6 +111,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "group_control_decode"
+path = "fuzz_targets/group_control_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "device_sync_bundle_decode"
 path = "fuzz_targets/device_sync_bundle_decode.rs"
 test = false
@@ -113,6 +127,27 @@ bench = false
 [[bin]]
 name = "call_control_decode"
 path = "fuzz_targets/call_control_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "discovery_control_decode"
+path = "fuzz_targets/discovery_control_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "rendezvous_decode"
+path = "fuzz_targets/rendezvous_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "wake_decode"
+path = "fuzz_targets/wake_decode.rs"
 test = false
 doc = false
 bench = false

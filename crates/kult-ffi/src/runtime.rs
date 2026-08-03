@@ -10,26 +10,63 @@
 //! `kultd`'s daemon structure — the two are the same runtime with different
 //! front doors, and a change to one almost always belongs in the other.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use rand::rngs::OsRng;
+use rand::RngCore;
 use tokio::sync::{mpsc, oneshot, watch};
 
 use kult_crypto::{KdfProfile, SafetyNumber};
 use kult_node::{
     AttachmentInfo, AttachmentMetadata, CallAudioFrame, CallAvailability, CallInfo,
-    CarrierCapabilitySnapshot, DeviceLinkSelection, Event, FolderConversationInfo,
-    FolderConversationList, FolderInfo, FolderSelection, GroupAuthorityInfo, GroupInfo,
-    GroupMentionCapability, GroupRole, LabelConversationInfo, LabelFilterInfo, LabelInfo,
-    LabelMatchMode, LinkedDeviceInfo, MentionSpan, MessageDeviceDeliveryInfo, Node,
-    PinConversationList, PinInfo, ScheduledMessageInfo, StaleFolderInfo, StaleLabelInfo,
+    CarrierCapabilitySnapshot, ContactAuthorityConflictInfo, DeviceAuthorityConflictInfo,
+    DeviceLinkSelection, Event, FolderConversationInfo, FolderConversationList, FolderInfo,
+    FolderSelection, GroupAuthorityInfo, GroupInfo, GroupInvitationInfo, GroupMentionCapability,
+    GroupRole, GroupSecurityInfo, LabelConversationInfo, LabelFilterInfo, LabelInfo,
+    LabelMatchMode, LinkedDeviceInfo, MentionSpan, MessageDeviceDeliveryInfo, MessageRequestInfo,
+    NativeWakeDestinationRegistration, Node, PinConversationList, PinInfo, ScheduledMessageInfo,
+    StaleFolderInfo, StaleLabelInfo,
 };
-use kult_store::{ContactRecord, ConversationId, NoteMessageRecord};
+use kult_store::{ContactRecord, ConversationId, NoteMessageRecord, AUTHORITY_BACKUP_MAGIC};
 use kult_transport::{
-    DeliveryHint, Discovery, Libp2pTransport, MailboxConfig, Transport, TransportOptions,
+    DeliveryHint, Discovery, Libp2pTransport, MailboxConfig, MailboxServiceConfig, Transport,
+    TransportOptions, MAX_MAILBOX_CHECKIN_TOKENS,
 };
+
+const MAX_MAILBOXES_PER_CHECKIN_TICK: usize = 8;
+const MAX_MAILBOX_BACKOFF: Duration = Duration::from_secs(60 * 60);
+
+#[derive(Clone, Copy)]
+struct MailboxRetry {
+    failures: u8,
+    next_at: Instant,
+}
+
+fn rotating_batch<T: Clone>(items: &[T], cursor: &mut usize, limit: usize) -> Vec<T> {
+    if items.is_empty() || limit == 0 {
+        *cursor = 0;
+        return Vec::new();
+    }
+    *cursor %= items.len();
+    let end = cursor.saturating_add(limit).min(items.len());
+    let batch = items[*cursor..end].to_vec();
+    *cursor = if end == items.len() { 0 } else { end };
+    batch
+}
+
+fn jittered_mailbox_delay(base: Duration, failures: u8, draw: u64) -> Duration {
+    let multiplier = 1u32 << failures.min(6);
+    let backed_off = base.saturating_mul(multiplier).min(MAX_MAILBOX_BACKOFF);
+    let percent = 75u128 + u128::from(draw % 51);
+    let millis = backed_off
+        .as_millis()
+        .saturating_mul(percent)
+        .saturating_div(100)
+        .max(250);
+    Duration::from_millis(u64::try_from(millis).unwrap_or(u64::MAX))
+}
 
 /// A backup to restore from on first start (docs/07-storage.md §4).
 #[derive(Clone)]
@@ -38,6 +75,10 @@ pub(crate) struct RestoreSource {
     pub backup: Vec<u8>,
     /// The 24-word mnemonic sealing it.
     pub mnemonic: String,
+    /// Separately held encrypted offline account authority.
+    pub recovery_package: Vec<u8>,
+    /// The separate 24-word phrase opening the recovery authority.
+    pub recovery_mnemonic: String,
 }
 
 /// Everything the runtime needs, already validated and converted from the
@@ -47,6 +88,14 @@ pub(crate) struct RuntimeConfig {
     pub db_path: PathBuf,
     pub passphrase: Vec<u8>,
     pub kdf: KdfProfile,
+    pub mode: kult_transport::OperatingMode,
+    pub public_mode: crate::NetworkMode,
+    pub provider_directory: crate::ProviderDirectoryVerdict,
+    pub discovery_policy: kult_node::DiscoveryPublicationPolicy,
+    pub rendezvous: Vec<kult_transport::RendezvousProvider>,
+    pub wake: Vec<kult_transport::WakeProvider>,
+    pub tor_proxy: Option<std::net::SocketAddr>,
+    pub fallback_ready: bool,
     /// Restore the store from a backup instead of creating a fresh
     /// identity. Refused when the store already exists.
     pub restore: Option<RestoreSource>,
@@ -72,11 +121,37 @@ type Resp<T> = oneshot::Sender<Result<T, String>>;
 /// What the actor task is asked to do. One variant per node operation the
 /// FFI exposes — the typed equivalent of `kultd`'s wire ops.
 pub(crate) enum Msg {
+    ConnectCodeRotate {
+        resp: Resp<String>,
+    },
+    ConnectCodeRetireLegacy {
+        resp: Resp<String>,
+    },
     DeviceId {
         resp: Resp<[u8; 32]>,
     },
     LinkedDevices {
         resp: Resp<Vec<LinkedDeviceInfo>>,
+    },
+    DeviceAuthorityConflicts {
+        resp: Resp<Vec<DeviceAuthorityConflictInfo>>,
+    },
+    ContactAuthorityConflicts {
+        resp: Resp<Vec<ContactAuthorityConflictInfo>>,
+    },
+    AuthorityResetHistory {
+        resp: Resp<Option<kult_node::AuthorityResetHistoryRecord>>,
+    },
+    DeviceAuthorityApprovalRequest {
+        resp: Resp<Vec<u8>>,
+    },
+    DeviceAuthorityApprove {
+        request: Vec<u8>,
+        resp: Resp<Vec<u8>>,
+    },
+    DeviceAuthorityAccept {
+        approval: Vec<u8>,
+        resp: Resp<bool>,
     },
     MessageDeviceDeliveries {
         message: [u8; 16],
@@ -108,6 +183,17 @@ pub(crate) enum Msg {
         selection: DeviceLinkSelection,
         confirmed: bool,
         resp: Resp<Vec<u8>>,
+    },
+    DeviceLinkApprovalRequest {
+        resp: Resp<Vec<u8>>,
+    },
+    DeviceLinkApproveRequest {
+        request: Vec<u8>,
+        resp: Resp<Vec<u8>>,
+    },
+    DeviceLinkAcceptApproval {
+        approval: Vec<u8>,
+        resp: Resp<Option<Vec<u8>>>,
     },
     DeviceLinkComplete {
         package: Vec<u8>,
@@ -440,6 +526,14 @@ pub(crate) enum Msg {
         members: Vec<[u8; 32]>,
         resp: Resp<[u8; 32]>,
     },
+    GroupSecurity {
+        group: [u8; 32],
+        resp: Resp<GroupSecurityInfo>,
+    },
+    GroupUpgradeSecurity {
+        group: [u8; 32],
+        resp: Resp<()>,
+    },
     GroupSend {
         group: [u8; 32],
         body: Vec<u8>,
@@ -536,6 +630,17 @@ pub(crate) enum Msg {
         group: [u8; 32],
         resp: Resp<()>,
     },
+    GroupInvitations {
+        resp: Resp<Vec<GroupInvitationInfo>>,
+    },
+    GroupInvitationAccept {
+        invitation: [u8; 16],
+        resp: Resp<[u8; 32]>,
+    },
+    GroupInvitationDelete {
+        invitation: [u8; 16],
+        resp: Resp<()>,
+    },
     Groups {
         resp: Resp<Vec<GroupInfo>>,
     },
@@ -545,6 +650,22 @@ pub(crate) enum Msg {
     },
     Contacts {
         resp: Resp<Vec<ContactRecord>>,
+    },
+    MessageRequests {
+        resp: Resp<Vec<MessageRequestInfo>>,
+    },
+    MessageRequestAccept {
+        request: [u8; 16],
+        name: String,
+        resp: Resp<[u8; 32]>,
+    },
+    MessageRequestDelete {
+        request: [u8; 16],
+        resp: Resp<()>,
+    },
+    MessageRequestBlock {
+        request: [u8; 16],
+        resp: Resp<()>,
     },
     CarrierCapabilities {
         resp: Resp<Vec<CarrierCapabilitySnapshot>>,
@@ -603,10 +724,23 @@ pub(crate) enum Msg {
         hints: Vec<DeliveryHint>,
         resp: Resp<()>,
     },
+    RendezvousRefresh {
+        peer: [u8; 32],
+        resp: Resp<()>,
+    },
+    RendezvousConversationActive {
+        peer: [u8; 32],
+        active: bool,
+        resp: Resp<()>,
+    },
     Publish {
         resp: Resp<()>,
     },
     Backup {
+        path: PathBuf,
+        resp: Resp<String>,
+    },
+    RecoveryAuthorityExport {
         path: PathBuf,
         resp: Resp<String>,
     },
@@ -615,6 +749,21 @@ pub(crate) enum Msg {
     },
     Tokens {
         resp: oneshot::Sender<Vec<[u8; 32]>>,
+    },
+    WakeCollect {
+        budget_ms: u32,
+        resp: Resp<u32>,
+    },
+    WakeRegister {
+        platform: kult_protocol::WakePlatform,
+        environment: kult_protocol::WakeEnvironment,
+        profile: kult_protocol::WakeProfile,
+        provider_token: Vec<u8>,
+        app_topic: Vec<u8>,
+        resp: Resp<kult_node::NativeWakeRegistrationResult>,
+    },
+    WakeRevoke {
+        resp: Resp<usize>,
     },
     BridgeRelays(Vec<DeliveryHint>),
 }
@@ -633,6 +782,11 @@ pub(crate) struct PairingBundleCache {
     refresh_pending: bool,
 }
 
+struct ActorCaches {
+    counts: Arc<Mutex<Counts>>,
+    discovery: Arc<Mutex<(String, bool)>>,
+}
+
 /// A running embedded node. Owns its tokio runtime; every task stops on
 /// [`Runtime::stop`] (or best-effort on drop).
 pub(crate) struct Runtime {
@@ -640,7 +794,11 @@ pub(crate) struct Runtime {
     pub peer: [u8; 32],
     pub tx: mpsc::Sender<Msg>,
     pub net: Arc<Libp2pTransport>,
+    pub mode: crate::NetworkMode,
+    pub provider_directory: crate::ProviderDirectoryVerdict,
+    pub fallback_ready: bool,
     counts: Arc<Mutex<Counts>>,
+    discovery: Arc<Mutex<(String, bool)>>,
     pairing_bundle: Arc<Mutex<PairingBundleCache>>,
     rt: tokio::runtime::Runtime,
     shutdown: watch::Sender<bool>,
@@ -658,7 +816,7 @@ impl Runtime {
         cfg: RuntimeConfig,
         listener: Box<dyn Fn(Event) + Send>,
     ) -> Result<Self, String> {
-        let mut node = if let Some(restore) = &cfg.restore {
+        let node = if let Some(restore) = &cfg.restore {
             // Restore is a first-run operation: an existing store holds an
             // identity, and silently replacing it would destroy keys.
             if cfg.db_path.exists() {
@@ -667,21 +825,97 @@ impl Runtime {
                     cfg.db_path.display()
                 ));
             }
-            Node::restore(
-                &cfg.db_path,
-                &restore.backup,
-                &restore.mnemonic,
-                &cfg.passphrase,
-                cfg.kdf,
-                &mut OsRng,
-            )
+            if restore.backup.starts_with(&AUTHORITY_BACKUP_MAGIC) {
+                Node::restore_with_recovery_authority(
+                    &cfg.db_path,
+                    &restore.backup,
+                    &restore.mnemonic,
+                    &restore.recovery_package,
+                    &restore.recovery_mnemonic,
+                    now(),
+                    &cfg.passphrase,
+                    cfg.kdf,
+                    &mut OsRng,
+                )
+            } else {
+                Node::restore_legacy_backup_with_authority_reset(
+                    &cfg.db_path,
+                    &restore.backup,
+                    &restore.mnemonic,
+                    &restore.recovery_package,
+                    &restore.recovery_mnemonic,
+                    now(),
+                    &cfg.passphrase,
+                    cfg.kdf,
+                    &mut OsRng,
+                )
+            }
         } else if cfg.db_path.exists() {
             Node::open(&cfg.db_path, &cfg.passphrase)
         } else {
             Node::create(&cfg.db_path, &cfg.passphrase, cfg.kdf, &mut OsRng)
         }
         .map_err(|e| format!("store: {e}"))?;
+        Self::start_node(cfg, node, listener)
+    }
 
+    /// Complete an explicit single-device Alpha authority migration and keep
+    /// the same unlocked store handle while the ordinary runtime starts.
+    pub(crate) fn migrate_authority(
+        cfg: RuntimeConfig,
+        recovery_package: &[u8],
+        recovery_mnemonic: &str,
+        listener: Box<dyn Fn(Event) + Send>,
+    ) -> Result<Self, String> {
+        if !cfg.db_path.exists() {
+            return Err(format!(
+                "authority migration requires the existing store {}",
+                cfg.db_path.display()
+            ));
+        }
+        let node = Node::complete_authority_migration(
+            &cfg.db_path,
+            &cfg.passphrase,
+            recovery_package,
+            recovery_mnemonic,
+            now(),
+            &mut OsRng,
+        )
+        .map_err(|e| format!("store: {e}"))?;
+        Self::start_node(cfg, node, listener)
+    }
+
+    /// Complete an explicit copied-root Alpha reset and keep the newly
+    /// replaced store handle while the ordinary runtime starts.
+    pub(crate) fn reset_authority(
+        cfg: RuntimeConfig,
+        recovery_package: &[u8],
+        recovery_mnemonic: &str,
+        listener: Box<dyn Fn(Event) + Send>,
+    ) -> Result<Self, String> {
+        if !cfg.db_path.exists() {
+            return Err(format!(
+                "authority reset requires the existing store {}",
+                cfg.db_path.display()
+            ));
+        }
+        let node = Node::complete_authority_reset(
+            &cfg.db_path,
+            &cfg.passphrase,
+            recovery_package,
+            recovery_mnemonic,
+            now(),
+            &mut OsRng,
+        )
+        .map_err(|e| format!("store: {e}"))?;
+        Self::start_node(cfg, node, listener)
+    }
+
+    fn start_node(
+        cfg: RuntimeConfig,
+        mut node: Node,
+        listener: Box<dyn Fn(Event) + Send>,
+    ) -> Result<Self, String> {
         let rt = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .enable_all()
@@ -695,8 +929,11 @@ impl Runtime {
             cfg.bridge && (cfg.meshtastic_serial.is_some() || cfg.meshtastic_tcp.is_some());
         let net = {
             let listen: Vec<&str> = cfg.listen.iter().map(String::as_str).collect();
+            let mailbox_dir = cfg.db_path.parent().unwrap_or_else(|| Path::new("."));
             let options = TransportOptions {
-                mailbox: cfg.serve_mailbox.then(MailboxConfig::default),
+                mailbox: cfg.serve_mailbox.then(|| {
+                    MailboxServiceConfig::in_directory(mailbox_dir, MailboxConfig::default())
+                }),
                 lan_discovery: cfg.mdns,
                 bridge_deposits: bridging,
             };
@@ -747,10 +984,61 @@ impl Runtime {
         if bridging {
             node.set_bridge(Some(bridge_relays(&cfg, None)));
         }
+        let rendezvous_client: Option<Arc<dyn kult_transport::RendezvousClient>> =
+            if cfg.rendezvous.is_empty() {
+                None
+            } else {
+                Some(match cfg.mode {
+                    kult_transport::OperatingMode::Standard => {
+                        Arc::new(kult_transport::HttpsRendezvousClient::direct())
+                    }
+                    kult_transport::OperatingMode::Private => Arc::new(
+                        kult_transport::HttpsRendezvousClient::tor(
+                            cfg.tor_proxy
+                                .ok_or_else(|| "Private rendezvous has no Tor proxy".to_owned())?,
+                        )
+                        .map_err(|error| format!("Tor rendezvous: {error}"))?,
+                    ),
+                    kult_transport::OperatingMode::Sovereign => {
+                        return Err("Sovereign mode cannot configure rendezvous".to_owned())
+                    }
+                })
+            };
+        node.reconcile_rendezvous(
+            cfg.discovery_policy.mode,
+            rendezvous_client,
+            cfg.rendezvous.clone(),
+        )
+        .map_err(|error| format!("rendezvous configuration: {error}"))?;
+        let wake_client: Option<Arc<dyn kult_transport::WakeClient>> = match cfg.mode {
+            kult_transport::OperatingMode::Standard => {
+                Some(Arc::new(kult_transport::HttpsWakeClient::direct()))
+            }
+            kult_transport::OperatingMode::Private => match cfg.tor_proxy {
+                Some(proxy) => Some(Arc::new(
+                    kult_transport::HttpsWakeClient::tor(proxy)
+                        .map_err(|error| format!("Tor native wake: {error}"))?,
+                )),
+                // Native wake is optional. Without an anonymizing ingress,
+                // Private mode leaves it disabled instead of falling back to
+                // a direct request or blocking ordinary delivery.
+                None => None,
+            },
+            kult_transport::OperatingMode::Sovereign => None,
+        };
+        node.configure_wake(cfg.discovery_policy.mode, wake_client)
+            .map_err(|error| format!("native-wake configuration: {error}"))?;
+        node.reconcile_wake_providers(&cfg.wake, now(), &mut OsRng)
+            .map_err(|error| format!("native-wake provider reconciliation: {error}"))?;
 
         let address = node.address();
         let peer = node.peer_id();
         let counts = Arc::new(Mutex::new(snapshot_counts(&node).unwrap_or_default()));
+        let discovery = Arc::new(Mutex::new((
+            node.connect_code()
+                .map_err(|error| format!("connect code: {error}"))?,
+            node.legacy_discovery_enabled(),
+        )));
         // A scanned bundle must contain a usable first-message route. Wait
         // for libp2p's asynchronous listener event before signing the ready
         // bundle; failure leaves mailbox-only/off-grid configurations usable.
@@ -778,20 +1066,23 @@ impl Runtime {
         let actor_inputs = (
             cfg.clone(),
             Arc::clone(&net),
-            Arc::clone(&counts),
+            ActorCaches {
+                counts: Arc::clone(&counts),
+                discovery: Arc::clone(&discovery),
+            },
             events_tx,
             shutdown.subscribe(),
         );
         tasks.push(rt.spawn_blocking(move || {
-            let (cfg, net, counts, events, shutdown) = actor_inputs;
+            let (cfg, net, caches, events, shutdown) = actor_inputs;
             let local = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
                 .expect("actor runtime");
-            local.block_on(actor(node, cfg, net, counts, rx, events, shutdown));
+            local.block_on(actor(node, cfg, net, caches, rx, events, shutdown));
         }));
         tasks.push(rt.spawn(lifecycle(
-            cfg,
+            cfg.clone(),
             Arc::clone(&net),
             tx.clone(),
             shutdown.subscribe(),
@@ -810,7 +1101,11 @@ impl Runtime {
             peer,
             tx,
             net,
+            mode: cfg.public_mode,
+            provider_directory: cfg.provider_directory,
+            fallback_ready: cfg.fallback_ready,
             counts,
+            discovery,
             pairing_bundle,
             rt,
             shutdown,
@@ -830,6 +1125,21 @@ impl Runtime {
             .counts
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Current capability-scoped share code and legacy bridge state.
+    pub(crate) fn discovery(&self) -> (String, bool) {
+        self.discovery
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    pub(crate) fn set_discovery(&self, connect_code: String, legacy: bool) {
+        *self
+            .discovery
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = (connect_code, legacy);
     }
 
     /// Return the ready pairing bundle and refresh it asynchronously.
@@ -871,6 +1181,43 @@ impl Runtime {
         if let Some(dispatcher) = self.dispatcher.take() {
             let _ = dispatcher.join();
         }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::items_after_test_module)]
+mod lifecycle_tests {
+    use super::*;
+
+    #[test]
+    fn rotating_batches_bound_work_and_cover_every_entry() {
+        let items = (0..17).collect::<Vec<_>>();
+        let mut cursor = 0;
+        let first = rotating_batch(&items, &mut cursor, 8);
+        let second = rotating_batch(&items, &mut cursor, 8);
+        let third = rotating_batch(&items, &mut cursor, 8);
+        assert_eq!(first, (0..8).collect::<Vec<_>>());
+        assert_eq!(second, (8..16).collect::<Vec<_>>());
+        assert_eq!(third, vec![16]);
+        assert_eq!(cursor, 0);
+    }
+
+    #[test]
+    fn mailbox_backoff_is_jittered_exponential_and_bounded() {
+        let base = Duration::from_secs(10);
+        assert_eq!(
+            jittered_mailbox_delay(base, 0, 0),
+            Duration::from_millis(7_500)
+        );
+        assert_eq!(
+            jittered_mailbox_delay(base, 0, 50),
+            Duration::from_millis(12_500)
+        );
+        assert!(jittered_mailbox_delay(base, 4, 25) > jittered_mailbox_delay(base, 3, 25));
+        assert!(
+            jittered_mailbox_delay(Duration::from_secs(3_600), u8::MAX, 50)
+                <= MAX_MAILBOX_BACKOFF.saturating_mul(5) / 4
+        );
     }
 }
 
@@ -947,7 +1294,7 @@ async fn actor(
     mut node: Node,
     cfg: RuntimeConfig,
     net: Arc<Libp2pTransport>,
-    counts: Arc<Mutex<Counts>>,
+    caches: ActorCaches,
     mut rx: mpsc::Receiver<Msg>,
     events: mpsc::UnboundedSender<Event>,
     mut shutdown: watch::Receiver<bool>,
@@ -956,15 +1303,20 @@ async fn actor(
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut media_tick = tokio::time::interval(Duration::from_millis(20));
     media_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut discovery_retry_at = tokio::time::Instant::now();
     loop {
+        let mut check_discovery = false;
         tokio::select! {
             biased;
             _ = shutdown.changed() => break,
-            msg = rx.recv() => match msg {
-                None => break,
-                Some(msg) => handle(&mut node, &cfg, &net, msg).await,
-            },
+            msg = rx.recv() => {
+                match msg {
+                    None => break,
+                    Some(msg) => handle(&mut node, &cfg, &net, &events, msg).await,
+                }
+            }
             _ = tick.tick() => {
+                check_discovery = true;
                 match node.tick(now(), &mut OsRng).await {
                     Ok(batch) => {
                         for event in batch {
@@ -983,10 +1335,37 @@ async fn actor(
                 }
             }
         }
+        let discovery_now = tokio::time::Instant::now();
+        if check_discovery && discovery_now >= discovery_retry_at {
+            let hints = own_hints(&net, &cfg.mailboxes);
+            if node
+                .discovery_publication_needed_with_policy(&hints, cfg.discovery_policy)
+                .unwrap_or(false)
+            {
+                match node
+                    .publish_bundle_with_policy(&hints, cfg.discovery_policy, now())
+                    .await
+                {
+                    Ok(()) => discovery_retry_at = discovery_now,
+                    Err(error) => {
+                        eprintln!("kult-ffi: discovery refresh failed: {error}");
+                        discovery_retry_at = discovery_now + std::time::Duration::from_secs(60);
+                    }
+                }
+            }
+        }
         if let Some(snapshot) = snapshot_counts(&node) {
-            *counts
+            *caches
+                .counts
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner) = snapshot;
+        }
+        if let Ok(connect_code) = node.connect_code() {
+            *caches
+                .discovery
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                (connect_code, node.legacy_discovery_enabled());
         }
     }
 }
@@ -1001,15 +1380,72 @@ fn snapshot_counts(node: &Node) -> Option<Counts> {
 }
 
 /// Execute one operation against the node.
-async fn handle(node: &mut Node, cfg: &RuntimeConfig, net: &Libp2pTransport, msg: Msg) {
+async fn handle(
+    node: &mut Node,
+    cfg: &RuntimeConfig,
+    net: &Libp2pTransport,
+    events: &mpsc::UnboundedSender<Event>,
+    msg: Msg,
+) {
     let now = now();
     let fail = |e: kult_node::NodeError| e.to_string();
     match msg {
+        Msg::ConnectCodeRotate { resp } => {
+            let result = match node.rotate_connect_code(&mut OsRng).map_err(fail) {
+                Ok(connect_code) => {
+                    let hints = own_hints(net, &cfg.mailboxes);
+                    let _ = node
+                        .publish_bundle_with_policy(&hints, cfg.discovery_policy, now)
+                        .await;
+                    Ok(connect_code)
+                }
+                Err(error) => Err(error),
+            };
+            let _ = resp.send(result);
+        }
+        Msg::ConnectCodeRetireLegacy { resp } => {
+            let result = node.retire_legacy_discovery(&mut OsRng).map_err(fail);
+            let result = match result {
+                Ok(()) => {
+                    let hints = own_hints(net, &cfg.mailboxes);
+                    let _ = node
+                        .publish_bundle_with_policy(&hints, cfg.discovery_policy, now)
+                        .await;
+                    node.connect_code().map_err(fail)
+                }
+                Err(error) => Err(error),
+            };
+            let _ = resp.send(result);
+        }
         Msg::DeviceId { resp } => {
             let _ = resp.send(Ok(node.device_id()));
         }
         Msg::LinkedDevices { resp } => {
             let _ = resp.send(Ok(node.linked_devices()));
+        }
+        Msg::DeviceAuthorityConflicts { resp } => {
+            let _ = resp.send(Ok(node.device_authority_conflicts()));
+        }
+        Msg::ContactAuthorityConflicts { resp } => {
+            let _ = resp.send(node.contact_authority_conflicts().map_err(fail));
+        }
+        Msg::AuthorityResetHistory { resp } => {
+            let _ = resp.send(node.authority_reset_history().map_err(fail));
+        }
+        Msg::DeviceAuthorityApprovalRequest { resp } => {
+            let _ = resp.send(node.device_authority_approval_request().map_err(fail));
+        }
+        Msg::DeviceAuthorityApprove { request, resp } => {
+            let _ = resp.send(
+                node.approve_device_authority_request(&request)
+                    .map_err(fail),
+            );
+        }
+        Msg::DeviceAuthorityAccept { approval, resp } => {
+            let _ = resp.send(
+                node.accept_device_authority_approval(&approval, &mut OsRng)
+                    .map_err(fail),
+            );
         }
         Msg::MessageDeviceDeliveries { message, resp } => {
             let _ = resp.send(node.message_device_deliveries(&message).map_err(fail));
@@ -1136,6 +1572,18 @@ async fn handle(node: &mut Node, cfg: &RuntimeConfig, net: &Libp2pTransport, msg
                     &mut OsRng,
                 )
                 .map_err(fail),
+            );
+        }
+        Msg::DeviceLinkApprovalRequest { resp } => {
+            let _ = resp.send(node.device_link_approval_request().map_err(fail));
+        }
+        Msg::DeviceLinkApproveRequest { request, resp } => {
+            let _ = resp.send(node.approve_device_link_request(&request).map_err(fail));
+        }
+        Msg::DeviceLinkAcceptApproval { approval, resp } => {
+            let _ = resp.send(
+                node.accept_device_link_approval(&approval, now, &mut OsRng)
+                    .map_err(fail),
             );
         }
         Msg::AttachmentSend {
@@ -1601,6 +2049,15 @@ async fn handle(node: &mut Node, cfg: &RuntimeConfig, net: &Libp2pTransport, msg
         } => {
             let _ = resp.send(node.create_group(&name, &members, &mut OsRng).map_err(fail));
         }
+        Msg::GroupSecurity { group, resp } => {
+            let _ = resp.send(node.group_security_info(&group).map_err(fail));
+        }
+        Msg::GroupUpgradeSecurity { group, resp } => {
+            let _ = resp.send(
+                node.group_upgrade_security(&group, &mut OsRng)
+                    .map_err(fail),
+            );
+        }
         Msg::GroupSend { group, body, resp } => {
             let _ = resp.send(
                 node.group_send(&group, &body, now, &mut OsRng)
@@ -1744,6 +2201,21 @@ async fn handle(node: &mut Node, cfg: &RuntimeConfig, net: &Libp2pTransport, msg
         Msg::GroupLeave { group, resp } => {
             let _ = resp.send(node.group_leave(&group, now, &mut OsRng).map_err(fail));
         }
+        Msg::GroupInvitations { resp } => {
+            let _ = resp.send(node.group_invitations().map_err(fail));
+        }
+        Msg::GroupInvitationAccept { invitation, resp } => {
+            let _ = resp.send(
+                node.accept_group_invitation(&invitation, now, &mut OsRng)
+                    .map_err(fail),
+            );
+        }
+        Msg::GroupInvitationDelete { invitation, resp } => {
+            let _ = resp.send(
+                node.delete_group_invitation(&invitation, &mut OsRng)
+                    .map_err(fail),
+            );
+        }
         Msg::Groups { resp } => {
             let _ = resp.send(node.groups().map_err(fail));
         }
@@ -1752,6 +2224,31 @@ async fn handle(node: &mut Node, cfg: &RuntimeConfig, net: &Libp2pTransport, msg
         }
         Msg::Contacts { resp } => {
             let _ = resp.send(node.contacts().map_err(fail));
+        }
+        Msg::MessageRequests { resp } => {
+            let _ = resp.send(node.message_requests().map_err(fail));
+        }
+        Msg::MessageRequestAccept {
+            request,
+            name,
+            resp,
+        } => {
+            let _ = resp.send(
+                node.accept_message_request(&request, &name, now, &mut OsRng)
+                    .map_err(fail),
+            );
+        }
+        Msg::MessageRequestDelete { request, resp } => {
+            let _ = resp.send(
+                node.delete_message_request(&request, now, &mut OsRng)
+                    .map_err(fail),
+            );
+        }
+        Msg::MessageRequestBlock { request, resp } => {
+            let _ = resp.send(
+                node.block_message_request(&request, now, &mut OsRng)
+                    .map_err(fail),
+            );
         }
         Msg::CarrierCapabilities { resp } => {
             let _ = resp.send(node.carrier_capabilities(now).map_err(fail));
@@ -1804,9 +2301,22 @@ async fn handle(node: &mut Node, cfg: &RuntimeConfig, net: &Libp2pTransport, msg
         Msg::SetHints { peer, hints, resp } => {
             let _ = resp.send(node.set_hints(&peer, &hints, &mut OsRng).map_err(fail));
         }
+        Msg::RendezvousRefresh { peer, resp } => {
+            let _ = resp.send(node.request_rendezvous_refresh(&peer).map_err(fail));
+        }
+        Msg::RendezvousConversationActive { peer, active, resp } => {
+            let _ = resp.send(
+                node.set_rendezvous_conversation_active(&peer, active)
+                    .map_err(fail),
+            );
+        }
         Msg::Publish { resp } => {
             let hints = own_hints(net, &cfg.mailboxes);
-            let _ = resp.send(node.publish_bundle(&hints, now).await.map_err(fail));
+            let _ = resp.send(
+                node.publish_bundle_with_policy(&hints, cfg.discovery_policy, now)
+                    .await
+                    .map_err(fail),
+            );
         }
         Msg::Backup { path, resp } => {
             let result = node
@@ -1817,6 +2327,13 @@ async fn handle(node: &mut Node, cfg: &RuntimeConfig, net: &Libp2pTransport, msg
                         .map(|()| (*mnemonic).clone())
                         .map_err(|e| format!("backup write: {e}"))
                 });
+            let _ = resp.send(result);
+        }
+        Msg::RecoveryAuthorityExport { path, resp } => {
+            let result = node
+                .export_account_recovery_authority(&path)
+                .map(|mnemonic| (*mnemonic).clone())
+                .map_err(fail);
             let _ = resp.send(result);
         }
         Msg::RefreshHandshakeBundle { cache } => {
@@ -1832,6 +2349,75 @@ async fn handle(node: &mut Node, cfg: &RuntimeConfig, net: &Libp2pTransport, msg
         }
         Msg::Tokens { resp } => {
             let _ = resp.send(node.mailbox_tokens(now));
+        }
+        Msg::WakeCollect { budget_ms, resp } => {
+            let started = Instant::now();
+            let budget = Duration::from_millis(u64::from(budget_ms))
+                .min(kult_node::MAX_WAKE_COLLECTION_DURATION);
+            let tokens = node.mailbox_tokens(now);
+            for mailbox in cfg.mailboxes.iter().take(MAX_MAILBOXES_PER_CHECKIN_TICK) {
+                let remaining = budget.saturating_sub(started.elapsed());
+                if remaining.is_zero() {
+                    break;
+                }
+                let _ = tokio::time::timeout(
+                    remaining,
+                    net.mailbox_checkin(
+                        mailbox,
+                        &tokens[..tokens.len().min(MAX_MAILBOX_CHECKIN_TOKENS)],
+                    ),
+                )
+                .await;
+            }
+            let remaining = budget.saturating_sub(started.elapsed());
+            if remaining.is_zero() {
+                let _ = resp.send(Ok(0));
+            } else {
+                let result = node
+                    .wake_tick(now, remaining, &mut OsRng)
+                    .await
+                    .map_err(fail)
+                    .map(|batch| {
+                        let count = u32::try_from(batch.len()).unwrap_or(u32::MAX);
+                        for event in batch {
+                            let _ = events.send(event);
+                        }
+                        count
+                    });
+                let _ = resp.send(result);
+            }
+        }
+        Msg::WakeRegister {
+            platform,
+            environment,
+            profile,
+            mut provider_token,
+            app_topic,
+            resp,
+        } => {
+            let result = node
+                .register_native_wake_destination(
+                    NativeWakeDestinationRegistration {
+                        platform,
+                        environment,
+                        profile,
+                        provider_token: &provider_token,
+                        app_topic: &app_topic,
+                        providers: &cfg.wake,
+                        now,
+                    },
+                    &mut OsRng,
+                )
+                .await
+                .map_err(fail);
+            provider_token.fill(0);
+            let _ = resp.send(result);
+        }
+        Msg::WakeRevoke { resp } => {
+            let _ = resp.send(
+                node.revoke_native_wake_capabilities(now, &mut OsRng)
+                    .map_err(fail),
+            );
         }
         Msg::BridgeRelays(relays) => node.set_bridge(Some(relays)),
     }
@@ -1888,10 +2474,26 @@ async fn lifecycle(
     // peer may hold a queued message stuck on this node's previous address.
     let mut lan_seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut lan_tick = tokio::time::interval(std::time::Duration::from_secs(15));
+    let mut mailbox_cursor = 0usize;
+    let mut mailbox_token_cursors: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::new();
+    let mut mailbox_retry: std::collections::HashMap<String, MailboxRetry> =
+        std::collections::HashMap::new();
+    let mut jitter_rng = OsRng;
+    let discovery_day = Duration::from_secs(24 * 60 * 60);
+    let discovery_offset = Duration::from_secs(jitter_rng.next_u64() % discovery_day.as_secs());
+    let mut discovery_tick = tokio::time::interval_at(
+        tokio::time::Instant::now() + discovery_offset,
+        discovery_day,
+    );
+    discovery_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
     loop {
         tokio::select! {
             _ = shutdown.changed() => break,
+            _ = discovery_tick.tick() => {
+                publish_quiet(&tx).await;
+            }
             _ = lan_tick.tick() => {
                 let peers: std::collections::HashSet<String> =
                     net.lan_peers().into_iter().collect();
@@ -1925,17 +2527,46 @@ async fn lifecycle(
                     break;
                 }
                 let Ok(tokens) = rx.await else { break };
-                for mailbox in &cfg.mailboxes {
-                    // Drain the backlog: a check-in returns at most one
-                    // batch; repeat until empty.
-                    loop {
-                        match net.mailbox_checkin(mailbox, &tokens).await {
-                            Ok(0) => break,
-                            Ok(_) => continue,
-                            Err(e) => {
-                                eprintln!("kult-ffi: mailbox check-in at {mailbox} failed: {e}");
-                                break;
-                            }
+                let mailboxes = rotating_batch(
+                    &cfg.mailboxes,
+                    &mut mailbox_cursor,
+                    MAX_MAILBOXES_PER_CHECKIN_TICK,
+                );
+                for mailbox in mailboxes {
+                    if mailbox_retry
+                        .get(&mailbox)
+                        .is_some_and(|retry| retry.next_at > Instant::now())
+                    {
+                        continue;
+                    }
+                    let token_cursor = mailbox_token_cursors
+                        .entry(mailbox.clone())
+                        .or_default();
+                    let token_batch =
+                        rotating_batch(&tokens, token_cursor, MAX_MAILBOX_CHECKIN_TOKENS);
+                    let result = net.mailbox_checkin(&mailbox, &token_batch).await;
+                    let retry = mailbox_retry.entry(mailbox.clone()).or_insert(MailboxRetry {
+                        failures: 0,
+                        next_at: Instant::now(),
+                    });
+                    match result {
+                        Ok(_) => {
+                            retry.failures = 0;
+                            retry.next_at = Instant::now()
+                                + jittered_mailbox_delay(
+                                    cfg.checkin_interval,
+                                    0,
+                                    jitter_rng.next_u64(),
+                                );
+                        }
+                        Err(_) => {
+                            retry.failures = retry.failures.saturating_add(1);
+                            retry.next_at = Instant::now()
+                                + jittered_mailbox_delay(
+                                    cfg.checkin_interval,
+                                    retry.failures,
+                                    jitter_rng.next_u64(),
+                                );
                         }
                     }
                 }

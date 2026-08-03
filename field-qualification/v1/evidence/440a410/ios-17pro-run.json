@@ -1,0 +1,770 @@
+{
+  "artifacts": [
+    {
+      "bytes": 14253440,
+      "name": "KommsApp-440a410-ios-simulator.zip",
+      "role": "ios-simulator-app",
+      "sha256": "378bdcd3cebdac3bdd6d17ef647dd493f37dd505cc693479e98f6a874cb009af"
+    }
+  ],
+  "claim": "Prepared field record only. Simulator observations never qualify a physical target, and open or blocked rows remain unsupported.",
+  "completed_at": "2026-07-31T11:11:00Z",
+  "environment": {
+    "architecture": "arm64",
+    "carrier": "",
+    "cell_id": "iphone-17-pro-ios-26-5-simulator",
+    "device": "iPhone 17 Pro Simulator",
+    "kind": "simulator",
+    "network": "",
+    "os_version": "iOS 26.5 Simulator",
+    "platform": "ios",
+    "qualification_candidate": false
+  },
+  "limitations": [
+    "Simulator evidence does not qualify a physical iPhone, APNs, Background App Refresh, force quit, carrier handoff, or physical screen-capture behavior.",
+    "Only the clean first-run row was completed on this form factor; every contact, delivery, recovery, lifecycle, and accessibility row remains open."
+  ],
+  "matrix": {
+    "path": "field-qualification/v1/matrix.json",
+    "sha256": "e2033ecefa3dc06a7010f59461a248374f985ed3a87bc9db5253a9cc93285085",
+    "version": 1
+  },
+  "operator_role": "maintainer",
+  "revision": "440a410a5d5a9373935cef8eb3728efe5ed91e64",
+  "rows": [
+    {
+      "artifact_sha256": [
+        "378bdcd3cebdac3bdd6d17ef647dd493f37dd505cc693479e98f6a874cb009af"
+      ],
+      "blocker": "",
+      "category": "installation",
+      "ended_at": "2026-07-31T11:11:00Z",
+      "evidence": [
+        {
+          "bytes": 3123,
+          "description": "Redacted exact-revision iOS build and first-run observation.",
+          "path": "ios-simulator-observation.md",
+          "sha256": "d7cb1a4ab261237a24dc3575645fa156b0f8aea4a090cf95e4c1706facca3db1"
+        },
+        {
+          "bytes": 228016,
+          "description": "Fresh iPhone 17 Pro first-run screen in dark appearance before profile creation.",
+          "path": "ios-17pro-first-run.png",
+          "sha256": "f6fe30a733d3067050542bd6c171d473e6474aca8139030c599c987b9aaf706e"
+        },
+        {
+          "bytes": 234679,
+          "description": "Throwaway iPhone 17 Pro profile at the ordinary ready state after mandatory authority handoff.",
+          "path": "ios-17pro-ready.png",
+          "sha256": "42748c666b0da41e1802e799a6f2d3829627b22e6b706bcd2eb537af93508257"
+        }
+      ],
+      "expected": "A fresh user reaches an ordinary ready state, sees accurate provider/mode disclosure, and is not shown a false stable or production claim.",
+      "id": "clean-install-and-first-run",
+      "observed": "The exact unsigned simulator artifact created a fresh encrypted store, completed the mandatory separately stored offline-authority handoff, and reached Standard / Connected without a route edit or production claim.",
+      "redaction_reviewed": true,
+      "retest_disposition": "",
+      "started_at": "2026-07-31T11:04:00Z",
+      "status": "simulator-pass",
+      "steps": [
+        {
+          "duration_ms": 2300,
+          "id": "remove",
+          "instruction": "Remove every prior application/profile copy using the platform procedure and verify the application data location is absent.",
+          "observed": "The exact Komms application and prior application profile were removed before installation.",
+          "status": "pass"
+        },
+        {
+          "duration_ms": 4970,
+          "id": "install",
+          "instruction": "Install the exact recorded artifact without a release credential or manual configuration edit.",
+          "observed": "The recorded unsigned simulator application installed without a release credential or configuration edit.",
+          "status": "pass"
+        },
+        {
+          "duration_ms": 300000,
+          "id": "launch",
+          "instruction": "Cold-launch and complete the disclosed first-run identity and recovery-authority flow.",
+          "observed": "Cold launch completed in 1.03 seconds; the throwaway profile then completed encrypted-store creation, mandatory authority export and acknowledgement, and entry to the ordinary ready state.",
+          "status": "pass"
+        }
+      ]
+    },
+    {
+      "artifact_sha256": [],
+      "blocker": "",
+      "category": "golden-path",
+      "ended_at": null,
+      "evidence": [],
+      "expected": "Two fresh users establish consent and exchange an authenticated first message with honest queued, sent, and delivered states.",
+      "id": "first-contact-and-first-message",
+      "observed": "",
+      "redaction_reviewed": false,
+      "retest_disposition": "",
+      "started_at": null,
+      "status": "open",
+      "steps": [
+        {
+          "duration_ms": null,
+          "id": "share",
+          "instruction": "Exchange a Connect code between two fresh identities without editing a route or address.",
+          "observed": "",
+          "status": "open"
+        },
+        {
+          "duration_ms": null,
+          "id": "consent",
+          "instruction": "Complete the message-request or invitation consent flow and compare the displayed trust information.",
+          "observed": "",
+          "status": "open"
+        },
+        {
+          "duration_ms": null,
+          "id": "message",
+          "instruction": "Exchange a first message and retain timing for contact establishment and authenticated delivery.",
+          "observed": "",
+          "status": "open"
+        }
+      ]
+    },
+    {
+      "artifact_sha256": [],
+      "blocker": "",
+      "category": "consent",
+      "ended_at": null,
+      "evidence": [],
+      "expected": "Unknown senders remain provisional and Accept, Delete, and Block have distinct, accurately described effects.",
+      "id": "message-request-delete-block",
+      "observed": "",
+      "redaction_reviewed": false,
+      "retest_disposition": "",
+      "started_at": null,
+      "status": "open",
+      "steps": [
+        {
+          "duration_ms": null,
+          "id": "request",
+          "instruction": "Receive an unknown-sender request and confirm it is separate from contacts and ordinary history.",
+          "observed": "",
+          "status": "open"
+        },
+        {
+          "duration_ms": null,
+          "id": "delete",
+          "instruction": "Delete one request and confirm only the bounded replay tombstone remains.",
+          "observed": "",
+          "status": "open"
+        },
+        {
+          "duration_ms": null,
+          "id": "block",
+          "instruction": "Block another exact identity and confirm local queues/capabilities are removed without remote-deletion wording.",
+          "observed": "",
+          "status": "open"
+        }
+      ]
+    },
+    {
+      "artifact_sha256": [],
+      "blocker": "",
+      "category": "consent",
+      "ended_at": null,
+      "evidence": [],
+      "expected": "Group membership is created only by explicit consent, and rejection does not create ordinary group history.",
+      "id": "group-invitation-consent",
+      "observed": "",
+      "redaction_reviewed": false,
+      "retest_disposition": "",
+      "started_at": null,
+      "status": "open",
+      "steps": [
+        {
+          "duration_ms": null,
+          "id": "invite",
+          "instruction": "Receive a group invitation from an authenticated contact.",
+          "observed": "",
+          "status": "open"
+        },
+        {
+          "duration_ms": null,
+          "id": "inspect",
+          "instruction": "Inspect the bounded invitation without joining or downloading group media.",
+          "observed": "",
+          "status": "open"
+        },
+        {
+          "duration_ms": null,
+          "id": "accept-reject",
+          "instruction": "Exercise one accept and one reject path and inspect resulting membership/history.",
+          "observed": "",
+          "status": "open"
+        }
+      ]
+    },
+    {
+      "artifact_sha256": [],
+      "blocker": "",
+      "category": "delivery",
+      "ended_at": null,
+      "evidence": [],
+      "expected": "The relay retains ciphertext until exact endpoint commit/ack; reconnect produces one visible message and one honest authenticated receipt.",
+      "id": "offline-mailbox-delivery",
+      "observed": "",
+      "redaction_reviewed": false,
+      "retest_disposition": "",
+      "started_at": null,
+      "status": "open",
+      "steps": [
+        {
+          "duration_ms": null,
+          "id": "offline",
+          "instruction": "Take the receiving endpoint offline after contact establishment.",
+          "observed": "",
+          "status": "open"
+        },
+        {
+          "duration_ms": null,
+          "id": "deposit",
+          "instruction": "Send through a durable mailbox and record sender state after relay commit.",
+          "observed": "",
+          "status": "open"
+        },
+        {
+          "duration_ms": null,
+          "id": "collect",
+          "instruction": "Reconnect the receiver, collect and commit the exact envelope, then observe the authenticated receipt.",
+          "observed": "",
+          "status": "open"
+        }
+      ]
+    },
+    {
+      "artifact_sha256": [],
+      "blocker": "",
+      "category": "recovery",
+      "ended_at": null,
+      "evidence": [],
+      "expected": "Clean-device recovery preserves only declared portable state, revokes the former device set, and does not restore live rendezvous, ratchet, wake, group-chain, or delivery secrets.",
+      "id": "backup-recovery-clean-device",
+      "observed": "",
+      "redaction_reviewed": false,
+      "retest_disposition": "",
+      "started_at": null,
+      "status": "open",
+      "steps": [
+        {
+          "duration_ms": null,
+          "id": "export",
+          "instruction": "Export a root-free backup and separately held offline recovery authority using throwaway qualification identities.",
+          "observed": "",
+          "status": "open"
+        },
+        {
+          "duration_ms": null,
+          "id": "restore",
+          "instruction": "Restore onto a clean profile and verify a higher recovery epoch with one fresh device.",
+          "observed": "",
+          "status": "open"
+        },
+        {
+          "duration_ms": null,
+          "id": "verify",
+          "instruction": "Verify eligible history/petnames remain, excluded live secrets do not, and contacts require honest re-verification/re-handshake.",
+          "observed": "",
+          "status": "open"
+        }
+      ]
+    },
+    {
+      "artifact_sha256": [],
+      "blocker": "",
+      "category": "recovery",
+      "ended_at": null,
+      "evidence": [],
+      "expected": "Old-epoch descendants and recovery forks are rejected visibly; no ordering rule silently selects authority.",
+      "id": "stale-backup-and-recovery-conflict",
+      "observed": "",
+      "redaction_reviewed": false,
+      "retest_disposition": "",
+      "started_at": null,
+      "status": "open",
+      "steps": [
+        {
+          "duration_ms": null,
+          "id": "stale",
+          "instruction": "Attempt to introduce a descendant from an older recovery epoch after a newer recovery.",
+          "observed": "",
+          "status": "open"
+        },
+        {
+          "duration_ms": null,
+          "id": "conflict",
+          "instruction": "Present conflicting recovery descendants without ordering one as authoritative.",
+          "observed": "",
+          "status": "open"
+        },
+        {
+          "duration_ms": null,
+          "id": "inspect",
+          "instruction": "Confirm both cases fail closed and surface a visible recovery conflict.",
+          "observed": "",
+          "status": "open"
+        }
+      ]
+    },
+    {
+      "artifact_sha256": [],
+      "blocker": "",
+      "category": "device-authority",
+      "ended_at": null,
+      "evidence": [],
+      "expected": "Device authority follows the accepted manifest chain and revoked or old-epoch installations cannot resume authority.",
+      "id": "linked-device-loss-and-revocation",
+      "observed": "",
+      "redaction_reviewed": false,
+      "retest_disposition": "",
+      "started_at": null,
+      "status": "open",
+      "steps": [
+        {
+          "duration_ms": null,
+          "id": "link",
+          "instruction": "Link an additional installation through scan, compare, confirm, and any required quorum approval.",
+          "observed": "",
+          "status": "open"
+        },
+        {
+          "duration_ms": null,
+          "id": "loss",
+          "instruction": "Make one linked installation unavailable and revoke it with the remaining quorum.",
+          "observed": "",
+          "status": "open"
+        },
+        {
+          "duration_ms": null,
+          "id": "replay",
+          "instruction": "Bring the revoked installation back and confirm its descendants, sync, rendezvous, wake, and delivery capabilities remain rejected.",
+          "observed": "",
+          "status": "open"
+        }
+      ]
+    },
+    {
+      "artifact_sha256": [],
+      "blocker": "",
+      "category": "attachments",
+      "ended_at": null,
+      "evidence": [],
+      "expected": "Attachments remain inert until an explicit protected action and are never described as malware-free or remotely erasable.",
+      "id": "safe-attachment-presentation",
+      "observed": "",
+      "redaction_reviewed": false,
+      "retest_disposition": "",
+      "started_at": null,
+      "status": "open",
+      "steps": [
+        {
+          "duration_ms": null,
+          "id": "receive",
+          "instruction": "Receive recognized, mismatched, unknown, and potentially active file types.",
+          "observed": "",
+          "status": "open"
+        },
+        {
+          "duration_ms": null,
+          "id": "inspect",
+          "instruction": "Confirm no attachment autoplays or opens and unsafe hints receive bounded warnings.",
+          "observed": "",
+          "status": "open"
+        },
+        {
+          "duration_ms": null,
+          "id": "export",
+          "instruction": "Exercise protected export/open and verify screen-reader labels and cancellation.",
+          "observed": "",
+          "status": "open"
+        }
+      ]
+    },
+    {
+      "artifact_sha256": [],
+      "blocker": "",
+      "category": "calls",
+      "ended_at": null,
+      "evidence": [],
+      "expected": "Call state and audio follow authenticated sessions; route failure is visible and does not relabel message delivery.",
+      "id": "audio-call-direct-and-fallback",
+      "observed": "",
+      "redaction_reviewed": false,
+      "retest_disposition": "",
+      "started_at": null,
+      "status": "open",
+      "steps": [
+        {
+          "duration_ms": null,
+          "id": "direct",
+          "instruction": "Place, answer, exchange audio, and end one call over a verified direct route.",
+          "observed": "",
+          "status": "open"
+        },
+        {
+          "duration_ms": null,
+          "id": "fallback",
+          "instruction": "Repeat with direct path unavailable and the declared supported relay/fallback path.",
+          "observed": "",
+          "status": "open"
+        },
+        {
+          "duration_ms": null,
+          "id": "failure",
+          "instruction": "Blackhole the optional path and verify no false connected state or delivery-state change.",
+          "observed": "",
+          "status": "open"
+        }
+      ]
+    },
+    {
+      "artifact_sha256": [],
+      "blocker": "",
+      "category": "privacy-ui",
+      "ended_at": null,
+      "evidence": [],
+      "expected": "Sensitive content follows the declared platform protection boundary and limitations remain explicit.",
+      "id": "screen-security-lifecycle",
+      "observed": "",
+      "redaction_reviewed": false,
+      "retest_disposition": "",
+      "started_at": null,
+      "status": "open",
+      "steps": [
+        {
+          "duration_ms": null,
+          "id": "background",
+          "instruction": "Background, lock, switch tasks, and capture the platform app-switcher/overview from sensitive screens.",
+          "observed": "",
+          "status": "open"
+        },
+        {
+          "duration_ms": null,
+          "id": "return",
+          "instruction": "Return through the configured lock gate and verify sensitive content is not exposed early.",
+          "observed": "",
+          "status": "open"
+        },
+        {
+          "duration_ms": null,
+          "id": "capture",
+          "instruction": "Exercise the documented screenshot/screen-recording boundary and retain only synthetic content.",
+          "observed": "",
+          "status": "open"
+        }
+      ]
+    },
+    {
+      "artifact_sha256": [],
+      "blocker": "",
+      "category": "accessibility",
+      "ended_at": null,
+      "evidence": [],
+      "expected": "Every critical flow is operable and understandable with the platform screen reader, with no content-only or color-only state.",
+      "id": "accessibility-screen-reader-and-announcements",
+      "observed": "",
+      "redaction_reviewed": false,
+      "retest_disposition": "",
+      "started_at": null,
+      "status": "open",
+      "steps": [
+        {
+          "duration_ms": null,
+          "id": "navigate",
+          "instruction": "Navigate onboarding, requests, conversation, groups, attachments, calls, recovery, modes, delivery states, and errors with the platform screen reader.",
+          "observed": "",
+          "status": "open"
+        },
+        {
+          "duration_ms": null,
+          "id": "labels",
+          "instruction": "Confirm controls, headings, state changes, and destructive actions have unique meaningful labels.",
+          "observed": "",
+          "status": "open"
+        },
+        {
+          "duration_ms": null,
+          "id": "announce",
+          "instruction": "Confirm new request, delivery, failure, call, and recovery-conflict changes are announced without exposing content on a locked surface.",
+          "observed": "",
+          "status": "open"
+        }
+      ]
+    },
+    {
+      "artifact_sha256": [],
+      "blocker": "",
+      "category": "accessibility",
+      "ended_at": null,
+      "evidence": [],
+      "expected": "Critical actions have deterministic focus order, full keyboard access where applicable, and platform-sized touch targets.",
+      "id": "accessibility-focus-keyboard-touch",
+      "observed": "",
+      "redaction_reviewed": false,
+      "retest_disposition": "",
+      "started_at": null,
+      "status": "open",
+      "steps": [
+        {
+          "duration_ms": null,
+          "id": "focus",
+          "instruction": "Traverse each critical flow in logical focus order and confirm focus remains visible after dialogs and navigation.",
+          "observed": "",
+          "status": "open"
+        },
+        {
+          "duration_ms": null,
+          "id": "keyboard",
+          "instruction": "Complete desktop flows using keyboard alone, including cancel and destructive confirmations.",
+          "observed": "",
+          "status": "open"
+        },
+        {
+          "duration_ms": null,
+          "id": "touch",
+          "instruction": "Measure mobile interactive targets and exercise adjacent controls without accidental activation.",
+          "observed": "",
+          "status": "open"
+        }
+      ]
+    },
+    {
+      "artifact_sha256": [],
+      "blocker": "",
+      "category": "accessibility",
+      "ended_at": null,
+      "evidence": [],
+      "expected": "Scaled and bidirectional text does not hide security decisions; contrast and reduced-motion settings preserve complete operation.",
+      "id": "accessibility-scaled-text-bidi-contrast-motion",
+      "observed": "",
+      "redaction_reviewed": false,
+      "retest_disposition": "",
+      "started_at": null,
+      "status": "open",
+      "steps": [
+        {
+          "duration_ms": null,
+          "id": "scale",
+          "instruction": "Run critical flows at the largest supported text/display scale and inspect clipping, overlap, and hidden actions.",
+          "observed": "",
+          "status": "open"
+        },
+        {
+          "duration_ms": null,
+          "id": "bidi",
+          "instruction": "Exercise mixed-direction synthetic names/messages and verify controls and security identifiers remain unambiguous.",
+          "observed": "",
+          "status": "open"
+        },
+        {
+          "duration_ms": null,
+          "id": "visual",
+          "instruction": "Enable reduced motion and high-contrast/dark settings and verify state remains perceivable.",
+          "observed": "",
+          "status": "open"
+        }
+      ]
+    },
+    {
+      "artifact_sha256": [],
+      "blocker": "",
+      "category": "mobile-lifecycle",
+      "ended_at": null,
+      "evidence": [],
+      "expected": "Background work is bounded, durable remainder survives, and wake never advances message delivery state.",
+      "id": "mobile-background-lock-collection",
+      "observed": "",
+      "redaction_reviewed": false,
+      "retest_disposition": "",
+      "started_at": null,
+      "status": "open",
+      "steps": [
+        {
+          "duration_ms": null,
+          "id": "background",
+          "instruction": "Background and lock the receiving device after contact establishment.",
+          "observed": "",
+          "status": "open"
+        },
+        {
+          "duration_ms": null,
+          "id": "trigger",
+          "instruction": "Deposit durable work and invoke only the configured bounded wake/collection opportunity.",
+          "observed": "",
+          "status": "open"
+        },
+        {
+          "duration_ms": null,
+          "id": "remainder",
+          "instruction": "Observe deadline handling, durable remainder, notification shape, and authenticated receipt after collection.",
+          "observed": "",
+          "status": "open"
+        }
+      ]
+    },
+    {
+      "artifact_sha256": [],
+      "blocker": "",
+      "category": "mobile-lifecycle",
+      "ended_at": null,
+      "evidence": [],
+      "expected": "The platform no-execution limitation is stated accurately and no message is lost or falsely marked delivered.",
+      "id": "mobile-force-stop-or-force-quit",
+      "observed": "",
+      "redaction_reviewed": false,
+      "retest_disposition": "",
+      "started_at": null,
+      "status": "open",
+      "steps": [
+        {
+          "duration_ms": null,
+          "id": "terminate",
+          "instruction": "Force-stop Android or force-quit iOS using the documented platform action.",
+          "observed": "",
+          "status": "open"
+        },
+        {
+          "duration_ms": null,
+          "id": "send",
+          "instruction": "Send while the application has no execution opportunity and observe optional wake behavior.",
+          "observed": "",
+          "status": "open"
+        },
+        {
+          "duration_ms": null,
+          "id": "relaunch",
+          "instruction": "Relaunch manually and verify bounded collection of durable work with honest prior state.",
+          "observed": "",
+          "status": "open"
+        }
+      ]
+    },
+    {
+      "artifact_sha256": [],
+      "blocker": "",
+      "category": "mobile-lifecycle",
+      "ended_at": null,
+      "evidence": [],
+      "expected": "Visible wake becomes ineligible when permission requires it; ordinary delivery remains functional.",
+      "id": "mobile-notification-permission-denial",
+      "observed": "",
+      "redaction_reviewed": false,
+      "retest_disposition": "",
+      "started_at": null,
+      "status": "open",
+      "steps": [
+        {
+          "duration_ms": null,
+          "id": "deny",
+          "instruction": "Deny visible notification permission and inspect advertised wake profiles.",
+          "observed": "",
+          "status": "open"
+        },
+        {
+          "duration_ms": null,
+          "id": "receive",
+          "instruction": "Exercise ordinary direct/mailbox receipt while permission remains denied.",
+          "observed": "",
+          "status": "open"
+        },
+        {
+          "duration_ms": null,
+          "id": "restore",
+          "instruction": "Restore permission and verify a fresh eligible capability generation without stale reuse.",
+          "observed": "",
+          "status": "open"
+        }
+      ]
+    },
+    {
+      "artifact_sha256": [],
+      "blocker": "",
+      "category": "network-handoff",
+      "ended_at": null,
+      "evidence": [],
+      "expected": "Network handoff refreshes routes without identity change, duplicate history, lost durable work, or false delivery.",
+      "id": "mobile-wifi-cellular-handoff",
+      "observed": "",
+      "redaction_reviewed": false,
+      "retest_disposition": "",
+      "started_at": null,
+      "status": "open",
+      "steps": [
+        {
+          "duration_ms": null,
+          "id": "wifi",
+          "instruction": "Establish a conversation and queued work over Wi-Fi behind an ordinary NAT.",
+          "observed": "",
+          "status": "open"
+        },
+        {
+          "duration_ms": null,
+          "id": "cellular",
+          "instruction": "Move to cellular during active/queued work without restarting the identity or editing configuration.",
+          "observed": "",
+          "status": "open"
+        },
+        {
+          "duration_ms": null,
+          "id": "return",
+          "instruction": "Return to Wi-Fi and verify deduplication, route refresh, receipts, and call/message state.",
+          "observed": "",
+          "status": "open"
+        }
+      ]
+    },
+    {
+      "artifact_sha256": [],
+      "blocker": "",
+      "category": "mobile-lifecycle",
+      "ended_at": null,
+      "evidence": [],
+      "expected": "APNs is used directly without PushKit; platform limitations, token rotation, and static content-free payloads are accurately enforced.",
+      "id": "ios-background-refresh-and-apns-boundary",
+      "observed": "",
+      "redaction_reviewed": false,
+      "retest_disposition": "",
+      "started_at": null,
+      "status": "open",
+      "steps": [
+        {
+          "duration_ms": null,
+          "id": "refresh-off",
+          "instruction": "Disable Background App Refresh and confirm background-only eligibility is removed.",
+          "observed": "",
+          "status": "open"
+        },
+        {
+          "duration_ms": null,
+          "id": "profiles",
+          "instruction": "Exercise background and generic-visible APNs profiles with the required push type, priority, and collapse behavior.",
+          "observed": "",
+          "status": "open"
+        },
+        {
+          "duration_ms": null,
+          "id": "token",
+          "instruction": "Rotate the APNs token and verify old capability revocation without recording either token.",
+          "observed": "",
+          "status": "open"
+        }
+      ]
+    }
+  ],
+  "schema": "komms-field-qualification-run/v1",
+  "started_at": "2026-07-31T11:04:00Z",
+  "summary": {
+    "blocked": 0,
+    "fail": 0,
+    "observed": 0,
+    "open": 18,
+    "pass": 0,
+    "simulator-pass": 1
+  }
+}

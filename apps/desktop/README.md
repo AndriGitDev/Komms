@@ -21,12 +21,22 @@ security indicators are the node's own, verbatim.
   states honestly that the webview, OS, input method, or writing tools may ignore
   hints.
 - **Create / unlock / restore** an encrypted store at the gate; restoring
-  takes a `.kkr` backup file plus its 24-word mnemonic.
+  current root-free `KKR10` or compatible root-free `KKR8`/`KKR9` takes the backup and
+  its phrase plus the separately held authority and phrase. A visibly separate
+  legacy `KKR1`–`KKR7` path
+  prepares a fresh address, requires identity-change confirmation, and imports
+  only the former-identity local archive.
+- **Make first contact** with the ordinary `kc2` Connect QR/code. It uses a
+  rotatable capability while the `kk1` account fingerprint and safety number
+  stay stable. The share panel exposes explicit rotation and legacy
+  mailbox-only retirement with warnings; existing relationships receive
+  updates over authenticated sessions.
 - **Pair out-of-band**: share your post-quantum prekey bundle as a short
   animated sequence of versioned Base45 QR frames or as pasteable hex
   (interoperable with `kult bundle` / `kult add`). Komms scanners assemble
   the bounded frames in any order; legacy one-code Base45 and hex QRs remain
-  accepted. A kult address can also add a contact through DHT lookup.
+  accepted. New DHT lookup uses the Connect code; a legacy kult address is
+  accepted only through the visible Alpha compatibility path.
 - **Link and manage owned devices** without a cloud account. The keyboard and
   screen-reader-accessible manager lists exact physical devices, supports signed
   rename and permanently confirmed revoke, and drives both sides of the
@@ -37,7 +47,7 @@ security indicators are the node's own, verbatim.
   targets the exact peer key, previews shared NFC normalization and duplicate/
   confusable/bidi/invisible warnings, and requires explicit confirmation before
   accepting a warned name. Duplicate names remain separate; rename survives
-  restart/`KKR7` and creates no network, notification, queue, or transport work.
+  restart/`KKR10` and creates no network, notification, queue, or transport work.
 - **Message** with honest delivery states: `queued` → `sent` (handed to a
   link) → `delivered` (end-to-end encrypted receipt came back). Sealed
   ciphertext retries passively after recent failures so fresh taps remain
@@ -96,7 +106,11 @@ security indicators are the node's own, verbatim.
   is validated and materialized only for explicit protected local playback.
 - **Use sender-key groups**: create and list groups, read history, send,
   add/remove members, and leave. Outbound bubbles show a separate honest
-  delivery state for every recipient, so partial delivery stays visible.
+  delivery state for every recipient, so partial delivery stays visible. A
+  visible security banner blocks new content while current devices exchange
+  recipient-specific origin capabilities, then identifies new rows as
+  recipient-authenticated and keeps released legacy history accurately
+  labelled.
 - **Create and vote in encrypted group polls** using dedicated accessible
   cards rather than chat bubbles. The current roster is fixed at creation,
   votes and voter identities are visible to members (not anonymous), choices
@@ -126,11 +140,11 @@ security indicators are the node's own, verbatim.
   note-to-self in one leading accessible block. Keyboard buttons provide exact
   complete-set reorder and unpin; unavailable records remain visible for exact
   cleanup. Folder selection and label filtering run before pin/activity order.
-  The 8,192-pin bound, stable typed identity, restart/`KKR7` restoration, and
+  The 8,192-pin bound, stable typed identity, restart/`KKR10` restoration, and
   zero-network behavior come from the shared core rather than display names.
 - **Choose System, Light, or Dark appearance** at the gate or in the unlocked
   app. A non-sensitive local cache applies before first paint; after unlock the
-  sealed F5 `appearance.theme` value is authoritative and travels in `KKR7`.
+  sealed F5 `appearance.theme` value is authoritative and travels in `KKR10`.
   System follows live OS changes, semantic CSS roles meet the shared contrast
   targets, `prefers-contrast` and `prefers-reduced-motion` remain native, and
   delivery/security meaning always retains text, glyph, or accessible labels.
@@ -140,7 +154,7 @@ security indicators are the node's own, verbatim.
   clear-to-fallback, and quota usage. The shared core emits only 256×256 RGBA
   PNGs re-encoded without source metadata, enforces
   512 KiB/1,024-record/64 MiB limits, and safely falls
-  back after corrupt bytes. Icons travel only in `KKR7` or authenticated
+  back after corrupt bytes. Icons travel only in `KKR10` or authenticated
   own-device C2 sync, never URLs, peer sync,
   envelopes, capabilities, queues, notifications, or transports.
 - **Verify** contacts by safety number: identical digits and QR on both
@@ -175,7 +189,7 @@ Custom-icon acceptance consumes the shared B13 fixture through the same session
 surface the Tauri commands wrap: canonical local data URLs whose PNG omits
 source metadata, exact
 folder/note targets, bundled and selected-image paths, quota accounting,
-restart/`KKR7`, safe fallback, local events, and zero delivery work. Rust node
+restart/`KKR10`, safe fallback, local events, and zero delivery work. Rust node
 acceptance independently covers contact and group identities plus corrupt sealed
 legacy bytes.
 
@@ -216,22 +230,25 @@ targets cover every desktop platform (`.deb`, `.rpm`, AppImage, `.app`,
 `.dmg`, `.msi`, NSIS); Tauri builds only the targets native to the host OS
 and skips the rest.
 
-The `v0.3.0` prerelease is built in those formats on native Linux,
-macOS, and Windows runners with checksums. Future tag-driven candidates begin as
-drafts. Follow the [release runbook](../../docs/25-release-runbook.md); a
-successful build alone is not permission to publish or a claim that an unsigned
-package is production-ready.
+The `v0.3.0` prerelease was built in those formats on native Linux, macOS, and
+Windows runners with checksums. It predates the current evidence design. Future
+tag pushes create read-only validation artifacts, public builder records, a
+second controlled Linux measurement, an SBOM, and hosted attestations; they do
+not create a draft or access a signing credential. Follow the
+[release runbook](../../docs/25-release-runbook.md); a successful build alone
+is not permission to publish or a claim that an unsigned package is
+production-ready.
 
-## Packaging and signing (scaffold)
+## Packaging and signing boundary
 
 The package identifier is `is.andri.komms` and the current version is `0.3.0`,
 aligned with the Rust, Android, and iOS surfaces.
 
 The 0.3 Alpha desktop packages are not release-signed or notarized: macOS and
-Windows are unsigned, and the Linux package artifacts are unsigned. Production
-signing remains scaffold-only and no certificates or keys enter the tree. When
-they exist, Tauri picks
-credentials up from the environment at `cargo tauri build` time:
+Windows are unsigned, and the Linux package artifacts have no release-manifest
+signature. No production certificate or key enters the tree. Local Tauri
+packaging can read credentials from the environment when a maintainer
+deliberately exercises a test identity:
 
 - **macOS**: `APPLE_CERTIFICATE` / `APPLE_CERTIFICATE_PASSWORD` (base64
   Developer ID .p12) or `APPLE_SIGNING_IDENTITY`, plus `APPLE_ID` /
@@ -248,11 +265,17 @@ The icon set in `icons/` is generated from `icons/icon.png` with
 current source is 512×512; regenerate from a 1024×1024 master when one
 exists — macOS upscales the 512 source for its largest slot.
 
-An in-app updater is **intentionally absent**: update channels are part of
-the M6 reproducible-distribution work (see
-[08: Roadmap](../../docs/08-roadmap.md)), and an
-updater endpoint would be the kind of project-operated service the core
-must never depend on. Store/package-manager channels will carry updates.
+Production use requires the separate macOS, Windows, Linux-manifest, and
+release-manifest roles in
+[release security and recovery](../../docs/39-release-security-and-recovery.md).
+The hardware-backed Windows provider and Apple notarization role are not
+enrolled. Named-system signed install, upgrade, failed-upgrade recovery,
+rollback, and compatibility rows remain open.
+
+An in-app updater is **intentionally absent**. Direct desktop distribution uses
+the bounded manual signature-and-digest procedure until a safer authenticated
+channel is implemented and qualified; store or package-manager channels may be
+added only with separately scoped signing and rollback evidence.
 
 ## Security notes
 
@@ -283,6 +306,6 @@ must never depend on. Store/package-manager channels will carry updates.
   state. They never enter envelopes, DHT records, capabilities, analytics,
   notifications, or logs; navigation/filtering changes presentation only.
   Custom icons are likewise exact typed sealed local records, rendered only from
-  verified bounded data URLs. `KKR7` preserves them exactly and C2 can converge
+  verified bounded data URLs. `KKR10` preserves them exactly and C2 can converge
   them only between authorized owned devices; message pins and message labels
   are not implemented.

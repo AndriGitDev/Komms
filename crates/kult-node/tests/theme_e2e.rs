@@ -62,6 +62,11 @@ fn default_idempotency_restart_restore_and_zero_network_work() {
     let directory = tempfile::tempdir().unwrap();
     let database = directory.path().join("node.db");
     let mut node = Node::create(&database, b"pass", TEST_KDF, &mut rng).unwrap();
+    let recovery_path = directory.path().join("account-authority.kra");
+    let recovery_mnemonic = node
+        .export_account_recovery_authority(&recovery_path)
+        .unwrap();
+    let recovery_package = std::fs::read(&recovery_path).unwrap();
     let spy = Arc::new(SpyTransport::default());
     node.add_transport(spy.clone());
 
@@ -85,12 +90,15 @@ fn default_idempotency_restart_restore_and_zero_network_work() {
         .set_theme_preference(ThemePreference::Light, &mut rng)
         .unwrap());
     let (backup, mnemonic) = reopened.export_backup(1_800_000_000, &mut rng).unwrap();
-    assert_eq!(&backup[..4], b"KKR7");
+    assert_eq!(&backup[..4], b"KKRA");
 
-    let restored = Node::restore(
+    let restored = Node::restore_with_recovery_authority(
         &directory.path().join("restored.db"),
         &backup,
         &mnemonic,
+        &recovery_package,
+        &recovery_mnemonic,
+        1_800_000_000,
         b"restored",
         TEST_KDF,
         &mut rng,

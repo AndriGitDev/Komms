@@ -284,6 +284,17 @@ async fn group_ephemeral_fanout_uses_the_same_exact_tombstone_semantics() {
     settle(&mut alice, &mut bob, &mut rng, NOW + 1, 6).await;
     let group = alice.create_group("briefing", &[bob_id], &mut rng).unwrap();
     settle(&mut alice, &mut bob, &mut rng, NOW + 20, 5).await;
+    assert!(bob.groups().unwrap().iter().all(|value| value.id != group));
+    let invitation = bob
+        .group_invitations()
+        .unwrap()
+        .into_iter()
+        .find(|invitation| invitation.group == group)
+        .expect("group invitation");
+    bob.accept_group_invitation(&invitation.id, NOW + 30, &mut rng)
+        .unwrap();
+    alice.group_upgrade_security(&group, &mut rng).unwrap();
+    settle(&mut alice, &mut bob, &mut rng, NOW + 31, 4).await;
     assert!(bob.groups().unwrap().iter().any(|value| value.id == group));
 
     let id = alice

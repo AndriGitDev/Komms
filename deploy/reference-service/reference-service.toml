@@ -1,0 +1,44 @@
+version = 1
+libp2p_identity_file = "/run/komms-reference-keys/libp2p.key"
+tls_certificate_file = "/run/komms-reference-keys/tls.crt"
+tls_private_key_file = "/run/komms-reference-keys/tls.key"
+
+[dht]
+listen = [
+    "/ip4/0.0.0.0/tcp/4405",
+    "/ip4/0.0.0.0/udp/4405/quic-v1",
+]
+bootstrap = []
+max_records = 128
+max_value_bytes = 167772160
+record_ttl_seconds = 172800
+max_pending_incoming = 16
+max_pending_outgoing = 16
+max_established_incoming = 32
+max_established = 64
+max_established_per_peer = 2
+max_inbound_connections_per_minute = 4096
+max_inbound_connections_per_address_per_minute = 120
+max_inbound_rate_buckets = 8192
+
+[rendezvous]
+listen = "0.0.0.0:8443"
+health_listen = "127.0.0.1:8081"
+max_tls_connections = 256
+max_connections_per_minute = 120000
+max_connections_per_address_per_minute = 600
+max_ingress_rate_buckets = 16384
+tls_handshake_timeout_seconds = 5
+request_timeout_seconds = 5
+max_records = 16384
+max_memory_bytes = 100663296
+max_concurrent_requests = 256
+max_global_operations_per_minute = 120000
+max_global_bytes_per_minute = 536870912
+max_slot_operations_per_minute = 24
+max_slot_buckets = 65536
+max_client_operations_per_minute = 600
+max_client_buckets = 16384
+
+[runtime]
+shutdown_grace_seconds = 10

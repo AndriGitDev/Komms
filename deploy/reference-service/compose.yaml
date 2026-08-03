@@ -1,0 +1,61 @@
+name: komms-reference
+
+services:
+  reference-service:
+    image: ${REFERENCE_SERVICE_IMAGE:?set REFERENCE_SERVICE_IMAGE to an immutable digest}
+    build:
+      context: ../..
+      dockerfile: deploy/reference-service/Dockerfile
+      args:
+        KOMMS_SOURCE_REVISION: ${KOMMS_SOURCE_REVISION:-unbound-local-build}
+        SOURCE_DATE_EPOCH: ${SOURCE_DATE_EPOCH:-0}
+    restart: unless-stopped
+    read_only: true
+    user: "${REFERENCE_SERVICE_UID:-10002}:${REFERENCE_SERVICE_GID:-10002}"
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    init: true
+    pids_limit: 128
+    mem_limit: 512m
+    memswap_limit: 512m
+    mem_swappiness: 0
+    cpus: 2.0
+    ulimits:
+      core:
+        soft: 0
+        hard: 0
+      nofile:
+        soft: 4096
+        hard: 4096
+    ports:
+      - "${REFERENCE_DHT_PORT:-4405}:4405/tcp"
+      - "${REFERENCE_DHT_PORT:-4405}:4405/udp"
+      - "${REFERENCE_RENDEZVOUS_PORT:-8443}:8443/tcp"
+    tmpfs:
+      - /run/komms-reference:rw,noexec,nosuid,nodev,size=16m,uid=${REFERENCE_SERVICE_UID:-10002},gid=${REFERENCE_SERVICE_GID:-10002},mode=0700
+      - /tmp:rw,noexec,nosuid,nodev,size=16m,uid=${REFERENCE_SERVICE_UID:-10002},gid=${REFERENCE_SERVICE_GID:-10002},mode=0700
+    volumes:
+      - type: bind
+        source: ${REFERENCE_SERVICE_CONFIG:-./reference-service.toml}
+        target: /etc/komms-reference/config.toml
+        read_only: true
+      - type: bind
+        source: ${REFERENCE_SERVICE_KEYS_DIR:?set REFERENCE_SERVICE_KEYS_DIR}
+        target: /run/komms-reference-keys
+        read_only: true
+    logging:
+      driver: none
+    stop_grace_period: 15s
+    healthcheck:
+      test:
+        - CMD
+        - kult-reference-service
+        - probe
+        - --address
+        - 127.0.0.1:8081
+      interval: 30s
+      timeout: 3s
+      start_period: 10s
+      retries: 3

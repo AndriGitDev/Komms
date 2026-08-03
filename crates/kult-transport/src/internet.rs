@@ -6,10 +6,12 @@
 //! successful send honestly reports [`SendReceipt::AckedByNextHop`] — never
 //! end-to-end delivery (only encrypted receipts prove that).
 //!
-//! Contract compliance (docs/05-transports.md §1): the swarm identity is a
-//! transport-layer keypair generated fresh per instance — **never** the kult
-//! identity; peers are addressed by multiaddr hints; link encryption
-//! (QUIC-TLS / Noise) is additive, not load-bearing.
+//! Contract compliance (docs/05-transports.md §1): the swarm identity is
+//! always transport-only — **never** the kult identity. Endpoints generate a
+//! fresh runtime pseudonym; a mailbox service uses its separately persisted
+//! service key so published operator addresses survive restart. Peers are
+//! addressed by multiaddr hints; link encryption (QUIC-TLS / Noise) is
+//! additive, not load-bearing.
 //!
 //! The discovery plane (docs/05-transports.md §2) also lives here: a
 //! Kademlia DHT (`/komms/kad/1`) storing prekey-bundle records, exposed
@@ -21,12 +23,13 @@
 //! — nothing is hardcoded, and any reachable peer will do.
 //!
 //! Mailbox relays (docs/05-transports.md §2) ride a second request-response
-//! protocol (`/komms/mailbox/1`): any node started with
+//! protocol (`/komms/mailbox/2`): any node started with
 //! [`Libp2pTransport::with_mailbox`] serves store-and-forward for offline
 //! recipients, who register rotating delivery tokens as accept-filters and
 //! collect on reconnect ([`Libp2pTransport::mailbox_checkin`]). Senders
 //! reach a mailbox through [`DeliveryHint::Relay`] — a deposit the relay
-//! accepted is, honestly, [`SendReceipt::AckedByNextHop`] and nothing more.
+//! durably accepted is, honestly, [`SendReceipt::AckedByNextHop`] and nothing
+//! more. Collection leases remain at the relay until endpoint staging commits.
 //!
 //! NAT traversal (docs/05-transports.md §2) is the pinned trio:
 //! **AutoNAT** probes tell a node whether it is publicly dialable
@@ -47,8 +50,9 @@
 //! and the whole discovery plane (prekey publish/lookup) works with zero
 //! configured bootstrap peers and no internet at all.
 
-use std::collections::HashMap;
-use std::io::{self, IoSlice, IoSliceMut};
+use std::collections::{HashMap, HashSet};
+use std::fs::OpenOptions;
+use std::io::{self, IoSlice, IoSliceMut, Read, Write};
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
@@ -57,7 +61,7 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use futures::{AsyncRead, AsyncWrite, StreamExt};
 use libp2p::core::transport::ListenerId;
-use libp2p::kad::store::MemoryStore;
+use libp2p::kad::store::{MemoryStore, MemoryStoreConfig};
 use libp2p::kad::{self, GetRecordOk, Mode, QueryResult, Quorum, Record, RecordKey};
 use libp2p::multiaddr::Protocol;
 use libp2p::request_response::{self, ProtocolSupport};
@@ -71,14 +75,16 @@ use tokio::sync::{mpsc, oneshot, watch, Mutex as AsyncMutex};
 
 use kult_protocol::{Envelope, MAX_ENVELOPE_BYTES};
 
-use crate::mailbox::{
-    MailboxContents, MailboxRequest, MailboxResponse, MailboxStore, MAX_MAILBOX_CHECKIN_ENVELOPES,
-    MAX_MAILBOX_CHECKIN_TOKENS,
+use crate::mailbox::{MailboxRequest, MailboxResponse, MAX_MAILBOX_CHECKIN_TOKENS};
+use crate::mailbox_v2::{
+    MailboxDepositDisposition, MailboxV2Request, MailboxV2Response, MailboxV2Store,
+    MAILBOX_V2_PAGE_MAX_BYTES, MAILBOX_V2_PAGE_MAX_ROWS,
 };
 use crate::mdns::{self, DiscoveredPeer};
 use crate::{
-    CostClass, DeliveryHint, Discovery, LatencyClass, LinkProfile, MailboxConfig, Reachability,
-    Result, SendReceipt, Transport, TransportError,
+    CostClass, DeliveryHint, Discovery, DiscoveryNamespace, InboundReceipt, IngressClass,
+    LatencyClass, LinkProfile, MailboxMetrics, MailboxServiceConfig, Reachability,
+    ReceivedEnvelope, Result, SendReceipt, Transport, TransportError,
 };
 
 /// Poison recovery for the transport's shared-state mutexes. A panicking
@@ -129,10 +135,10 @@ const DIRECT_INBOX_MAX_ITEMS: usize = 256;
 /// maximal envelopes can grow the queue without bound.
 const DIRECT_INBOX_MAX_BYTES: usize = 8 * 1024 * 1024;
 /// One daemon lifecycle pass checks at most eight relays. Matching that
-/// aggregate of count-bounded v1 pages prevents honest relays from overflowing
+/// aggregate of count-bounded v2 pages prevents honest relays from overflowing
 /// the local collection queue before the node task drains it.
-const COLLECTED_INBOX_MAX_ITEMS: usize = 8 * MAX_MAILBOX_CHECKIN_ENVELOPES;
-const COLLECTED_INBOX_MAX_BYTES: usize = 16 * 1024 * 1024;
+const COLLECTED_INBOX_MAX_ITEMS: usize = 8 * MAILBOX_V2_PAGE_MAX_ROWS;
+const COLLECTED_INBOX_MAX_BYTES: usize = 8 * MAILBOX_V2_PAGE_MAX_BYTES;
 
 /// CBOR currently represents `Vec<u8>` as an integer array, so the carrier
 /// frame can take just over twice the encoded-envelope bytes.
@@ -145,8 +151,19 @@ const MAILBOX_CBOR_REQUEST_MAX_BYTES: u64 = 320 * 1024;
 /// representation; leave bounded framing overhead without retaining the
 /// library's 10 MiB default.
 const MAILBOX_CBOR_RESPONSE_MAX_BYTES: u64 = 5 * 1024 * 1024;
+/// Mailbox-v2 carries the same bounded token filter plus exact row-id
+/// acknowledgements and one envelope per deposit request.
+const MAILBOX_V2_CBOR_REQUEST_MAX_BYTES: u64 = crate::MAILBOX_V2_REQUEST_MAX_BYTES as u64;
+/// One 1 MiB raw leased page remains bounded under CBOR's byte-array
+/// representation and fixed row metadata.
+const MAILBOX_V2_CBOR_RESPONSE_MAX_BYTES: u64 = crate::MAILBOX_V2_RESPONSE_MAX_BYTES as u64;
 const ENVELOPE_MAX_CONCURRENT_STREAMS: usize = 16;
 const MAILBOX_MAX_CONCURRENT_STREAMS: usize = 8;
+/// Commands waiting for the single swarm owner. Backpressure reaches callers
+/// before connection, request, or response state can grow without bound.
+const COMMAND_QUEUE_MAX: usize = 256;
+/// Peer-directed operations retained across dialing and request timeouts.
+const MAX_OUTBOUND_OPERATIONS: usize = 128;
 const MAX_PENDING_INCOMING_CONNECTIONS: u32 = 32;
 const MAX_PENDING_OUTGOING_CONNECTIONS: u32 = 32;
 const MAX_ESTABLISHED_INCOMING_CONNECTIONS: u32 = 64;
@@ -164,7 +181,12 @@ const DHT_TIMEOUT: Duration = Duration::from_secs(60);
 /// Namespace prefix for prekey-bundle record keys, so kult records can never
 /// collide with (or be confused for) another protocol's records on a shared
 /// DHT.
-const RECORD_NAMESPACE: &[u8] = b"/kk/prekeys/1/";
+const RECORD_NAMESPACE_V1: &[u8] = b"/kk/prekeys/1/";
+const RECORD_NAMESPACE_V2: &[u8] = b"/kk/prekeys/2/";
+/// Bounded RAM cache. At the frozen v2 record size this is at most 288 MiB
+/// of value bodies plus map overhead; reference-service sizing is explicit.
+const DHT_MAX_RECORDS: usize = 256;
+const DHT_MAX_PACKET_BYTES: usize = kult_crypto::DISCOVERY_RECORD_SIZE + 64 * 1024;
 
 /// Per-envelope size cap for bridge-transit deposits: anything larger could
 /// never ride an airtime-budgeted link anyway (docs/05-transports.md §4.2
@@ -203,7 +225,8 @@ pub enum NatStatus {
 struct KultBehaviour {
     limits: connection_limits::Behaviour,
     envelopes: request_response::cbor::Behaviour<Vec<u8>, bool>,
-    mailbox: request_response::cbor::Behaviour<MailboxRequest, MailboxResponse>,
+    mailbox_v1: request_response::cbor::Behaviour<MailboxRequest, MailboxResponse>,
+    mailbox_v2: request_response::cbor::Behaviour<MailboxV2Request, MailboxV2Response>,
     kad: kad::Behaviour<MemoryStore>,
     identify: identify::Behaviour,
     autonat: autonat::Behaviour,
@@ -262,10 +285,12 @@ enum Cmd {
     PutRecord {
         key: RecordKey,
         value: Vec<u8>,
+        expires: Instant,
         done: oneshot::Sender<bool>,
     },
     GetRecord {
         key: RecordKey,
+        limits: DiscoveryLimits,
         done: oneshot::Sender<Vec<Vec<u8>>>,
     },
     /// Listen on a `/p2p-circuit` address (a relay reservation); resolves
@@ -286,12 +311,18 @@ enum Cmd {
         addr: Multiaddr,
         done: oneshot::Sender<bool>,
     },
+    /// Settle one direct inbound request after durable endpoint admission.
+    SettleInbound {
+        receipt: InboundReceipt,
+        accepted: bool,
+    },
 }
 
 /// In-flight mailbox requests awaiting their response.
 enum MailboxWaiter {
     Deposit(oneshot::Sender<HopOutcome>),
     Checkin(oneshot::Sender<Option<usize>>),
+    Ack,
 }
 
 impl MailboxWaiter {
@@ -304,8 +335,19 @@ impl MailboxWaiter {
             Self::Checkin(done) => {
                 let _ = done.send(None);
             }
+            Self::Ack => {}
         }
     }
+}
+
+/// One carrier response that may be settled only after endpoint admission.
+enum InboundSettlement {
+    Direct(request_response::ResponseChannel<bool>),
+    Mailbox {
+        peer: PeerId,
+        lease_id: [u8; 16],
+        row_id: [u8; 16],
+    },
 }
 
 /// In-flight DHT queries awaiting their final `OutboundQueryProgressed`.
@@ -313,8 +355,39 @@ enum QueryWaiter {
     Put(oneshot::Sender<bool>),
     Get {
         values: Vec<Vec<u8>>,
+        value_bytes: usize,
+        limits: DiscoveryLimits,
         done: oneshot::Sender<Vec<Vec<u8>>>,
     },
+}
+
+#[derive(Clone, Copy)]
+struct DiscoveryLimits {
+    candidates: usize,
+    bytes: usize,
+    value_bytes: usize,
+}
+
+impl DiscoveryLimits {
+    fn for_namespace(namespace: DiscoveryNamespace) -> Self {
+        match namespace {
+            DiscoveryNamespace::LegacyPrekeyV1 => {
+                let value_bytes = kult_crypto::MAX_DEVICE_AUTHORITY_BYTES
+                    + kult_crypto::MAX_PREKEY_BUNDLE_BYTES
+                    + 16 * 1024;
+                Self {
+                    candidates: kult_crypto::MAX_DISCOVERY_CANDIDATES,
+                    bytes: kult_crypto::MAX_DISCOVERY_CANDIDATES * value_bytes,
+                    value_bytes,
+                }
+            }
+            DiscoveryNamespace::ConnectV2 => Self {
+                candidates: kult_crypto::MAX_DISCOVERY_CANDIDATES,
+                bytes: kult_crypto::MAX_DISCOVERY_CANDIDATES * kult_crypto::DISCOVERY_RECORD_SIZE,
+                value_bytes: kult_crypto::DISCOVERY_RECORD_SIZE,
+            },
+        }
+    }
 }
 
 /// How to build a [`Libp2pTransport`] beyond its listen addresses.
@@ -322,7 +395,7 @@ enum QueryWaiter {
 pub struct TransportOptions {
     /// Serve bounded store-and-forward mailboxes for others
     /// (docs/05-transports.md §2).
-    pub mailbox: Option<MailboxConfig>,
+    pub mailbox: Option<MailboxServiceConfig>,
     /// Announce on, and discover peers from, the local network over mDNS
     /// (docs/05-transports.md §3). Discovered peers seed the Kademlia
     /// routing table, so LAN-only operation needs no bootstrap peers.
@@ -380,7 +453,7 @@ impl BridgeBuffer {
 /// Mailbox collection is locally initiated and bounded per response as well
 /// as across responses retained before the delivery engine drains this queue.
 struct InternetInbox {
-    queue: Vec<Envelope>,
+    queue: Vec<ReceivedEnvelope>,
     direct_items: usize,
     direct_bytes: usize,
     collected_items: usize,
@@ -399,7 +472,7 @@ impl InternetInbox {
     }
 
     /// Admit an unsolicited direct envelope or refuse it without mutation.
-    fn push_direct(&mut self, envelope: Envelope) -> bool {
+    fn push_direct(&mut self, envelope: Envelope, receipt: InboundReceipt) -> bool {
         let encoded_len = envelope.encoded_len();
         if encoded_len > MAX_ENVELOPE_BYTES {
             return false;
@@ -412,13 +485,17 @@ impl InternetInbox {
         }
         self.direct_items += 1;
         self.direct_bytes = next_bytes;
-        self.queue.push(envelope);
+        self.queue.push(ReceivedEnvelope {
+            envelope,
+            receipt: Some(receipt),
+            ingress: IngressClass::Direct,
+        });
         true
     }
 
     /// Add a solicited mailbox result without allowing repeated local
     /// check-ins to grow the shared receive queue without bound.
-    fn push_collected(&mut self, envelope: Envelope) -> bool {
+    fn push_collected(&mut self, envelope: Envelope, receipt: InboundReceipt) -> bool {
         let encoded_len = envelope.encoded_len();
         let Some(next_bytes) = self.collected_bytes.checked_add(encoded_len) else {
             return false;
@@ -430,11 +507,15 @@ impl InternetInbox {
         }
         self.collected_items += 1;
         self.collected_bytes = next_bytes;
-        self.queue.push(envelope);
+        self.queue.push(ReceivedEnvelope {
+            envelope,
+            receipt: Some(receipt),
+            ingress: IngressClass::Mailbox,
+        });
         true
     }
 
-    fn drain(&mut self) -> Vec<Envelope> {
+    fn drain(&mut self) -> Vec<ReceivedEnvelope> {
         self.direct_items = 0;
         self.direct_bytes = 0;
         self.collected_items = 0;
@@ -529,10 +610,10 @@ impl AsyncWrite for CallStream {
 
 /// Internet carrier: QUIC (primary) and TCP (fallback) via rust-libp2p.
 pub struct Libp2pTransport {
-    cmds: mpsc::UnboundedSender<Cmd>,
+    cmds: mpsc::Sender<Cmd>,
     inbox: Arc<Mutex<InternetInbox>>,
     shared: Arc<Shared>,
-    mailbox: Option<Arc<Mutex<MailboxStore>>>,
+    mailbox: Option<Arc<Mutex<MailboxV2Store>>>,
     bridge: Option<Arc<Mutex<BridgeBuffer>>>,
     call_control: AsyncMutex<libp2p_stream::Control>,
     call_inbox: AsyncMutex<mpsc::Receiver<CallStream>>,
@@ -543,8 +624,9 @@ impl Libp2pTransport {
     /// `/ip4/0.0.0.0/udp/0/quic-v1` and `/ip4/0.0.0.0/tcp/0`). Spawns the
     /// swarm onto the ambient tokio runtime; dropping the transport stops it.
     ///
-    /// The swarm keypair is generated fresh — a per-instance transport
-    /// pseudonym, deliberately unlinked to any kult identity.
+    /// The endpoint swarm keypair is fresh and unlinked to any kult identity.
+    /// A configured mailbox service instead opens its dedicated persistent
+    /// transport key so the service address remains valid across restart.
     pub async fn new(listen: &[&str]) -> Result<Self> {
         Self::with_options(listen, TransportOptions::default()).await
     }
@@ -552,7 +634,7 @@ impl Libp2pTransport {
     /// Like [`Libp2pTransport::new`], but this node also serves mailboxes
     /// (docs/05-transports.md §2): store-and-forward for offline recipients,
     /// bounded by `config`. Any ordinary node can volunteer.
-    pub async fn with_mailbox(listen: &[&str], config: MailboxConfig) -> Result<Self> {
+    pub async fn with_mailbox(listen: &[&str], config: MailboxServiceConfig) -> Result<Self> {
         Self::with_options(
             listen,
             TransportOptions {
@@ -570,12 +652,24 @@ impl Libp2pTransport {
             lan_discovery,
             bridge_deposits,
         } = options;
+        let transport_identity = mailbox
+            .as_ref()
+            .map(|config| load_or_create_service_identity(&config.transport_key_path))
+            .transpose()
+            .map_err(TransportError::Io)?
+            .unwrap_or_else(libp2p::identity::Keypair::generate_ed25519);
+        let mailbox = mailbox
+            .as_ref()
+            .map(MailboxV2Store::open)
+            .transpose()
+            .map_err(TransportError::Io)?
+            .map(|store| Arc::new(Mutex::new(store)));
         // Every muxer below must stay on `yamux::Config::default()`: the
         // default pins libp2p-yamux to the patched yamux 0.13 implementation.
         // The deprecated set_window_update_mode() API would silently switch
         // to the unpatched legacy 0.12 code (CVE-2026-32314 waiver in
         // deny.toml relies on it never being called).
-        let mut swarm = libp2p::SwarmBuilder::with_new_identity()
+        let mut swarm = libp2p::SwarmBuilder::with_existing_identity(transport_identity)
             .with_tokio()
             .with_tcp(
                 tcp::Config::default().nodelay(true),
@@ -597,14 +691,14 @@ impl Libp2pTransport {
                     request_response::Config::default()
                         .with_max_concurrent_streams(ENVELOPE_MAX_CONCURRENT_STREAMS),
                 );
-                let mailbox_codec = request_response::cbor::codec::Codec::<
+                let mailbox_v1_codec = request_response::cbor::codec::Codec::<
                     MailboxRequest,
                     MailboxResponse,
                 >::default()
                 .set_request_size_maximum(MAILBOX_CBOR_REQUEST_MAX_BYTES)
                 .set_response_size_maximum(MAILBOX_CBOR_RESPONSE_MAX_BYTES);
-                let mailbox = request_response::Behaviour::with_codec(
-                    mailbox_codec,
+                let mailbox_v1 = request_response::Behaviour::with_codec(
+                    mailbox_v1_codec,
                     [(
                         StreamProtocol::new("/komms/mailbox/1"),
                         ProtocolSupport::Full,
@@ -612,12 +706,36 @@ impl Libp2pTransport {
                     request_response::Config::default()
                         .with_max_concurrent_streams(MAILBOX_MAX_CONCURRENT_STREAMS),
                 );
-                let peer_id = key.public().to_peer_id();
-                let kad = kad::Behaviour::with_config(
-                    peer_id,
-                    MemoryStore::new(peer_id),
-                    kad::Config::new(StreamProtocol::new("/komms/kad/1")),
+                let mailbox_v2_codec = request_response::cbor::codec::Codec::<
+                    MailboxV2Request,
+                    MailboxV2Response,
+                >::default()
+                .set_request_size_maximum(MAILBOX_V2_CBOR_REQUEST_MAX_BYTES)
+                .set_response_size_maximum(MAILBOX_V2_CBOR_RESPONSE_MAX_BYTES);
+                let mailbox_v2 = request_response::Behaviour::with_codec(
+                    mailbox_v2_codec,
+                    [(
+                        StreamProtocol::new("/komms/mailbox/2"),
+                        ProtocolSupport::Full,
+                    )],
+                    request_response::Config::default()
+                        .with_max_concurrent_streams(MAILBOX_MAX_CONCURRENT_STREAMS),
                 );
+                let peer_id = key.public().to_peer_id();
+                let store = MemoryStore::with_config(
+                    peer_id,
+                    MemoryStoreConfig {
+                        max_records: DHT_MAX_RECORDS,
+                        // libp2p-kad interprets this field as an exclusive
+                        // upper bound, so exact frozen-v2 records need one
+                        // additional byte of headroom.
+                        max_value_bytes: kult_crypto::DISCOVERY_RECORD_SIZE + 1,
+                        ..MemoryStoreConfig::default()
+                    },
+                );
+                let mut kad_config = kad::Config::new(StreamProtocol::new("/komms/kad/1"));
+                kad_config.set_max_packet_size(DHT_MAX_PACKET_BYTES);
+                let kad = kad::Behaviour::with_config(peer_id, store, kad_config);
                 // Identify carries only the transport pseudonym and listen
                 // addresses — it is how DHT peers learn where to reach each
                 // other; the kult identity never appears on this layer.
@@ -657,7 +775,8 @@ impl Libp2pTransport {
                 Ok(KultBehaviour {
                     limits,
                     envelopes,
-                    mailbox,
+                    mailbox_v1,
+                    mailbox_v2,
                     kad,
                     identify,
                     autonat,
@@ -695,9 +814,8 @@ impl Libp2pTransport {
             lan_peers: Mutex::new(HashMap::new()),
         });
         let inbox = Arc::new(Mutex::new(InternetInbox::new()));
-        let mailbox = mailbox.map(|config| Arc::new(Mutex::new(MailboxStore::new(config))));
         let bridge = bridge_deposits.then(|| Arc::new(Mutex::new(BridgeBuffer::new())));
-        let (cmds, cmd_rx) = mpsc::unbounded_channel();
+        let (cmds, cmd_rx) = mpsc::channel(COMMAND_QUEUE_MAX);
         let (call_tx, call_rx) = mpsc::channel(CALL_INBOX_MAX);
         tokio::spawn(run_call_incoming(
             call_incoming,
@@ -753,7 +871,8 @@ impl Libp2pTransport {
         })
     }
 
-    /// This transport's peer id (the per-instance transport pseudonym).
+    /// This transport's peer id (an endpoint-runtime or dedicated service
+    /// pseudonym, never the account identity).
     pub fn local_peer_id(&self) -> String {
         self.shared.local_peer_id.to_string()
     }
@@ -791,6 +910,20 @@ impl Libp2pTransport {
             .collect()
     }
 
+    /// Number of transport pseudonyms with at least one live connection.
+    ///
+    /// This is a coarse local connectivity signal for familiar shell status
+    /// language. It is not presence, account identity, reachability, sent, or
+    /// delivered state.
+    pub fn connected_peer_count(&self) -> usize {
+        self.shared
+            .connections
+            .lock_unpoisoned()
+            .values()
+            .filter(|connections| !connections.is_empty())
+            .count()
+    }
+
     /// Wait (up to 5 s) for the first listen address to be bound. Convenience
     /// for tests and daemon startup.
     pub async fn wait_listen_addr(&self) -> Result<String> {
@@ -818,6 +951,7 @@ impl Libp2pTransport {
             let (done, rx) = oneshot::channel();
             self.cmds
                 .send(Cmd::Bootstrap { peer, addr, done })
+                .await
                 .map_err(|_| io_other("transport task stopped"))?;
             if let Ok(Ok(true)) = tokio::time::timeout(DHT_TIMEOUT, rx).await {
                 joined = true;
@@ -832,15 +966,15 @@ impl Libp2pTransport {
 
     /// Check in with a mailbox relay (a multiaddr with `/p2p/…`): register
     /// `tokens` as this node's accept-filters and collect one bounded page
-    /// queued under them into the normal receive path ([`Transport::recv`]).
-    /// Returns how many envelopes were collected in one bounded v1 page.
+    /// queued under them into the staged receive path ([`Transport::recv_staged`]).
+    /// Returns how many envelopes were collected in one bounded v2 lease page.
     /// Callers schedule later pages instead of looping in one lifecycle pass.
     /// Errors are honest: the relay was unreachable, or does not serve
     /// mailboxes.
     ///
     /// Build the token set with `kult-node`'s `mailbox_tokens` — every token
-    /// in it is scoped to the caller as recipient (ADR-0007), which is what
-    /// makes collect-and-delete safe on relays shared with one's peers.
+    /// in it is scoped to the caller as recipient (ADR-0007). Exact relay rows
+    /// are deleted only after the endpoint settles their durable staging.
     pub async fn mailbox_checkin(&self, relay: &str, tokens: &[[u8; 32]]) -> Result<usize> {
         if tokens.len() > MAX_MAILBOX_CHECKIN_TOKENS {
             return Err(io_other("mailbox check-in token limit exceeded"));
@@ -853,6 +987,7 @@ impl Libp2pTransport {
                 addr,
                 op: PendingOp::Checkin(tokens.to_vec(), done),
             })
+            .await
             .map_err(|_| io_other("transport task stopped"))?;
         match tokio::time::timeout(SEND_TIMEOUT, rx).await {
             Ok(Ok(Some(count))) => Ok(count),
@@ -862,14 +997,17 @@ impl Libp2pTransport {
         }
     }
 
-    /// What this node's mailbox service currently stores, per token — relay
-    /// operator transparency, and the hook for the M3 inspection test
-    /// ("relay observably stores only sealed envelopes"). `None` when this
-    /// node serves no mailboxes.
-    pub fn mailbox_contents(&self) -> Option<MailboxContents> {
-        self.mailbox
-            .as_ref()
-            .map(|store| store.lock_unpoisoned().contents())
+    /// Content-free aggregate mailbox-v2 capacity and lease health.
+    pub fn mailbox_metrics(&self) -> Option<MailboxMetrics> {
+        self.mailbox.as_ref().and_then(|store| {
+            store
+                .lock_unpoisoned()
+                .metrics(unix_now())
+                .map_err(|_| {
+                    tracing::error!("mailbox metrics failed");
+                })
+                .ok()
+        })
     }
 
     /// This node's NAT reachability as measured by AutoNAT dial-back probes.
@@ -880,6 +1018,7 @@ impl Libp2pTransport {
         let (done, rx) = oneshot::channel();
         self.cmds
             .send(Cmd::NatStatus { done })
+            .await
             .map_err(|_| io_other("transport task stopped"))?;
         rx.await.map_err(|_| io_other("transport task stopped"))
     }
@@ -901,6 +1040,7 @@ impl Libp2pTransport {
                 addr: addr.with(Protocol::P2pCircuit),
                 done,
             })
+            .await
             .map_err(|_| io_other("transport task stopped"))?;
         match tokio::time::timeout(SEND_TIMEOUT, rx).await {
             Ok(Ok(Some(circuit))) => Ok(with_peer_id(&circuit, self.shared.local_peer_id)),
@@ -931,6 +1071,7 @@ impl Libp2pTransport {
         let (done, rx) = oneshot::channel();
         self.cmds
             .send(Cmd::PrepareCall { peer, addr, done })
+            .await
             .map_err(|_| io_other("transport task stopped"))?;
         match tokio::time::timeout(CALL_CONNECT_TIMEOUT, rx).await {
             Ok(Ok(true)) => {}
@@ -990,14 +1131,38 @@ impl Libp2pTransport {
 
 #[async_trait]
 impl Discovery for Libp2pTransport {
-    async fn publish(&self, key: [u8; 32], value: Vec<u8>) -> Result<()> {
+    async fn publish(
+        &self,
+        namespace: DiscoveryNamespace,
+        key: [u8; 32],
+        value: Vec<u8>,
+        expires_at: u64,
+    ) -> Result<()> {
+        let limits = DiscoveryLimits::for_namespace(namespace);
+        if value.is_empty() || value.len() > limits.value_bytes {
+            return Err(io_other("DHT record exceeds its namespace bound"));
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(io_other)?
+            .as_secs();
+        // The fixed publication window always includes epoch e-1. Past its
+        // clock-grace tail that record is intentionally unusable, but the
+        // publisher still performs the same six bounded puts so timing and
+        // behavior do not reveal its local clock position within the week.
+        let ttl = expires_at.saturating_sub(now).max(1);
+        let expires = Instant::now()
+            .checked_add(Duration::from_secs(ttl))
+            .ok_or_else(|| io_other("DHT record expiry is out of range"))?;
         let (done, rx) = oneshot::channel();
         self.cmds
             .send(Cmd::PutRecord {
-                key: record_key(&key),
+                key: record_key(namespace, &key),
                 value,
+                expires,
                 done,
             })
+            .await
             .map_err(|_| io_other("transport task stopped"))?;
         match tokio::time::timeout(DHT_TIMEOUT, rx).await {
             Ok(Ok(true)) => Ok(()),
@@ -1006,13 +1171,15 @@ impl Discovery for Libp2pTransport {
         }
     }
 
-    async fn lookup(&self, key: [u8; 32]) -> Result<Vec<Vec<u8>>> {
+    async fn lookup(&self, namespace: DiscoveryNamespace, key: [u8; 32]) -> Result<Vec<Vec<u8>>> {
         let (done, rx) = oneshot::channel();
         self.cmds
             .send(Cmd::GetRecord {
-                key: record_key(&key),
+                key: record_key(namespace, &key),
+                limits: DiscoveryLimits::for_namespace(namespace),
                 done,
             })
+            .await
             .map_err(|_| io_other("transport task stopped"))?;
         match tokio::time::timeout(DHT_TIMEOUT, rx).await {
             Ok(Ok(values)) => Ok(values),
@@ -1023,9 +1190,13 @@ impl Discovery for Libp2pTransport {
 }
 
 /// Namespaced Kademlia key for a 32-byte discovery key.
-fn record_key(key: &[u8; 32]) -> RecordKey {
-    let mut bytes = Vec::with_capacity(RECORD_NAMESPACE.len() + key.len());
-    bytes.extend_from_slice(RECORD_NAMESPACE);
+fn record_key(namespace: DiscoveryNamespace, key: &[u8; 32]) -> RecordKey {
+    let prefix = match namespace {
+        DiscoveryNamespace::LegacyPrekeyV1 => RECORD_NAMESPACE_V1,
+        DiscoveryNamespace::ConnectV2 => RECORD_NAMESPACE_V2,
+    };
+    let mut bytes = Vec::with_capacity(prefix.len() + key.len());
+    bytes.extend_from_slice(prefix);
     bytes.extend_from_slice(key);
     RecordKey::from(bytes)
 }
@@ -1046,7 +1217,7 @@ fn with_peer_id(addr: &Multiaddr, id: PeerId) -> String {
 /// A usable address is a multiaddr carrying an explicit `/p2p/<peer-id>`.
 /// The **last** `/p2p` component is the target: a circuit address
 /// (`…/p2p/<relay>/p2p-circuit/p2p/<peer>`) names the relay first.
-fn parse_addr(s: &str) -> Option<(Multiaddr, PeerId)> {
+pub(crate) fn parse_addr(s: &str) -> Option<(Multiaddr, PeerId)> {
     let addr: Multiaddr = s.parse().ok()?;
     let peer = addr
         .iter()
@@ -1113,13 +1284,111 @@ fn unix_now() -> u64 {
         .unwrap_or(0)
 }
 
+pub(crate) fn load_or_create_service_identity(
+    path: &std::path::Path,
+) -> io::Result<libp2p::identity::Keypair> {
+    const MAX_KEY_BYTES: usize = 1024;
+
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink() || !metadata.is_file() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "mailbox transport key is not a regular file",
+                ));
+            }
+            let mut options = OpenOptions::new();
+            options.read(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.custom_flags(libc::O_NOFOLLOW);
+            }
+            let file = options.open(path)?;
+            if !file.metadata()?.is_file() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "mailbox transport key is not a regular file",
+                ));
+            }
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                if file.metadata()?.permissions().mode() & 0o077 != 0 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::PermissionDenied,
+                        "mailbox transport key must be owner-only",
+                    ));
+                }
+            }
+            let mut bytes = Vec::with_capacity(MAX_KEY_BYTES);
+            file.take((MAX_KEY_BYTES + 1) as u64)
+                .read_to_end(&mut bytes)?;
+            if bytes.is_empty() || bytes.len() > MAX_KEY_BYTES {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "mailbox transport key has the wrong length",
+                ));
+            }
+            let key = libp2p::identity::Keypair::from_protobuf_encoding(&bytes)
+                .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "mailbox transport key"))?;
+            if key.key_type() != libp2p::identity::KeyType::Ed25519 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "mailbox transport key has the wrong type",
+                ));
+            }
+            Ok(key)
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            let key = libp2p::identity::Keypair::generate_ed25519();
+            let encoded = key
+                .to_protobuf_encoding()
+                .map_err(|_| io::Error::other("mailbox transport key encoding"))?;
+            let mut options = OpenOptions::new();
+            options.create_new(true).write(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+            }
+            let mut file = options.open(path)?;
+            if !file.metadata()?.is_file() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "mailbox transport key is not a regular file",
+                ));
+            }
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+            }
+            file.write_all(&encoded)?;
+            file.sync_all()?;
+            #[cfg(unix)]
+            if let Some(parent) = path.parent() {
+                std::fs::File::open(parent)?.sync_all()?;
+            }
+            Ok(key)
+        }
+        Err(error) => Err(error),
+    }
+}
+
 #[async_trait]
 impl Transport for Libp2pTransport {
     fn profile(&self) -> LinkProfile {
         LinkProfile {
-            // Practical ceiling per docs/05-transports.md §6; the codec caps
-            // requests well above this.
-            mtu: 64 * 1024,
+            // Direct-envelope v2 admits one complete bounded envelope before
+            // acknowledging it. Advertising the protocol ceiling keeps a
+            // 64 KiB padded attachment record plus ratchet overhead atomic
+            // instead of producing memory-only fragments that must be
+            // refused by durable endpoint admission.
+            mtu: MAX_ENVELOPE_BYTES,
             latency: LatencyClass::Millis,
             cost: CostClass::Metered,
             broadcast: false,
@@ -1158,7 +1427,13 @@ impl Transport for Libp2pTransport {
             };
             let accepted = store
                 .lock_unpoisoned()
-                .deposit(envelope.token, encoded, unix_now());
+                .deposit(
+                    &self.shared.local_peer_id.to_bytes(),
+                    envelope,
+                    encoded,
+                    unix_now(),
+                )
+                .map_err(TransportError::Io)?;
             return if accepted {
                 Ok(SendReceipt::AckedByNextHop)
             } else {
@@ -1173,6 +1448,7 @@ impl Transport for Libp2pTransport {
         };
         self.cmds
             .send(Cmd::Op { peer, addr, op })
+            .await
             .map_err(|_| io_other("transport task stopped"))?;
         match tokio::time::timeout(SEND_TIMEOUT, ack_rx).await {
             // Only explicit acceptance means the peer or mailbox relay
@@ -1186,7 +1462,30 @@ impl Transport for Libp2pTransport {
     }
 
     async fn recv(&self) -> Result<Vec<Envelope>> {
+        let received = self.inbox.lock_unpoisoned().drain();
+        let mut envelopes = Vec::with_capacity(received.len());
+        for item in received {
+            if let Some(receipt) = item.receipt {
+                // Ordinary `recv` has no durable endpoint boundary. Refuse
+                // custody honestly while still returning the copy; callers
+                // that can commit or completely consume it use
+                // `recv_staged` and settle the exact handle themselves.
+                self.settle_recv(receipt, false).await?;
+            }
+            envelopes.push(item.envelope);
+        }
+        Ok(envelopes)
+    }
+
+    async fn recv_staged(&self) -> Result<Vec<ReceivedEnvelope>> {
         Ok(self.inbox.lock_unpoisoned().drain())
+    }
+
+    async fn settle_recv(&self, receipt: InboundReceipt, accepted: bool) -> Result<()> {
+        self.cmds
+            .send(Cmd::SettleInbound { receipt, accepted })
+            .await
+            .map_err(|_| io_other("transport task stopped"))
     }
 
     async fn recv_transit(&self) -> Result<Vec<Envelope>> {
@@ -1221,11 +1520,43 @@ impl Transport for Libp2pTransport {
 /// Requests parked per peer, then issued the moment its connection is up.
 type Parked = HashMap<PeerId, Vec<PendingOp>>;
 
+fn outbound_operation_count(
+    pending: &Parked,
+    inflight: &HashMap<request_response::OutboundRequestId, oneshot::Sender<HopOutcome>>,
+    mailbox: &HashMap<request_response::OutboundRequestId, MailboxWaiter>,
+) -> usize {
+    pending.values().fold(
+        inflight.len().saturating_add(mailbox.len()),
+        |total, ops| total.saturating_add(ops.len()),
+    )
+}
+
+fn valid_mailbox_lease_response(
+    serving: bool,
+    lease_id: [u8; 16],
+    expires_at: u64,
+    rows: &[crate::mailbox_v2::MailboxV2LeasedRow],
+) -> bool {
+    let raw_bytes = rows
+        .iter()
+        .try_fold(0usize, |total, row| total.checked_add(row.envelope.len()));
+    let distinct_rows = rows.iter().map(|row| row.row_id).collect::<HashSet<_>>();
+    rows.len() <= MAILBOX_V2_PAGE_MAX_ROWS
+        && raw_bytes.is_some_and(|bytes| bytes <= MAILBOX_V2_PAGE_MAX_BYTES)
+        && distinct_rows.len() == rows.len()
+        && rows.iter().all(|row| row.row_id != [0u8; 16])
+        && if serving {
+            lease_id != [0u8; 16] && expires_at != 0
+        } else {
+            lease_id == [0u8; 16] && expires_at == 0 && rows.is_empty()
+        }
+}
+
 /// The local store-and-forward services the swarm task serves, both
 /// optional: the mailbox store (docs/05-transports.md §2) and the
 /// bridge-transit buffer (ADR-0009).
 struct Services {
-    mailbox: Option<Arc<Mutex<MailboxStore>>>,
+    mailbox: Option<Arc<Mutex<MailboxV2Store>>>,
     bridge: Option<Arc<Mutex<BridgeBuffer>>>,
 }
 
@@ -1246,15 +1577,15 @@ fn issue_op(
         PendingOp::Deposit(bytes, ack) => {
             let id = swarm
                 .behaviour_mut()
-                .mailbox
-                .send_request(peer, MailboxRequest::Deposit { envelope: bytes });
+                .mailbox_v2
+                .send_request(peer, MailboxV2Request::Deposit { envelope: bytes });
             mb_inflight.insert(id, MailboxWaiter::Deposit(ack));
         }
         PendingOp::Checkin(tokens, done) => {
             let id = swarm
                 .behaviour_mut()
-                .mailbox
-                .send_request(peer, MailboxRequest::Checkin { tokens });
+                .mailbox_v2
+                .send_request(peer, MailboxV2Request::Lease { tokens });
             mb_inflight.insert(id, MailboxWaiter::Checkin(done));
         }
     }
@@ -1312,7 +1643,7 @@ fn dial_call(
 /// connection state into [`Shared`].
 async fn run_swarm(
     mut swarm: libp2p::Swarm<KultBehaviour>,
-    mut cmd_rx: mpsc::UnboundedReceiver<Cmd>,
+    mut cmd_rx: mpsc::Receiver<Cmd>,
     inbox: Arc<Mutex<InternetInbox>>,
     shared: Arc<Shared>,
     services: Services,
@@ -1340,6 +1671,8 @@ async fn run_swarm(
     let mut call_waiters: HashMap<PeerId, Vec<oneshot::Sender<bool>>> = HashMap::new();
     let mut call_targets: HashMap<PeerId, Multiaddr> = HashMap::new();
     let mut call_dials: HashMap<ConnectionId, PeerId> = HashMap::new();
+    let mut inbound_responses: HashMap<u64, InboundSettlement> = HashMap::new();
+    let mut next_inbound_receipt = 1u64;
 
     loop {
         tokio::select! {
@@ -1404,8 +1737,9 @@ async fn run_swarm(
                         }
                     }
                 }
-                Some(Cmd::PutRecord { key, value, done }) => {
-                    let record = Record::new(key, value);
+                Some(Cmd::PutRecord { key, value, expires, done }) => {
+                    let mut record = Record::new(key, value);
+                    record.expires = Some(expires);
                     match swarm.behaviour_mut().kad.put_record(record, Quorum::One) {
                         Ok(id) => {
                             queries.insert(id, QueryWaiter::Put(done));
@@ -1415,9 +1749,17 @@ async fn run_swarm(
                         }
                     }
                 }
-                Some(Cmd::GetRecord { key, done }) => {
+                Some(Cmd::GetRecord { key, limits, done }) => {
                     let id = swarm.behaviour_mut().kad.get_record(key);
-                    queries.insert(id, QueryWaiter::Get { values: Vec::new(), done });
+                    queries.insert(
+                        id,
+                        QueryWaiter::Get {
+                            values: Vec::new(),
+                            value_bytes: 0,
+                            limits,
+                            done,
+                        },
+                    );
                 }
                 Some(Cmd::Reserve { addr, done }) => {
                     // The relay client transport dials the relay and asks
@@ -1477,7 +1819,42 @@ async fn run_swarm(
                         );
                     }
                 }
+                Some(Cmd::SettleInbound { receipt, accepted }) => {
+                    match inbound_responses.remove(&receipt.value()) {
+                        Some(InboundSettlement::Direct(channel)) => {
+                            let _ = swarm
+                                .behaviour_mut()
+                                .envelopes
+                                .send_response(channel, accepted);
+                        }
+                        Some(InboundSettlement::Mailbox {
+                            peer,
+                            lease_id,
+                            row_id,
+                        }) if accepted
+                            && swarm.is_connected(&peer)
+                            && outbound_operation_count(&pending, &inflight, &mb_inflight)
+                                < MAX_OUTBOUND_OPERATIONS =>
+                        {
+                            let request_id = swarm.behaviour_mut().mailbox_v2.send_request(
+                                &peer,
+                                MailboxV2Request::AckLease {
+                                    lease_id,
+                                    row_ids: vec![row_id],
+                                },
+                            );
+                            mb_inflight.insert(request_id, MailboxWaiter::Ack);
+                        }
+                        Some(InboundSettlement::Mailbox { .. }) | None => {}
+                    }
+                }
                 Some(Cmd::Op { peer, addr, op }) => {
+                    if outbound_operation_count(&pending, &inflight, &mb_inflight)
+                        >= MAX_OUTBOUND_OPERATIONS
+                    {
+                        op.fail();
+                        continue;
+                    }
                     if swarm.is_connected(&peer) {
                         issue_op(&mut swarm, &mut inflight, &mut mb_inflight, &peer, op);
                     } else {
@@ -1621,17 +1998,39 @@ async fn run_swarm(
                 SwarmEvent::Behaviour(KultBehaviourEvent::Envelopes(ev)) => match ev {
                     request_response::Event::Message { message, .. } => match message {
                         request_response::Message::Request { request, channel, .. } => {
-                            // Decode enforces the project wire cap before it
-                            // allocates the envelope body. A valid request is
-                            // acknowledged only when the bounded inbox kept
-                            // it; malformed or overflow work is an explicit
-                            // refusal that the sender can retry elsewhere.
-                            let accepted = Envelope::decode(&request)
-                                .is_ok_and(|env| inbox.lock_unpoisoned().push_direct(env));
-                            let _ = swarm
-                                .behaviour_mut()
-                                .envelopes
-                                .send_response(channel, accepted);
+                            // Decode and RAM budgets are only a prefilter. A
+                            // valid direct request remains unanswered until
+                            // the endpoint node durably stages or completely
+                            // consumes it.
+                            match Envelope::decode(&request) {
+                                Ok(envelope)
+                                    if inbound_responses.len() < DIRECT_INBOX_MAX_ITEMS =>
+                                {
+                                    let receipt = InboundReceipt::new(next_inbound_receipt);
+                                    next_inbound_receipt =
+                                        next_inbound_receipt.wrapping_add(1).max(1);
+                                    if inbox
+                                        .lock_unpoisoned()
+                                        .push_direct(envelope, receipt)
+                                    {
+                                        inbound_responses.insert(
+                                            receipt.value(),
+                                            InboundSettlement::Direct(channel),
+                                        );
+                                    } else {
+                                        let _ = swarm
+                                            .behaviour_mut()
+                                            .envelopes
+                                            .send_response(channel, false);
+                                    }
+                                }
+                                Ok(_) | Err(_) => {
+                                    let _ = swarm
+                                        .behaviour_mut()
+                                        .envelopes
+                                        .send_response(channel, false);
+                                }
+                            }
                         }
                         request_response::Message::Response {
                             request_id,
@@ -1653,79 +2052,187 @@ async fn run_swarm(
                     }
                     _ => {}
                 },
-                SwarmEvent::Behaviour(KultBehaviourEvent::Mailbox(ev)) => match ev {
-                    request_response::Event::Message { message, .. } => match message {
+                SwarmEvent::Behaviour(KultBehaviourEvent::MailboxV1(
+                    request_response::Event::Message { peer, message, .. },
+                )) => match message {
                         request_response::Message::Request { request, channel, .. } => {
                             let response = match (request, mailbox) {
-                                // Serving or bridging: deposits are validated
-                                // as sealed envelopes (a mailbox stores
-                                // nothing else) and filed under their
-                                // delivery token; with bridging enabled, a
-                                // token registered nowhere locally goes to
-                                // the bounded transit buffer for the mesh
-                                // side instead of being refused (ADR-0009).
-                                (MailboxRequest::Deposit { envelope }, store) => {
-                                    let accepted = match Envelope::decode(&envelope) {
-                                        Ok(env) => {
-                                            let now = unix_now();
-                                            let mut store =
-                                                store.as_ref().map(|s| s.lock_unpoisoned());
-                                            // A *registered* token's mail
-                                            // belongs to a libp2p collector:
-                                            // it never diverts to the mesh,
-                                            // even when its queue refuses.
-                                            let registered = store
-                                                .as_mut()
-                                                .is_some_and(|s| s.is_registered(&env.token, now));
-                                            if registered {
-                                                store
-                                                    .as_mut()
-                                                    .expect("registered implies serving")
-                                                    .deposit(env.token, envelope, now)
-                                            } else {
-                                                bridge.as_ref().is_some_and(|buffer| {
-                                                    buffer
-                                                        .lock_unpoisoned()
-                                                        .push(env, envelope.len(), now)
-                                                })
-                                            }
-                                        }
-                                        Err(_) => false,
-                                    };
-                                    tracing::debug!(accepted, "mailbox deposit");
+                                (
+                                    MailboxRequest::Deposit { envelope },
+                                    Some(store),
+                                ) if store.lock_unpoisoned().allow_v1_compat() => {
+                                    let accepted = Envelope::decode(&envelope)
+                                        .ok()
+                                        .and_then(|env| {
+                                            store
+                                                .lock_unpoisoned()
+                                                .deposit(
+                                                    &peer.to_bytes(),
+                                                    &env,
+                                                    envelope,
+                                                    unix_now(),
+                                                )
+                                                .ok()
+                                        })
+                                        .unwrap_or(false);
                                     MailboxResponse::Deposit { accepted }
                                 }
-                                (MailboxRequest::Checkin { tokens }, Some(store))
-                                    if tokens.len() <= MAX_MAILBOX_CHECKIN_TOKENS =>
+                                (
+                                    MailboxRequest::Checkin { tokens },
+                                    Some(store),
+                                ) if store.lock_unpoisoned().allow_v1_compat() =>
                                 {
+                                    // Explicit compatibility only: v1 has
+                                    // no endpoint acknowledgement, so this
+                                    // intentionally retains its documented
+                                    // delete-before-response risk.
+                                    let mut store = store.lock_unpoisoned();
+                                    let page = store
+                                        .lease(&peer.to_bytes(), &tokens, unix_now())
+                                        .ok()
+                                        .flatten();
+                                    let envelopes = page
+                                        .as_ref()
+                                        .map(|page| {
+                                            page.rows
+                                                .iter()
+                                                .map(|row| row.envelope.clone())
+                                                .collect::<Vec<_>>()
+                                        })
+                                        .unwrap_or_default();
+                                    if let Some(page) = page {
+                                        let row_ids: Vec<[u8; 16]> =
+                                            page.rows.iter().map(|row| row.row_id).collect();
+                                        if !row_ids.is_empty() {
+                                            let _ = store.ack(
+                                                &peer.to_bytes(),
+                                                page.lease_id,
+                                                &row_ids,
+                                                unix_now(),
+                                            );
+                                        }
+                                    }
                                     MailboxResponse::Checkin {
                                         serving: true,
-                                        envelopes: store
-                                            .lock_unpoisoned()
-                                            .checkin(&tokens, unix_now()),
+                                        envelopes,
                                     }
                                 }
-                                (MailboxRequest::Checkin { .. }, Some(_)) => {
-                                    MailboxResponse::Checkin {
-                                        serving: false,
-                                        envelopes: Vec::new(),
-                                    }
+                                (MailboxRequest::Deposit { .. }, _) => {
+                                    MailboxResponse::Deposit { accepted: false }
                                 }
-                                // Not serving: honest refusals.
-                                (MailboxRequest::Checkin { .. }, None) => {
+                                (MailboxRequest::Checkin { .. }, _) => {
                                     MailboxResponse::Checkin {
                                         serving: false,
                                         envelopes: Vec::new(),
                                     }
                                 }
                             };
-                            let _ = swarm.behaviour_mut().mailbox.send_response(channel, response);
+                            let _ = swarm
+                                .behaviour_mut()
+                                .mailbox_v1
+                                .send_response(channel, response);
+                        }
+                        request_response::Message::Response { .. } => {}
+                },
+                SwarmEvent::Behaviour(KultBehaviourEvent::MailboxV1(_)) => {}
+                SwarmEvent::Behaviour(KultBehaviourEvent::MailboxV2(ev)) => match ev {
+                    request_response::Event::Message { peer, message, .. } => match message {
+                        request_response::Message::Request { request, channel, .. } => {
+                            let response = match request {
+                                MailboxV2Request::Deposit { envelope } => {
+                                    let accepted = match Envelope::decode(&envelope) {
+                                        Ok(env) => {
+                                            let now = unix_now();
+                                            let disposition = mailbox.as_ref().map(|store| {
+                                                store.lock_unpoisoned().deposit_disposition(
+                                                    &peer.to_bytes(),
+                                                    &env,
+                                                    envelope.clone(),
+                                                    now,
+                                                )
+                                            });
+                                            match disposition {
+                                                Some(Ok(MailboxDepositDisposition::Accepted)) => {
+                                                    true
+                                                }
+                                                Some(Ok(
+                                                    MailboxDepositDisposition::Unregistered,
+                                                ))
+                                                | None => {
+                                                    if let Some(buffer) = bridge.as_ref() {
+                                                        let _ = buffer.lock_unpoisoned().push(
+                                                            env,
+                                                            envelope.len(),
+                                                            now,
+                                                        );
+                                                    }
+                                                    false
+                                                }
+                                                Some(Ok(MailboxDepositDisposition::Refused))
+                                                | Some(Err(_)) => false,
+                                            }
+                                        }
+                                        Err(_) => {
+                                            if let Some(store) = mailbox.as_ref() {
+                                                let _ = store
+                                                    .lock_unpoisoned()
+                                                    .refuse_deposit_request(
+                                                        &peer.to_bytes(),
+                                                        unix_now(),
+                                                    );
+                                            }
+                                            false
+                                        }
+                                    };
+                                    MailboxV2Response::Deposit { accepted }
+                                }
+                                MailboxV2Request::Lease { tokens } => {
+                                    match mailbox.as_ref().and_then(|store| {
+                                        store
+                                            .lock_unpoisoned()
+                                            .lease(&peer.to_bytes(), &tokens, unix_now())
+                                            .ok()
+                                            .flatten()
+                                    }) {
+                                        Some(page) => MailboxV2Response::Lease {
+                                            serving: true,
+                                            lease_id: page.lease_id,
+                                            expires_at: page.expires_at,
+                                            rows: page.rows,
+                                        },
+                                        None => MailboxV2Response::Lease {
+                                            serving: false,
+                                            lease_id: [0u8; 16],
+                                            expires_at: 0,
+                                            rows: Vec::new(),
+                                        },
+                                    }
+                                }
+                                MailboxV2Request::AckLease { lease_id, row_ids } => {
+                                    let accepted = mailbox.as_ref().is_some_and(|store| {
+                                        store
+                                            .lock_unpoisoned()
+                                            .ack(
+                                                &peer.to_bytes(),
+                                                lease_id,
+                                                &row_ids,
+                                                unix_now(),
+                                            )
+                                            .unwrap_or(false)
+                                    });
+                                    MailboxV2Response::AckLease { accepted }
+                                }
+                            };
+                            let _ = swarm
+                                .behaviour_mut()
+                                .mailbox_v2
+                                .send_response(channel, response);
                         }
                         request_response::Message::Response { request_id, response } => {
                             match (mb_inflight.remove(&request_id), response) {
                                 (
                                     Some(MailboxWaiter::Deposit(ack)),
-                                    MailboxResponse::Deposit { accepted },
+                                    MailboxV2Response::Deposit { accepted },
                                 ) => {
                                     let _ = ack.send(if accepted {
                                         HopOutcome::Accepted
@@ -1735,38 +2242,52 @@ async fn run_swarm(
                                 }
                                 (
                                     Some(MailboxWaiter::Checkin(done)),
-                                    MailboxResponse::Checkin { serving, envelopes },
+                                    MailboxV2Response::Lease {
+                                        serving,
+                                        lease_id,
+                                        expires_at,
+                                        rows,
+                                    },
                                 ) => {
-                                    // Collected mail joins the normal receive
-                                    // path; parse failures are dropped, as on
-                                    // any link.
-                                    let mut count = 0;
-                                    let mut admitted_all = true;
+                                    if !valid_mailbox_lease_response(
+                                        serving, lease_id, expires_at, &rows,
+                                    ) {
+                                        let _ = done.send(None);
+                                        continue;
+                                    }
+                                    let mut count = 0usize;
                                     let mut inbox = inbox.lock_unpoisoned();
-                                    for bytes in envelopes {
-                                        match Envelope::decode(&bytes) {
-                                            Ok(env) => {
-                                                if inbox.push_collected(env) {
-                                                    count += 1;
-                                                } else {
-                                                    admitted_all = false;
-                                                    tracing::warn!(
-                                                        "mailbox-v1 page was not fully admitted"
-                                                    );
-                                                }
-                                            }
-                                            Err(_) => {
-                                                admitted_all = false;
-                                                tracing::warn!(
-                                                    "mailbox-v1 page was not fully admitted"
-                                                );
-                                            }
+                                    for row in rows {
+                                        let Ok(envelope) = Envelope::decode(&row.envelope) else {
+                                            continue;
+                                        };
+                                        if inbound_responses.len()
+                                            >= DIRECT_INBOX_MAX_ITEMS + COLLECTED_INBOX_MAX_ITEMS
+                                        {
+                                            break;
+                                        }
+                                        let receipt =
+                                            InboundReceipt::new(next_inbound_receipt);
+                                        next_inbound_receipt =
+                                            next_inbound_receipt.wrapping_add(1).max(1);
+                                        if inbox.push_collected(envelope, receipt) {
+                                            inbound_responses.insert(
+                                                receipt.value(),
+                                                InboundSettlement::Mailbox {
+                                                    peer,
+                                                    lease_id,
+                                                    row_id: row.row_id,
+                                                },
+                                            );
+                                            count += 1;
                                         }
                                     }
-                                    let _ = done.send((serving && admitted_all).then_some(count));
+                                    let _ = done.send(serving.then_some(count));
                                 }
-                                // A response of the wrong shape: fail the
-                                // waiter rather than hang its caller.
+                                (
+                                    Some(MailboxWaiter::Ack),
+                                    MailboxV2Response::AckLease { .. },
+                                ) => {}
                                 (Some(waiter), _) => waiter.fail(),
                                 (None, _) => {}
                             }
@@ -1802,14 +2323,39 @@ async fn run_swarm(
                                 queries.insert(id, QueryWaiter::Put(done));
                             }
                         }
-                        (Some(QueryWaiter::Get { mut values, done }), QueryResult::GetRecord(res)) => {
+                        (
+                            Some(QueryWaiter::Get {
+                                mut values,
+                                mut value_bytes,
+                                limits,
+                                done,
+                            }),
+                            QueryResult::GetRecord(res),
+                        ) => {
                             if let Ok(GetRecordOk::FoundRecord(found)) = res {
-                                values.push(found.record.value);
+                                let value = found.record.value;
+                                let next_bytes = value_bytes.saturating_add(value.len());
+                                if value.len() <= limits.value_bytes
+                                    && values.len() < limits.candidates
+                                    && next_bytes <= limits.bytes
+                                    && !values.iter().any(|known| known == &value)
+                                {
+                                    value_bytes = next_bytes;
+                                    values.push(value);
+                                }
                             }
                             if step.last {
                                 let _ = done.send(values);
                             } else {
-                                queries.insert(id, QueryWaiter::Get { values, done });
+                                queries.insert(
+                                    id,
+                                    QueryWaiter::Get {
+                                        values,
+                                        value_bytes,
+                                        limits,
+                                        done,
+                                    },
+                                );
                             }
                         }
                         // Query kinds we never issued, or a waiter/result
@@ -1840,23 +2386,23 @@ mod tests {
     fn direct_inbox_item_cap_refuses_without_mutation_and_recovers_after_drain() {
         let mut inbox = InternetInbox::new();
         for i in 0..DIRECT_INBOX_MAX_ITEMS {
-            assert!(inbox.push_direct(small_envelope(i as u8)));
+            assert!(inbox.push_direct(small_envelope(i as u8), InboundReceipt::new(i as u64 + 1)));
         }
         let items = inbox.direct_items;
         let bytes = inbox.direct_bytes;
-        assert!(!inbox.push_direct(small_envelope(255)));
+        assert!(!inbox.push_direct(small_envelope(255), InboundReceipt::new(10_000)));
         assert_eq!(inbox.direct_items, items);
         assert_eq!(inbox.direct_bytes, bytes);
 
         assert_eq!(inbox.drain().len(), DIRECT_INBOX_MAX_ITEMS);
-        assert!(inbox.push_direct(small_envelope(1)));
+        assert!(inbox.push_direct(small_envelope(1), InboundReceipt::new(1)));
     }
 
     #[test]
     fn direct_inbox_byte_cap_bounds_maximal_envelopes() {
         let mut inbox = InternetInbox::new();
         let oversized = Envelope::new(EnvelopeKind::Message, [6; 32], vec![0; MAX_ENVELOPE_BYTES]);
-        assert!(!inbox.push_direct(oversized));
+        assert!(!inbox.push_direct(oversized, InboundReceipt::new(2)));
 
         let maximal = Envelope::new(
             EnvelopeKind::Message,
@@ -1864,21 +2410,129 @@ mod tests {
             vec![0; MAX_ENVELOPE_BYTES - ENVELOPE_V1_HEADER_LEN],
         );
         let count = DIRECT_INBOX_MAX_BYTES / MAX_ENVELOPE_BYTES;
-        for _ in 0..count {
-            assert!(inbox.push_direct(maximal.clone()));
+        for i in 0..count {
+            assert!(inbox.push_direct(maximal.clone(), InboundReceipt::new(i as u64 + 1)));
         }
         assert_eq!(inbox.direct_bytes, DIRECT_INBOX_MAX_BYTES);
-        assert!(!inbox.push_direct(small_envelope(8)));
+        assert!(!inbox.push_direct(small_envelope(8), InboundReceipt::new(10_000)));
     }
 
     #[test]
     fn collected_inbox_has_independent_item_cap_and_recovers_after_drain() {
         let mut inbox = InternetInbox::new();
         for i in 0..COLLECTED_INBOX_MAX_ITEMS {
-            assert!(inbox.push_collected(small_envelope(i as u8)));
+            assert!(
+                inbox.push_collected(small_envelope(i as u8), InboundReceipt::new(i as u64 + 1),)
+            );
         }
-        assert!(!inbox.push_collected(small_envelope(3)));
+        assert!(!inbox.push_collected(small_envelope(3), InboundReceipt::new(10_000),));
         assert_eq!(inbox.drain().len(), COLLECTED_INBOX_MAX_ITEMS);
-        assert!(inbox.push_collected(small_envelope(4)));
+        assert!(inbox.push_collected(small_envelope(4), InboundReceipt::new(10_001),));
+    }
+
+    #[test]
+    fn mailbox_lease_response_shape_rejects_malformed_or_unbounded_pages() {
+        use crate::mailbox_v2::MailboxV2LeasedRow;
+
+        assert!(valid_mailbox_lease_response(true, [1; 16], 10, &[]));
+        assert!(valid_mailbox_lease_response(false, [0; 16], 0, &[]));
+        assert!(!valid_mailbox_lease_response(true, [0; 16], 10, &[]));
+        assert!(!valid_mailbox_lease_response(false, [1; 16], 0, &[]));
+
+        let row = MailboxV2LeasedRow {
+            row_id: [2; 16],
+            envelope: vec![3],
+        };
+        assert!(valid_mailbox_lease_response(
+            true,
+            [1; 16],
+            10,
+            std::slice::from_ref(&row)
+        ));
+        assert!(!valid_mailbox_lease_response(
+            true,
+            [1; 16],
+            10,
+            &[row.clone(), row]
+        ));
+        assert!(!valid_mailbox_lease_response(
+            true,
+            [1; 16],
+            10,
+            &[MailboxV2LeasedRow {
+                row_id: [0; 16],
+                envelope: vec![3],
+            }]
+        ));
+        assert!(!valid_mailbox_lease_response(
+            true,
+            [1; 16],
+            10,
+            &[MailboxV2LeasedRow {
+                row_id: [4; 16],
+                envelope: vec![0; MAILBOX_V2_PAGE_MAX_BYTES + 1],
+            }]
+        ));
+        let too_many = (1..=MAILBOX_V2_PAGE_MAX_ROWS + 1)
+            .map(|index| MailboxV2LeasedRow {
+                row_id: (index as u128).to_be_bytes(),
+                envelope: vec![0],
+            })
+            .collect::<Vec<_>>();
+        assert!(!valid_mailbox_lease_response(true, [1; 16], 10, &too_many));
+    }
+
+    #[test]
+    fn mailbox_service_identity_is_separate_and_stable_across_restart() {
+        let directory = tempfile::tempdir().unwrap();
+        let config =
+            MailboxServiceConfig::in_directory(directory.path(), crate::MailboxConfig::default());
+        assert_ne!(config.transport_key_path, config.key_path);
+        let first = load_or_create_service_identity(&config.transport_key_path).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&config.transport_key_path)
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+            std::fs::set_permissions(
+                &config.transport_key_path,
+                std::fs::Permissions::from_mode(0o400),
+            )
+            .unwrap();
+        }
+        let second = load_or_create_service_identity(&config.transport_key_path).unwrap();
+        assert_eq!(first.public().to_peer_id(), second.public().to_peer_id());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&config.transport_key_path)
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o400
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn mailbox_service_identity_symlink_is_rejected() {
+        use std::os::unix::fs::symlink;
+
+        let directory = tempfile::tempdir().unwrap();
+        let config =
+            MailboxServiceConfig::in_directory(directory.path(), crate::MailboxConfig::default());
+        let target = directory.path().join("transport-key-target");
+        std::fs::File::create(&target).unwrap();
+        symlink(&target, &config.transport_key_path).unwrap();
+        assert!(load_or_create_service_identity(&config.transport_key_path).is_err());
     }
 }

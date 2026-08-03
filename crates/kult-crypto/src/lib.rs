@@ -20,10 +20,14 @@
 
 extern crate alloc;
 
+mod admission;
 mod anonbox;
 mod attachment;
 mod call;
 mod device;
+mod device_authority;
+mod device_link_authority;
+mod discovery;
 mod error;
 mod fingerprint;
 mod group;
@@ -33,10 +37,20 @@ mod kdf;
 mod mnemonic;
 mod prekeys;
 mod ratchet;
+mod recovery_authority;
+mod rendezvous;
 mod sealed;
 mod util;
 mod wordlist;
 
+pub use admission::{
+    admission_bundle_digest, is_admission_extension, AdmissionDescriptor, AdmissionPolicy,
+    AdmissionPuzzleProfile, VerifiedAdmission, ADMISSION_DESCRIPTOR_VERSION, ADMISSION_EPOCH_SECS,
+    DEFAULT_ADMISSION_CLOCK_SKEW_SECS, DEFAULT_ADMISSION_DIFFICULTY,
+    DEFAULT_ADMISSION_FIRST_CIPHERTEXT, MAX_ADMISSION_CLOCK_SKEW_SECS,
+    MAX_ADMISSION_DESCRIPTOR_BYTES, MAX_ADMISSION_DIFFICULTY, MAX_ADMISSION_FIRST_CIPHERTEXT,
+    MAX_ADMISSION_TOKEN_ISSUERS, MIN_ADMISSION_DIFFICULTY,
+};
 pub use anonbox::{open_anonymous, seal_anonymous};
 pub use attachment::{
     attachment_pairwise_scope_id, open_attachment_chunk, seal_attachment_chunk,
@@ -50,32 +64,68 @@ pub use call::{
     MAX_CALL_MEDIA_FRAME_LEN, MAX_CALL_MEDIA_PAYLOAD_LEN,
 };
 pub use device::{
-    seal_device_link_recovery_package, ApprovedDeviceLink, CompletedDeviceLink, DeviceCertificate,
-    DeviceLinkCode, DeviceLinkOffer, DeviceLinkResponse, DeviceManifest, DeviceManifestEntry,
-    DevicePrekeyBundle, PendingDeviceLinkSource, PendingDeviceLinkTarget,
+    DeviceCertificate, DeviceManifest, DeviceManifestEntry, DevicePrekeyBundle,
     MAX_DEVICE_MANIFEST_ENTRIES, MAX_DEVICE_NAME_BYTES, MAX_LINKED_DEVICES,
-    MAX_LINK_TRANSFER_BYTES,
+};
+pub use device_authority::{
+    DeviceAuthorityAuthorization, DeviceAuthorityCertificate, DeviceAuthorityEntry,
+    DeviceAuthorityManifest, DeviceAuthorityRelation, DeviceAuthorityRootSignature,
+    DeviceAuthoritySignature, DeviceAuthorityTransition, DeviceAuthorityTransitionKind,
+    DEVICE_AUTHORITY_VERSION, MAX_AUTHORITY_DEVICES, MAX_AUTHORITY_DEVICE_NAME_BYTES,
+    MAX_AUTHORITY_ENTRIES, MAX_DEVICE_AUTHORITY_BYTES, MAX_DEVICE_AUTHORITY_TRANSITIONS,
+};
+pub use device_link_authority::{
+    seal_authority_device_link_recovery_package, ApprovedAuthorityDeviceLink,
+    AuthorityDeviceLinkApproval, AuthorityDeviceLinkApprovalRequest, AuthorityDeviceLinkCode,
+    AuthorityDeviceLinkOffer, AuthorityDeviceLinkResponse, AuthorityDevicePrekeyBundle,
+    AuthorityPairingBundle, CompletedAuthorityDeviceLink, PendingAuthorityDeviceLinkSource,
+    PendingAuthorityDeviceLinkTarget, PreparedAuthorityDeviceLink,
+    MAX_AUTHORITY_LINK_TRANSFER_BYTES,
+};
+pub use discovery::{
+    discovery_epoch, discovery_epoch_valid_from, discovery_epoch_valid_until,
+    discovery_introduction_token, discovery_locator, open_discovery_record, seal_discovery_record,
+    ConnectCode, DiscoveryIngressBundle, DiscoveryRecord, DiscoveryRoute, DiscoveryRouteKind,
+    CONNECT_CODE_PAYLOAD_BYTES, CONNECT_CODE_PREFIX, DISCOVERY_CLOCK_GRACE_SECS,
+    DISCOVERY_EPOCH_SECS, DISCOVERY_LOOKUP_EPOCH_ADJACENCY, DISCOVERY_PUBLISH_EPOCH_AHEAD,
+    DISCOVERY_PUBLISH_EPOCH_BEHIND, DISCOVERY_RECORD_SIZE, DISCOVERY_RECORD_VERSION,
+    MAX_DISCOVERY_CANDIDATES, MAX_DISCOVERY_INGRESS_DEVICES, MAX_DISCOVERY_ROUTES,
+    MAX_DISCOVERY_ROUTE_BYTES,
 };
 pub use error::CryptoError;
 pub use fingerprint::{safety_number, SafetyNumber};
 pub use group::{
-    GroupHeaderKey, GroupMessage, GroupReceiverChain, GroupSenderChain, GROUP_MAX_SKIP,
-    GROUP_MAX_STORED_SKIPPED, GROUP_SKIPPED_TTL_SECS,
+    group_origin_tag, GroupHeaderKey, GroupMessage, GroupMessageHeader, GroupOriginContext,
+    GroupOriginEnvelope, GroupReceiverChain, GroupSenderChain, GROUP_MAX_SKIP,
+    GROUP_MAX_STORED_SKIPPED, GROUP_MESSAGE_VERSION_LEGACY, GROUP_MESSAGE_VERSION_ORIGIN,
+    GROUP_ORIGIN_ENVELOPE_MAGIC, GROUP_ORIGIN_TAG_LEN, GROUP_SKIPPED_TTL_SECS,
 };
 pub use handshake::{initiate, respond, InitialMessage};
 pub use identity::{
-    parse_address, verify_group_admin_request_signature, verify_group_authority_state_signature,
-    verify_group_owner_transfer_signature, verify_group_poll_moderation_signature, Identity,
-    IdentityPublic,
+    parse_address, verify_ed25519_domain_signature, verify_group_admin_request_signature,
+    verify_group_authority_state_signature, verify_group_owner_transfer_signature,
+    verify_group_poll_moderation_signature, Identity, IdentityPublic,
 };
 pub use kdf::{derive_kek, KdfProfile, KDF_PROFILE_DESKTOP, KDF_PROFILE_MOBILE};
 pub use mnemonic::{mnemonic_from_entropy, mnemonic_to_entropy, MNEMONIC_WORDS};
 pub use prekeys::{
     OneTimePrekeySecret, PqPrekeySecret, PrekeyBundle, SignedPrekeySecret, VerifiedBundle,
-    MLKEM768_CT_LEN, MLKEM768_DK_LEN, MLKEM768_EK_LEN,
+    MAX_PREKEY_BUNDLE_BYTES, MAX_PREKEY_RELAY_HINTS, MAX_PREKEY_RELAY_HINT_BYTES,
+    MAX_PREKEY_RELAY_HINT_TOTAL_BYTES, MLKEM768_CT_LEN, MLKEM768_DK_LEN, MLKEM768_EK_LEN,
 };
 pub use ratchet::{RatchetMessage, Session};
 pub use ratchet::{MAX_SKIP, MAX_STORED_SKIPPED, SKIPPED_KEY_TTL_SECS};
+pub use recovery_authority::{
+    account_recovery_authority_public, open_account_recovery_authority,
+    seal_account_recovery_authority, ACCOUNT_RECOVERY_AUTHORITY_VERSION,
+    MAX_ACCOUNT_RECOVERY_AUTHORITY_BYTES,
+};
+pub use rendezvous::{
+    derive_rendezvous_epoch_keys, open_rendezvous_record, rendezvous_epoch,
+    rendezvous_epoch_starts_at, rendezvous_provider_id, seal_rendezvous_record,
+    RendezvousEpochKeys, MAX_RENDEZVOUS_PROVIDER_ORIGIN_BYTES, RENDEZVOUS_EPOCH_SECS,
+    RENDEZVOUS_MAX_TTL_SECS, RENDEZVOUS_RECORD_PLAINTEXT_LEN, RENDEZVOUS_SEALED_RECORD_LEN,
+};
 pub use sealed::StorageKey;
 
 /// Protocol version tag mixed into every associated-data string.

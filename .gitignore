@@ -1,4 +1,6 @@
 /target
+__pycache__/
+*.py[cod]
 crates/*/fuzz/target
 crates/*/fuzz/corpus
 crates/*/fuzz/artifacts
@@ -12,7 +14,12 @@ apps/android/build
 apps/android/local.properties
 # Release signing material never enters the repository.
 apps/android/keystore.properties
+apps/android/native-wake.properties
 apps/android/**/*.jks
 apps/android/**/*.keystore
 # Downloaded CI/release binaries are handoff artifacts, never source inputs.
 /release-artifacts/
+# Reproducible reviewer handoff archives are generated locally from an exact
+# commit. Their digest reports are source-controlled; the duplicated source
+# archives are not.
+/security-review-artifacts/

@@ -66,7 +66,7 @@ struct RenameContactView: View {
                 pendingAssessment = assessment
             }
         } catch {
-            self.error = error.localizedDescription
+            self.error = errorText(error)
         }
     }
 
@@ -79,7 +79,7 @@ struct RenameContactView: View {
             pendingAssessment = nil
             dismiss()
         } catch {
-            self.error = error.localizedDescription
+            self.error = errorText(error)
         }
     }
 
@@ -88,16 +88,18 @@ struct RenameContactView: View {
         var lines: [String] = assessment.warnings.map { warning in
             switch warning {
             case .duplicateName:
-                "\(assessment.duplicateCount) other contact(s) already use this exact private petname."
+                L10n.plural(
+                    "contact_warning_duplicate",
+                    count: Int(clamping: assessment.duplicateCount))
             case .confusableName:
-                "This name mixes lookalike scripts or resembles another local petname."
+                L10n.text("contact_warning_confusable")
             case .bidirectionalControl:
-                "This name contains directional controls that can change display order."
+                L10n.text("contact_warning_bidi")
             case .invisibleCharacter:
-                "This name contains invisible formatting characters."
+                L10n.text("contact_warning_invisible")
             }
         }
-        lines.append("Store “\(assessment.normalizedName)” anyway? Duplicate names remain separate by peer identity.")
+        lines.append(L10n.text("contact_warning_identity", assessment.normalizedName))
         return lines.joined(separator: "\n\n")
     }
 }

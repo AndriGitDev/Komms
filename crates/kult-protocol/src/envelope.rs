@@ -192,6 +192,11 @@ impl Envelope {
     /// Stable content id (first 16 bytes of BLAKE3 of the encoding) — used
     /// for dedup across redundant multipath delivery.
     pub fn content_id(&self) -> [u8; 16] {
+        if self.kind == EnvelopeKind::Handshake {
+            if let Some(content_id) = crate::AdmissionEnvelope::verified_content_id(&self.body) {
+                return content_id;
+            }
+        }
         let hash = blake3::hash(&self.encode());
         hash.as_bytes()[..16].try_into().expect("16 <= 32")
     }

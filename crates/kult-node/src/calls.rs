@@ -313,6 +313,14 @@ impl Node {
     ) -> Result<[u8; 16]> {
         let availability = self.call_availability(peer, now)?;
         if let Some(reason) = availability.unavailable {
+            if matches!(
+                reason,
+                CallUnavailableReason::OfflineOrUnknown
+                    | CallUnavailableReason::BulkOnly
+                    | CallUnavailableReason::MeshOnly
+            ) {
+                self.request_rendezvous_refresh(peer)?;
+            }
             return Err(match reason {
                 CallUnavailableReason::Unsupported => NodeError::CallUnsupported,
                 CallUnavailableReason::AlreadyInCall => NodeError::CallBusy,
@@ -646,7 +654,7 @@ impl Node {
             .get(&call_id)
             .and_then(|call| call.info.responder_device)
             .ok_or(NodeError::InvalidCall)?;
-        let hints = self.hints_for(&responder)?;
+        let hints = self.hints_for(&responder, now)?;
         let transports = self.transports.clone();
         for transport in transports {
             for hint in &hints {
@@ -941,6 +949,7 @@ impl Node {
                     item,
                     None,
                     crate::PreparedDeliveryUpdate::default(),
+                    None,
                     rng,
                 )?;
             } else {
@@ -1007,15 +1016,24 @@ impl Node {
         Ok(devices)
     }
 
-    /// Single-device wire compatibility authenticates the stable account key
-    /// as its sole endpoint. Once C2 is active, every ratchet endpoint is the
-    /// separately certified physical-device key instead.
-    fn call_local_device_id(&self) -> [u8; 32] {
-        if self.linked_devices().len() > 1 {
-            self.device_id()
-        } else {
-            self.peer_id()
+    pub(crate) fn active_rendezvous_devices(&self) -> Result<Vec<[u8; 32]>> {
+        let mut devices = HashSet::new();
+        for call in self
+            .calls
+            .values()
+            .filter(|call| call.info.phase != CallPhase::Ended)
+        {
+            devices.extend(self.call_devices(&call.info.peer)?);
         }
+        let mut devices = devices.into_iter().collect::<Vec<_>>();
+        devices.sort_unstable();
+        Ok(devices)
+    }
+
+    /// Every live ADR-0026 call endpoint is the separately certified
+    /// physical-device key, including accounts with only one active device.
+    fn call_local_device_id(&self) -> [u8; 32] {
+        self.device_id()
     }
 
     fn has_live_call(&self) -> bool {

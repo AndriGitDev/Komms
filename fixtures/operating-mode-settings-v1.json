@@ -1,0 +1,40 @@
+{
+  "mode": "private",
+  "standard_disclosure_confirmed": true,
+  "sovereign_publish_direct_routes": false,
+  "provider_directory": "providers.json",
+  "provider_directory_roots": [
+    "1111111111111111111111111111111111111111111111111111111111111111"
+  ],
+  "rendezvous": [
+    {
+      "origin": "https://rendezvous.example.org",
+      "static_key": "2222222222222222222222222222222222222222222222222222222222222222",
+      "standard": true,
+      "private_via_tor": true
+    }
+  ],
+  "wake": [
+    {
+      "origin": "https://wake.example.org",
+      "static_key": "3333333333333333333333333333333333333333333333333333333333333333",
+      "standard": true,
+      "private_via_tor": true
+    }
+  ],
+  "tor_proxy": "127.0.0.1:9050",
+  "listen": [
+    "/ip4/0.0.0.0/udp/7001/quic-v1"
+  ],
+  "bootstrap": [],
+  "relay": null,
+  "mailboxes": [
+    "/ip4/192.0.2.9/tcp/443/p2p/12D3KooWLFnPTnPQ7QgWT8CtctinEPduQPqV9F11ycRhPvhsqwH4"
+  ],
+  "serve_mailbox": false,
+  "mdns": true,
+  "spool": null,
+  "meshtastic_serial": null,
+  "meshtastic_tcp": "radio.local:4403",
+  "bridge": true
+}

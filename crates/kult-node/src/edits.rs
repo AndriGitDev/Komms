@@ -113,17 +113,22 @@ pub(crate) fn resolve_pairwise(
 pub(crate) fn resolve_group(records: Vec<GroupMessageRecord>) -> Vec<ResolvedGroupMessage> {
     let edits = records
         .iter()
-        .filter_map(|record| match decode_content(&record.body) {
-            DecodedContent::Edit { id, edit } => Some(GroupEdit {
-                sender: record.sender,
-                id,
-                target_author: edit.target_author,
-                target_content_id: edit.target_content_id,
-                revision: edit.revision,
-                timestamp: record.timestamp,
-                body: edit.text.to_owned(),
-            }),
-            _ => None,
+        .filter_map(|record| {
+            if !record.origin.is_recipient_authenticated() {
+                return None;
+            }
+            match decode_content(&record.body) {
+                DecodedContent::Edit { id, edit } => Some(GroupEdit {
+                    sender: record.sender,
+                    id,
+                    target_author: edit.target_author,
+                    target_content_id: edit.target_content_id,
+                    revision: edit.revision,
+                    timestamp: record.timestamp,
+                    body: edit.text.to_owned(),
+                }),
+                _ => None,
+            }
         })
         .collect::<Vec<_>>();
 
@@ -225,6 +230,11 @@ mod tests {
             body,
             deliveries: Vec::new(),
             wire_body: None,
+            origin: kult_store::GroupOriginAuthentication::RecipientV1 {
+                sender_device: sender,
+                recipient_device: ME,
+                chain_key_id: [0x99; 16],
+            },
         }
     }
 

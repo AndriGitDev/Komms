@@ -17,8 +17,8 @@ use tokio::io::AsyncReadExt;
 use kult_protocol::{bundle_export, bundle_import, Envelope, MAX_BUNDLE_BYTES, MAX_ENVELOPE_BYTES};
 
 use crate::{
-    CostClass, DeliveryHint, LatencyClass, LinkProfile, Reachability, Result, SendReceipt,
-    Transport,
+    CostClass, DeliveryHint, IngressClass, LatencyClass, LinkProfile, Reachability, Result,
+    SendReceipt, Transport,
 };
 
 /// File-drop transport over spool directories.
@@ -86,6 +86,10 @@ impl Transport for SneakernetTransport {
             cost: CostClass::Free,
             broadcast: false,
         }
+    }
+
+    fn ingress_class(&self) -> IngressClass {
+        IngressClass::Delayed
     }
 
     async fn reachable(&self, peer: &DeliveryHint) -> Reachability {

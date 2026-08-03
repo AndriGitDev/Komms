@@ -177,6 +177,9 @@ struct ChatView: View {
                 self.error = errorText(error)
             }
         }
+        .onDisappear {
+            Task { await model.unfollow(peer: peer) }
+        }
     }
 
     private func send() {
@@ -277,40 +280,43 @@ private struct CallBar: View {
 
     private var statusText: String {
         guard let call else {
-            return availability?.available == true ? "Direct call available" : unavailableText
+            return availability?.available == true
+                ? L10n.text("call_available")
+                : unavailableText
         }
         switch call.phase {
         case .ringing:
             return call.direction == .incoming
-                ? "Incoming authenticated call from \(contactName)" : "Ringing…"
-        case .connecting: return "Connecting direct audio…"
-        case .active: return "Authenticated direct audio call"
+                ? L10n.text("call_incoming_title", contactName)
+                : L10n.text("call_ringing")
+        case .connecting: return L10n.text("call_connecting")
+        case .active: return L10n.text("call_active")
         case .ended: return endText(call.endReason)
         }
     }
 
     private var unavailableText: String {
         switch availability?.unavailable {
-        case .offlineOrUnknown: return "Contact is offline or no direct route is known"
-        case .bulkOnly: return "The current route is not real-time"
-        case .meshOnly: return "Mesh routes do not carry live calls"
-        case .missingSession: return "Send a message first to establish an authenticated session"
-        case .unsupported: return "This contact does not advertise compatible calling support"
-        case .alreadyInCall: return "Another call is already in progress"
-        case nil: return "Checking direct call route…"
+        case .offlineOrUnknown: return L10n.text("call_offline")
+        case .bulkOnly: return L10n.text("call_bulk_only")
+        case .meshOnly: return L10n.text("call_mesh_only")
+        case .missingSession: return L10n.text("call_missing_session")
+        case .unsupported: return L10n.text("call_unsupported")
+        case .alreadyInCall: return L10n.text("call_already_active")
+        case nil: return L10n.text("call_checking_route")
         }
     }
 
     private func endText(_ reason: CallEndReason?) -> String {
         switch reason {
-        case .declined: return "Call declined"
-        case .busy: return "Contact is busy"
-        case .cancelled: return "Call cancelled"
-        case .hungUp: return "Call ended"
-        case .expired: return "Call was not answered"
-        case .answeredElsewhere: return "Call answered on another linked device"
-        case .routeLost: return "Direct call route lost"
-        case nil: return "Call ended"
+        case .declined: return L10n.text("call_declined")
+        case .busy: return L10n.text("call_busy")
+        case .cancelled: return L10n.text("call_cancelled")
+        case .hungUp: return L10n.text("call_ended")
+        case .expired: return L10n.text("call_expired")
+        case .answeredElsewhere: return L10n.text("call_answered_elsewhere")
+        case .routeLost: return L10n.text("call_route_lost")
+        case nil: return L10n.text("call_ended")
         }
     }
 
@@ -334,11 +340,11 @@ private struct MessageBubble: View {
     /// encrypted receipt came back.
     private var stateText: String {
         switch message.state {
-        case .queued: return "queued"
-        case .sent: return "sent"
-        case .delivered: return "delivered"
+        case .queued: return L10n.text("state_queued")
+        case .sent: return L10n.text("state_sent")
+        case .delivered: return L10n.text("state_delivered")
         case .received: return ""
-        case .failed: return "delivery failed after 30 days"
+        case .failed: return L10n.text("state_failed")
         }
     }
 
@@ -357,7 +363,10 @@ private struct MessageBubble: View {
                             .foregroundStyle(
                                 message.state == .delivered ? .green : .secondary)
                         if message.edited {
-                            Text("· edited r\(message.editRevision)")
+                            Text(
+                                "· " + L10n.text(
+                                    "revision_short",
+                                    Int(message.editRevision)))
                                 .foregroundStyle(.secondary)
                         }
                         if message.contentKind == .text {
@@ -367,12 +376,22 @@ private struct MessageBubble: View {
                     }
                     .font(.caption2)
                 } else if message.edited {
-                    Text("edited r\(message.editRevision)")
+                    Text(
+                        L10n.text(
+                            "revision_short",
+                            Int(message.editRevision)))
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
                 if message.contentKind == .disappearingText, let expiresAt = message.expiresAt {
-                    Text("Removes \(Date(timeIntervalSince1970: TimeInterval(expiresAt)), style: .relative)")
+                    (
+                        Text(L10n.text("removes_prefix"))
+                        + Text(
+                            Date(
+                                timeIntervalSince1970:
+                                    TimeInterval(expiresAt)),
+                            style: .relative)
+                    )
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                         .accessibilityHint("Removed locally; other devices may retain copies")
@@ -451,10 +470,19 @@ struct EditVersionHistoryView: View {
     let versions: [EditVersion]
 
     var body: some View {
-        DisclosureGroup("Version history (\(versions.count))") {
+        DisclosureGroup(
+            L10n.plural(
+                "message_version_history",
+                count: versions.count)
+        ) {
             ForEach(Array(versions.reversed().enumerated()), id: \.offset) { _, version in
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(version.revision == 0 ? "Original" : "Revision \(version.revision)")
+                    Text(
+                        version.revision == 0
+                            ? L10n.text("message_history_original")
+                            : L10n.text(
+                                "message_history_revision",
+                                String(version.revision)))
                         .font(.caption.bold())
                     Text(Date(timeIntervalSince1970: TimeInterval(version.timestamp)), style: .time)
                         .font(.caption2)

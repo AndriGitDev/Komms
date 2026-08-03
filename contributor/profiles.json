@@ -1,0 +1,322 @@
+{
+  "schema": "komms-contributor-profiles/v1",
+  "profiles": {
+    "android-core": {
+      "description": "Generate the Android bindings and build/test the JVM core without an Android SDK or signing credentials.",
+      "paths": [
+        "apps/android/core",
+        "apps/ios/KommsCore",
+        "crates/kult-ffi"
+      ],
+      "commands": [
+        {
+          "cwd": "apps/android",
+          "argv": [
+            "gradle",
+            ":core:build",
+            "-Pkomms.androidApp=false"
+          ]
+        }
+      ]
+    },
+    "desktop": {
+      "description": "Format, lint, and test the desktop shell workspace without packaging or signing.",
+      "paths": [
+        "apps/desktop",
+        "crates/kult-ffi"
+      ],
+      "commands": [
+        {
+          "cwd": ".",
+          "argv": [
+            "cargo",
+            "fmt",
+            "--manifest-path",
+            "apps/desktop/src-tauri/Cargo.toml",
+            "--all",
+            "--",
+            "--check"
+          ]
+        },
+        {
+          "cwd": ".",
+          "argv": [
+            "cargo",
+            "clippy",
+            "--manifest-path",
+            "apps/desktop/src-tauri/Cargo.toml",
+            "--all-targets",
+            "--all-features",
+            "--",
+            "-D",
+            "warnings"
+          ]
+        },
+        {
+          "cwd": ".",
+          "argv": [
+            "cargo",
+            "test",
+            "--manifest-path",
+            "apps/desktop/src-tauri/Cargo.toml",
+            "--all-features"
+          ]
+        }
+      ]
+    },
+    "documentation": {
+      "description": "Check links, evidence vocabulary, consent accessibility, and whitespace for documentation-only changes.",
+      "paths": [
+        "README.md",
+        "CONTRIBUTING.md",
+        "docs",
+        ".github/ISSUE_TEMPLATE"
+      ],
+      "commands": [
+        {
+          "cwd": ".",
+          "argv": [
+            "python3",
+            "scripts/check-docs.py"
+          ]
+        },
+        {
+          "cwd": ".",
+          "argv": [
+            "python3",
+            "scripts/check-message-request-accessibility.py"
+          ]
+        },
+        {
+          "cwd": ".",
+          "argv": [
+            "git",
+            "diff",
+            "--check"
+          ]
+        }
+      ]
+    },
+    "ios-core": {
+      "description": "Generate the Swift bindings and build/test KommsCore without Xcode, an Apple account, or signing credentials.",
+      "paths": [
+        "apps/ios/KommsCore",
+        "crates/kult-ffi"
+      ],
+      "commands": [
+        {
+          "cwd": ".",
+          "argv": [
+            "apps/ios/scripts/test-core.sh"
+          ]
+        }
+      ]
+    },
+    "localization": {
+      "description": "Validate canonical catalogs, generated shell resources, source coverage, plurals, bidi safety, and fallback behavior without a platform SDK.",
+      "paths": [
+        "locales",
+        "scripts/localization.py",
+        "scripts/check-localization-sources.py",
+        "scripts/test-localization.py",
+        "scripts/check-shell-accessibility.py",
+        "apps/desktop/ui",
+        "apps/android/app/src/main",
+        "apps/ios/KommsApp"
+      ],
+      "commands": [
+        {
+          "cwd": ".",
+          "argv": [
+            "python3",
+            "scripts/localization.py",
+            "check"
+          ]
+        },
+        {
+          "cwd": ".",
+          "argv": [
+            "python3",
+            "scripts/check-localization-sources.py"
+          ]
+        },
+        {
+          "cwd": ".",
+          "argv": [
+            "python3",
+            "scripts/test-localization.py"
+          ]
+        },
+        {
+          "cwd": ".",
+          "argv": [
+            "python3",
+            "scripts/check-shell-accessibility.py"
+          ]
+        },
+        {
+          "cwd": ".",
+          "argv": [
+            "git",
+            "diff",
+            "--check"
+          ]
+        }
+      ]
+    },
+    "protocol": {
+      "description": "Format, lint, and test the bounded crypto/protocol layer.",
+      "paths": [
+        "crates/kult-crypto",
+        "crates/kult-protocol",
+        "fixtures"
+      ],
+      "commands": [
+        {
+          "cwd": ".",
+          "argv": [
+            "cargo",
+            "fmt",
+            "--all",
+            "--",
+            "--check"
+          ]
+        },
+        {
+          "cwd": ".",
+          "argv": [
+            "cargo",
+            "clippy",
+            "-p",
+            "kult-crypto",
+            "-p",
+            "kult-protocol",
+            "--all-targets",
+            "--all-features",
+            "--",
+            "-D",
+            "warnings"
+          ]
+        },
+        {
+          "cwd": ".",
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "kult-crypto",
+            "-p",
+            "kult-protocol",
+            "--all-features"
+          ]
+        }
+      ]
+    },
+    "storage-node": {
+      "description": "Format, lint, and test ordinary storage/node behavior without the million-row, fuzz, platform, or publication matrix.",
+      "paths": [
+        "crates/kult-store",
+        "crates/kult-node",
+        "crates/kult-transport"
+      ],
+      "commands": [
+        {
+          "cwd": ".",
+          "argv": [
+            "cargo",
+            "fmt",
+            "--all",
+            "--",
+            "--check"
+          ]
+        },
+        {
+          "cwd": ".",
+          "argv": [
+            "cargo",
+            "clippy",
+            "-p",
+            "kult-store",
+            "-p",
+            "kult-node",
+            "-p",
+            "kult-transport",
+            "--all-targets",
+            "--all-features",
+            "--",
+            "-D",
+            "warnings"
+          ]
+        },
+        {
+          "cwd": ".",
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "kult-store",
+            "-p",
+            "kult-node",
+            "-p",
+            "kult-transport",
+            "--all-features",
+            "--",
+            "--skip",
+            "million_message_qualification"
+          ]
+        }
+      ]
+    },
+    "stewardship": {
+      "description": "Validate operator, licensing, funding, privacy, legal-process, incident, and evidence-boundary records without deployment or credentials.",
+      "paths": [
+        "operations",
+        "LICENSES",
+        "THIRD_PARTY_NOTICES.md",
+        "GOVERNANCE.md",
+        "SECURITY.md",
+        "CONTRIBUTING.md",
+        "docs/46-operator-program.md",
+        "docs/47-license-trademark-assets.md",
+        "docs/48-funding-transparency.md",
+        "docs/49-privacy-legal-incident-readiness.md",
+        "docs/50-mailbox-service-operations.md",
+        "crates/kult-mailbox",
+        "deploy/mailbox-service",
+        "scripts/check-stewardship.py",
+        "scripts/test-stewardship.py"
+      ],
+      "commands": [
+        {
+          "cwd": ".",
+          "argv": [
+            "python3",
+            "scripts/check-stewardship.py"
+          ]
+        },
+        {
+          "cwd": ".",
+          "argv": [
+            "python3",
+            "scripts/test-stewardship.py"
+          ]
+        },
+        {
+          "cwd": ".",
+          "argv": [
+            "python3",
+            "scripts/check-docs.py"
+          ]
+        },
+        {
+          "cwd": ".",
+          "argv": [
+            "git",
+            "diff",
+            "--check"
+          ]
+        }
+      ]
+    }
+  }
+}

@@ -26,21 +26,44 @@ use kult_protocol::Envelope;
 pub mod airtime;
 mod internet;
 mod mailbox;
+mod mailbox_service;
+mod mailbox_v2;
 mod mdns;
 #[cfg(feature = "meshtastic")]
 mod mesh;
+mod provider_directory;
+mod rendezvous;
 mod sneakernet;
+mod wake;
 
 pub use internet::{CallStream, Libp2pTransport, NatStatus, TransportOptions};
-pub use mailbox::{
-    MailboxConfig, MailboxContents, MAX_MAILBOX_CHECKIN_ENVELOPES, MAX_MAILBOX_CHECKIN_TOKENS,
+pub use mailbox::{MailboxConfig, MAX_MAILBOX_CHECKIN_ENVELOPES, MAX_MAILBOX_CHECKIN_TOKENS};
+pub use mailbox_service::{
+    initialize_mailbox_service, inspect_mailbox_service, MailboxServiceInfo, MailboxServiceMetrics,
+    MailboxV2Service, MAILBOX_SERVICE_PROTOCOLS,
+};
+pub use mailbox_v2::{
+    decode_mailbox_v2_request, decode_mailbox_v2_response, encode_mailbox_v2_request,
+    encode_mailbox_v2_response, MailboxMetrics, MailboxServiceConfig, MailboxV2LeasedRow,
+    MailboxV2Request, MailboxV2Response, MAILBOX_V2_ACK_MAX_ROWS, MAILBOX_V2_PAGE_MAX_BYTES,
+    MAILBOX_V2_PAGE_MAX_ROWS, MAILBOX_V2_REQUEST_MAX_BYTES, MAILBOX_V2_RESPONSE_MAX_BYTES,
 };
 #[cfg(feature = "meshtastic")]
 #[doc(hidden)]
 pub use mesh::testutil as mesh_testutil;
 #[cfg(feature = "meshtastic")]
-pub use mesh::{MeshtasticOptions, MeshtasticTransport, MESH_BROADCAST};
+pub use mesh::{MeshtasticOptions, MeshtasticStats, MeshtasticTransport, MESH_BROADCAST};
+pub use provider_directory::{
+    resolve_provider_directory, EffectiveProviderSet, ManualProviderSet, OperatingMode,
+    ProviderDirectory, ProviderDirectoryError, ProviderDirectoryResolution,
+    ProviderDirectoryStatus, ProviderOperator, ProviderRendezvous, PROVIDER_DIRECTORY_VERSION,
+};
+pub use rendezvous::{
+    rendezvous_record_route, rendezvous_route_hint, HttpsRendezvousClient, RendezvousClient,
+    RendezvousIngress, RendezvousProvider, MAX_RENDEZVOUS_PROVIDERS,
+};
 pub use sneakernet::SneakernetTransport;
+pub use wake::{HttpsWakeClient, WakeClient, WakeIngress, WakeProvider, MAX_WAKE_PROVIDERS};
 
 /// Failures surfaced by transports.
 #[derive(Debug)]
@@ -171,6 +194,15 @@ pub enum SendReceipt {
     AckedByNextHop,
 }
 
+/// Versioned record-key namespace on the shared Kademlia plane.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DiscoveryNamespace {
+    /// Time-bounded Alpha compatibility under `/kk/prekeys/1/`.
+    LegacyPrekeyV1,
+    /// Capability-derived ADR-0031 records under `/kk/prekeys/2/`.
+    ConnectV2,
+}
+
 /// A discovery plane: a distributed key→value lookup for prekey bundles
 /// (docs/05-transports.md §2). Implemented by [`Libp2pTransport`] over
 /// Kademlia; sneakernet and mesh carriers have no discovery plane.
@@ -182,13 +214,69 @@ pub enum SendReceipt {
 #[async_trait]
 pub trait Discovery: Send + Sync {
     /// Publish `value` under `key`, replacing this node's previous record
-    /// for the same key. Resolves once at least one other node stored it.
-    async fn publish(&self, key: [u8; 32], value: Vec<u8>) -> Result<()>;
+    /// for the same namespace/key. `expires_at` is an absolute Unix second
+    /// after which peers must not retain the value. Resolves once at least
+    /// one other node stored it.
+    async fn publish(
+        &self,
+        namespace: DiscoveryNamespace,
+        key: [u8; 32],
+        value: Vec<u8>,
+        expires_at: u64,
+    ) -> Result<()>;
 
     /// Fetch all record values currently retrievable under `key` (distinct
     /// nodes may serve different versions; the caller picks after verifying).
     /// An unknown key yields an empty vector, not an error.
-    async fn lookup(&self, key: [u8; 32]) -> Result<Vec<Vec<u8>>>;
+    async fn lookup(&self, namespace: DiscoveryNamespace, key: [u8; 32]) -> Result<Vec<Vec<u8>>>;
+}
+
+/// Opaque handle for one interactive inbound request awaiting durable
+/// endpoint admission.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct InboundReceipt(u64);
+
+impl InboundReceipt {
+    /// Construct a carrier-scoped handle.
+    ///
+    /// The carrier must reject handles it did not issue or has already
+    /// settled; the numeric value has no protocol meaning outside that
+    /// carrier instance.
+    pub fn new(value: u64) -> Self {
+        Self(value)
+    }
+
+    pub(crate) fn value(self) -> u64 {
+        self.0
+    }
+}
+
+/// Coarse, privacy-preserving ingress class for endpoint admission budgets.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IngressClass {
+    /// The carrier does not expose a more specific class.
+    Unknown,
+    /// Interactive direct delivery awaiting endpoint settlement.
+    Direct,
+    /// Durable mailbox collection.
+    Mailbox,
+    /// Low-bandwidth mesh delivery.
+    Mesh,
+    /// Explicit file or sneakernet import.
+    Delayed,
+    /// Content-blind bridge delivery.
+    Bridge,
+}
+
+/// One received envelope plus an optional interactive response handle.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReceivedEnvelope {
+    /// Parsed bounded envelope.
+    pub envelope: Envelope,
+    /// Present only when the carrier has not yet told the sender “accepted”.
+    pub receipt: Option<InboundReceipt>,
+    /// Coarse class used only for bounded local admission policy.
+    pub ingress: IngressClass,
 }
 
 /// The contract every carrier implements (docs/05-transports.md §1).
@@ -200,6 +288,11 @@ pub trait Discovery: Send + Sync {
 pub trait Transport: Send + Sync {
     /// Static link properties for scheduler ranking.
     fn profile(&self) -> LinkProfile;
+
+    /// Coarse class assigned to ordinary receives on this carrier.
+    fn ingress_class(&self) -> IngressClass {
+        IngressClass::Unknown
+    }
 
     /// Can this transport deliver to `peer`, and how?
     async fn reachable(&self, peer: &DeliveryHint) -> Reachability;
@@ -213,6 +306,30 @@ pub trait Transport: Send + Sync {
     /// Duplicates are permitted (multipath is normal); dedup is the
     /// delivery engine's job via content ids.
     async fn recv(&self) -> Result<Vec<Envelope>>;
+
+    /// Drain envelopes while retaining interactive next-hop response handles.
+    ///
+    /// Carriers without an interactive acknowledgement boundary inherit the
+    /// ordinary receive behavior. Internet direct delivery overrides this so
+    /// the node can settle a request only after durable staging or complete
+    /// consumption.
+    async fn recv_staged(&self) -> Result<Vec<ReceivedEnvelope>> {
+        Ok(self
+            .recv()
+            .await?
+            .into_iter()
+            .map(|envelope| ReceivedEnvelope {
+                envelope,
+                receipt: None,
+                ingress: self.ingress_class(),
+            })
+            .collect())
+    }
+
+    /// Settle one interactive receive handle with a bounded uniform result.
+    async fn settle_recv(&self, _receipt: InboundReceipt, _accepted: bool) -> Result<()> {
+        Ok(())
+    }
 
     /// Drain envelopes this carrier holds **in transit for third parties**
     /// (docs/05-transports.md §4.2 rule 5, ADR-0009): sealed envelopes that

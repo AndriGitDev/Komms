@@ -13,6 +13,12 @@ if [ "$(uname -s)" != "Darwin" ]; then
     exit 1
 fi
 
+# A standalone CommandLineTools selection does not expose iPhoneOS SDKs.
+# Prefer the full default Xcode when the caller has not selected another one.
+if [ -z "${DEVELOPER_DIR:-}" ] && [ -d /Applications/Xcode.app/Contents/Developer ]; then
+    export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
+fi
+
 root="$(cd "$(dirname "$0")/../../.." && pwd)"
 out="$root/apps/ios/KultFFI.xcframework"
 

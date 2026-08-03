@@ -1,7 +1,8 @@
 # ADR-0029: Recipient-authenticated sender-key groups
 
-- **Status**: Proposed
+- **Status**: Accepted; implemented for Alpha
 - **Date**: 2026-07-26
+- **Accepted**: 2026-07-29
 - **Supersedes on acceptance**: the membership-level-authenticity tradeoff in
   [ADR-0012](0012-sender-key-groups.md). Sender-key encryption, one shared
   ciphertext, recipient-scoped delivery, and bounded groups remain.
@@ -37,6 +38,17 @@ authenticated pairwise session. Origin keys are unique to:
 The shared sender chain and group ciphertext remain unchanged. Origin keys are
 never shared with another recipient, included in a group broadcast, exported
 in backups, or reused after membership/device/session reset.
+
+Every sender device also advances a nonzero monotonic `origin_generation`
+scoped to the group whenever it rotates a sender chain or any origin
+capability. The pairwise-authenticated announce binds that generation and the
+complete frozen chain snapshot. A recipient stores the generation and a
+commitment to the exact announcement. A larger generation replaces the prior
+chain, an exact same-generation duplicate is idempotent, and a lower or
+same-generation divergent announce is discarded without acknowledgement.
+This ordering is independent of roster generation because periodic chain,
+pairwise-session, and device-authority rotations may occur without a roster
+change.
 
 The recipient knows its own origin key and can fabricate a transcript addressed
 only to itself. It cannot forge the same sender to another recipient. This
@@ -89,10 +101,11 @@ alone, petname, or group roster position.
 
 ### 4. Rotation and removal erase origin capability
 
-Sender-chain rotation creates fresh per-recipient origin keys. Removing an
-account or device deletes its outgoing key at senders and its incoming keys at
-the removed device's honest local state. Surviving members rotate their sender
-chains and origin keys under the same generation transition.
+Sender-chain rotation creates fresh per-recipient origin keys and advances the
+sender device's origin generation. Removing an account or device deletes its
+outgoing key at senders and its incoming keys at the removed device's honest
+local state. Surviving members rotate their sender chains and origin keys under
+the same authority or roster transition.
 
 A removed or compromised member may retain old group and origin keys it already
 saw. Generation, chain-id, roster, recipient-device, and replay binding prevent
@@ -153,3 +166,27 @@ authentication.
   revocable authority model in ADR-0026.
 - Codec, fuzz, reorder, malicious-member, shared-mesh, device-removal, and
   legacy-upgrade tests are release requirements.
+
+## Implementation and assurance boundary
+
+The Alpha implementation uses one origin-authenticated shared ciphertext for
+text, attachments, edits, polls and votes, expiry events, roles, moderation,
+ownership events, and accepted owned-device imports. Stored authors come from
+the verified pairwise sender device and its accepted device-authority chain.
+Roster, device, session, authority, restore, and periodic sender-chain changes
+rotate the recipient capabilities.
+
+Released membership-authenticated history remains readable and explicitly
+labelled as legacy. Live author-sensitive sends stop in a visible upgrade state
+until every current recipient device has completed a fresh pairwise origin
+exchange; historical rows are never rewritten.
+
+Local automated evidence covers fixed-width known-answer tags, malformed and
+fuzz decoding, wrong group/account/device/recipient/chain/content/retention
+bindings, malicious reuse of another recipient's valid wrapper, replay,
+reorder, delayed-announce races, membership and device changes, restore,
+shared-mesh fan-out, transactional crash points, strict RPC and UniFFI, host
+shell journeys, and Android/iOS simulator builds. This is implementation and
+test evidence, not independent cryptographic review, independent
+interoperability, physical-device qualification, or revision-bound CI
+retention.

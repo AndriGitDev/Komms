@@ -1,6 +1,6 @@
 # ADR-0017: Optional hybrid modes preserve a server-independent core
 
-- **Status**: Proposed
+- **Status**: Accepted; operating modes implemented for Alpha
 - **Date**: 2026-07-15
 - **Reference deployment**:
   [ADR-0034](0034-operator-minimized-reference-discovery.md)
@@ -191,6 +191,42 @@ replace signed DHT data, fail a queued message, or generate mesh airtime.
 Applications surface degraded convenience honestly and continue the existing
 delivery ladder. A deployment in which blocking the default service prevents
 communication fails this ADR.
+
+## Implemented Alpha mode profile
+
+One `OperatingMode` contract now drives discovery publication, provider
+selection, rendezvous transport, daemon status, UniFFI, desktop, Android, and
+iOS. Standard and Private Connect records never publish direct routes.
+Sovereign publishes one only after the separate warning acknowledgement and
+always disables optional rendezvous. Manual bootstrap, relay, mailbox, LAN,
+file, mesh, and sneakernet routes remain independent of directory state.
+
+The optional provider directory is signed, versioned, bounded, parent-bound,
+and replaceable. It retains a verified last-valid chain through a bounded
+outage, supports an authenticated future signing-key transition, and reports
+rollback, forks, corrupt retained state, and expired conflicts without choosing
+authority by ordering. Removing the directory configuration disables cached
+defaults without erasing user routes. No production directory, root key,
+default operator, or deployment is included.
+
+Standard rendezvous uses exact leaf-certificate pinning over TLS 1.3 after the
+metadata disclosure is confirmed. Private rendezvous requires an explicit
+loopback Tor SOCKS5 endpoint with proxy-side DNS and request separation; it has
+no direct fallback. This is an implemented client path, not evidence that a
+particular deployment is non-colluding or anonymous.
+
+All shells expose the same mode and directory settings plus the familiar
+**Connected**, **Fallback ready**, and **Waiting for a route** states. Restart
+tests preserve account identity, safety numbers, verification, history, and
+pending work across mode changes. The deterministic local journey gate covers
+default blackhole, alternate bootstrap, replacement, pure-core operation,
+first contact, offline mailbox delivery, route repair, and recovery. The exact
+contract, bounds, commands, and evidence limitations are in
+[Operating modes and provider configuration](../36-operating-modes-and-provider-directory.md).
+
+ADR-0019 native wake remains unimplemented at this point. No local host,
+emulator, or Simulator result qualifies a real distinct-NAT path, external
+operator, mobile background lifecycle, or physical device.
 
 ## Alternatives considered
 

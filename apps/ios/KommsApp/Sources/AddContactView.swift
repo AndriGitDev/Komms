@@ -1,5 +1,5 @@
 // Pairing: scan a friend's compact bundle QR, paste legacy/CLI hex, or add
-// from their kult address alone (DHT lookup).
+// from their capability-scoped Connect code (bounded DHT lookup).
 
 import KommsCore
 import SwiftUI
@@ -8,10 +8,18 @@ struct AddContactView: View {
     @EnvironmentObject private var model: AppModel
     @Environment(\.dismiss) private var dismiss
 
-    private enum Source: String, CaseIterable {
-        case scan = "Scan QR"
-        case paste = "Paste hex"
-        case address = "Address"
+    private enum Source: CaseIterable {
+        case scan
+        case paste
+        case address
+
+        var title: String {
+            switch self {
+            case .scan: return L10n.text("add_scan")
+            case .paste: return L10n.text("add_paste_hex")
+            case .address: return L10n.source("Connect code")
+            }
+        }
     }
 
     @State private var source: Source = .scan
@@ -31,16 +39,21 @@ struct AddContactView: View {
                 }
 
                 Picker("Source", selection: $source) {
-                    ForEach(Source.allCases, id: \.self) { Text($0.rawValue) }
+                    ForEach(Source.allCases, id: \.self) { Text($0.title) }
                 }
                 .pickerStyle(.segmented)
 
                 switch source {
                 case .scan:
-                    Section("Scan their pairing QR") {
+                    Section("Scan their Komms code") {
                         QrScannerView { scanned in
-                            bundleHex = scanned
-                            source = .paste
+                            if scanned.hasPrefix("kc2") {
+                                address = scanned
+                                source = .address
+                            } else {
+                                bundleHex = scanned
+                                source = .paste
+                            }
                         }
                         .frame(height: 260)
                     }
@@ -60,13 +73,13 @@ struct AddContactView: View {
                     }
                 case .address:
                     Section {
-                        TextField("kk1…", text: $address)
+                        TextField("kc2…", text: $address)
                             .font(.caption.monospaced())
                             .incognitoKeyboard()
                     } header: {
-                        Text("kult address")
+                        Text("Connect code")
                     } footer: {
-                        Text("Looks their prekey bundle up on the DHT — needs a working discovery path (bootstrap or LAN).")
+                        Text("Uses a rotating capability-scoped DHT lookup. The stable account fingerprint remains only for verification and visible legacy migration.")
                     }
                 }
 

@@ -2566,6 +2566,7 @@ dependencies = [
 name = "komms-desktop"
 version = "0.3.0"
 dependencies = [
+ "atomicwrites",
  "base64 0.22.1",
  "image",
  "kult-ffi",
@@ -2617,6 +2618,7 @@ dependencies = [
 name = "kult-node"
 version = "0.3.0"
 dependencies = [
+ "atomicwrites",
  "blake3",
  "futures",
  "futures-timer",
@@ -2669,14 +2671,26 @@ name = "kult-transport"
 version = "0.3.0"
 dependencies = [
  "async-trait",
+ "atomicwrites",
+ "cbor4ii",
+ "fs2",
  "futures",
+ "kult-crypto",
  "kult-protocol",
+ "libc",
  "libp2p",
  "libp2p-stream",
  "meshtastic",
+ "postcard",
+ "rand_core 0.6.4",
+ "rusqlite",
+ "rustls",
  "serde",
+ "serde_json",
+ "sha2",
  "socket2 0.6.4",
  "tokio",
+ "tokio-rustls",
  "tracing",
 ]
 
@@ -5926,6 +5940,16 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.118",
+]
+
+[[package]]
+name = "tokio-rustls"
+version = "0.26.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1729aa945f29d91ba541258c8df89027d5792d85a8841fb65e8bf0f4ede4ef61"
+dependencies = [
+ "rustls",
+ "tokio",
 ]
 
 [[package]]

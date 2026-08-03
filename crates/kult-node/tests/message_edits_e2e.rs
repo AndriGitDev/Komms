@@ -93,6 +93,11 @@ async fn pairwise_group_and_backup_views_resolve_immutable_edits() {
     let bob_db = dir.path().join("bob.db");
     let net: Net = Arc::new(Mutex::new(HashMap::new()));
     let mut alice = Node::create(&alice_db, b"alice", TEST_KDF, &mut rng).unwrap();
+    let recovery_path = dir.path().join("alice-account-authority.kra");
+    let recovery_mnemonic = alice
+        .export_account_recovery_authority(&recovery_path)
+        .unwrap();
+    let recovery_package = std::fs::read(&recovery_path).unwrap();
     let mut bob = Node::create(&bob_db, b"bob", TEST_KDF, &mut rng).unwrap();
     alice.add_transport(Arc::new(Link {
         net: net.clone(),
@@ -247,14 +252,27 @@ async fn pairwise_group_and_backup_views_resolve_immutable_edits() {
         .create_group("edited group", &[bob_id], &mut rng)
         .unwrap();
     settle(&mut alice, &mut bob, &mut rng, NOW + 60).await;
+    let invitation = bob
+        .group_invitations()
+        .unwrap()
+        .into_iter()
+        .find(|invitation| invitation.group == group)
+        .expect("group invitation");
+    bob.accept_group_invitation(&invitation.id, NOW + 76, &mut rng)
+        .unwrap();
+    alice.group_upgrade_security(&group, &mut rng).unwrap();
+    bob.tick(NOW + 77, &mut rng).await.unwrap();
+    alice.tick(NOW + 78, &mut rng).await.unwrap();
+    bob.tick(NOW + 79, &mut rng).await.unwrap();
+    alice.tick(NOW + 80, &mut rng).await.unwrap();
     let group_original = alice
-        .group_send(&group, b"group original", NOW + 80, &mut rng)
+        .group_send(&group, b"group original", NOW + 81, &mut rng)
         .unwrap();
     assert!(matches!(
         decode_content(&alice.group_messages(&group).unwrap().last().unwrap().body),
         DecodedContent::Text { id, text: "group original" } if id == group_original
     ));
-    settle(&mut alice, &mut bob, &mut rng, NOW + 81).await;
+    settle(&mut alice, &mut bob, &mut rng, NOW + 82).await;
     let group_edit = alice
         .group_edit_message(
             &group,
@@ -322,10 +340,13 @@ async fn pairwise_group_and_backup_views_resolve_immutable_edits() {
     assert!(bob.resolved_group_messages(&group).unwrap()[0].edited);
 
     let (backup, mnemonic) = alice.export_backup(NOW + 110, &mut rng).unwrap();
-    let restored = Node::restore(
+    let restored = Node::restore_with_recovery_authority(
         &dir.path().join("alice-restored.db"),
         &backup,
         &mnemonic,
+        &recovery_package,
+        &recovery_mnemonic,
+        NOW + 110,
         b"restored",
         TEST_KDF,
         &mut rng,

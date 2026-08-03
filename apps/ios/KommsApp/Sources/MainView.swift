@@ -11,6 +11,7 @@ struct MainView: View {
     @State private var showAdd = false
     @State private var showSettings = false
     @State private var showCreateGroup = false
+    @State private var showRequests = false
     @State private var showNodeDetails = false
     @State private var showFilters = false
     @State private var renameContact: Contact?
@@ -19,6 +20,24 @@ struct MainView: View {
     var body: some View {
         NavigationStack(path: $navigation) {
             List {
+                if let reset = model.authorityResetHistory {
+                    Section {
+                        Label(
+                            L10n.text(
+                                "authority_reset_archive_summary",
+                                L10n.text("authority_reset_archive_title"),
+                                Int(clamping: reset.preservedPairwiseMessages),
+                                Int(clamping: reset.preservedNoteMessages),
+                                Int(clamping: reset.omittedGroups),
+                                Int(clamping: reset.omittedGroupMessages),
+                                reset.pendingReverification.count),
+                            systemImage: "exclamationmark.shield"
+                        )
+                        .font(.footnote)
+                        .foregroundStyle(ThemePalette.warning)
+                    }
+                }
+
                 if !model.notices.isEmpty {
                     Section("Notices") {
                         ForEach(model.notices.indices, id: \.self) { i in
@@ -38,6 +57,32 @@ struct MainView: View {
                         }
                         .buttonStyle(.plain)
                     }
+                }
+
+                Section {
+                    Button {
+                        showRequests = true
+                    } label: {
+                        HStack {
+                            Label("Message requests", systemImage: "person.crop.circle.badge.questionmark")
+                            Spacer()
+                            Text(
+                                pendingRequestCount == 0
+                                    ? L10n.text("message_requests_empty")
+                                    : L10n.plural(
+                                        "pending_requests_count",
+                                        count: pendingRequestCount))
+                                .foregroundStyle(.secondary)
+                                .accessibilityLabel(
+                                    pendingRequestCount == 0
+                                        ? L10n.text("message_requests_empty")
+                                        : L10n.plural(
+                                            "pending_requests_count",
+                                            count: pendingRequestCount)
+                                )
+                        }
+                    }
+                    .accessibilityHint("Review unknown senders and group invitations")
                 }
 
                 if model.pinRows.contains(where: \.pinned) {
@@ -75,7 +120,9 @@ struct MainView: View {
                         !model.isPinned(PinTarget(kind: .noteToSelf, id: nil)) {
                       NavigationLink(value: NoteRoute(id: model.noteToSelfId())) {
                         HStack {
-                            CustomIconAvatar(target: .init(kind: .noteToSelf, id: nil), label: "Note to self")
+                            CustomIconAvatar(
+                                target: .init(kind: .noteToSelf, id: nil),
+                                label: L10n.text("note_to_self_title"))
                             VStack(alignment: .leading) {
                                 Text("Note to self")
                                 Text("Local only")
@@ -130,8 +177,10 @@ struct MainView: View {
                                 CustomIconAvatar(target: .init(kind: .group, id: group.id), label: group.name)
                                 VStack(alignment: .leading) {
                                     Text(group.name)
-                                    Text("\(group.members.count) "
-                                         + (group.members.count == 1 ? "member" : "members"))
+                                    Text(
+                                        L10n.plural(
+                                            "group_member_count",
+                                            count: group.members.count))
                                         .font(.caption)
                                         .foregroundStyle(.secondary)
                                     LabelBadgeRow(labels: model.labelsForTarget(LabelTarget(kind: .group, id: group.id)))
@@ -183,6 +232,7 @@ struct MainView: View {
             .sheet(isPresented: $showFilters) { ConversationFiltersView() }
             .sheet(isPresented: $showMyQr) { MyBundleView() }
             .sheet(isPresented: $showAdd) { AddContactView() }
+            .sheet(isPresented: $showRequests) { MessageRequestsView() }
             .sheet(isPresented: Binding(
                 get: { renameContact != nil },
                 set: { if !$0 { renameContact = nil } })) {
@@ -198,6 +248,10 @@ struct MainView: View {
                 }
             }
         }
+    }
+
+    private var pendingRequestCount: Int {
+        model.messageRequests.count + model.groupInvitations.count
     }
 
     private var filterIcon: String {
@@ -219,7 +273,7 @@ struct MainView: View {
             }
         case .group:
             if let id = row.target.id {
-                let name = row.displayName ?? "Group"
+                let name = row.displayName ?? L10n.text("group_default_name")
                 NavigationLink(value: GroupRoute(id: id)) {
                     HStack {
                         CustomIconAvatar(target: .init(kind: .group, id: id), label: name)
@@ -230,7 +284,9 @@ struct MainView: View {
         case .noteToSelf:
             NavigationLink(value: NoteRoute(id: model.noteToSelfId())) {
                 HStack {
-                    CustomIconAvatar(target: .init(kind: .noteToSelf, id: nil), label: "Note to self")
+                    CustomIconAvatar(
+                        target: .init(kind: .noteToSelf, id: nil),
+                        label: L10n.text("note_to_self_title"))
                     Text("Note to self")
                 }
             }
@@ -251,18 +307,26 @@ private struct NodeSummaryRow: View {
     let status: Status
 
     private var symbol: String {
-        switch status.nat {
-        case .public: return "checkmark.shield.fill"
-        case .private: return "shield.lefthalf.filled"
-        case .unknown: return "hourglass"
+        switch status.connection {
+        case .connected: return "checkmark.shield.fill"
+        case .fallbackReady: return "arrow.triangle.branch"
+        case .waitingForRoute: return "hourglass"
+        }
+    }
+
+    private var mode: String {
+        switch status.mode {
+        case .standard: return L10n.text("mode_standard")
+        case .private: return L10n.text("mode_private")
+        case .sovereign: return L10n.text("mode_sovereign")
         }
     }
 
     private var summary: String {
-        switch status.nat {
-        case .public: return "Directly reachable"
-        case .private: return "Connected behind NAT"
-        case .unknown: return "Checking reachability"
+        switch status.connection {
+        case .connected: return L10n.text("connection_connected")
+        case .fallbackReady: return L10n.text("connection_fallback_ready")
+        case .waitingForRoute: return L10n.text("connection_waiting")
         }
     }
 
@@ -270,20 +334,27 @@ private struct NodeSummaryRow: View {
         HStack(spacing: 12) {
             Image(systemName: symbol)
                 .font(.title3)
-                .foregroundStyle(status.nat == .unknown ? ThemePalette.warning : ThemePalette.success)
+                .foregroundStyle(
+                    status.connection == .waitingForRoute
+                        ? ThemePalette.warning
+                        : ThemePalette.success
+                )
                 .frame(width: 34, height: 34)
                 .background(ThemePalette.surfaceRaised, in: Circle())
             VStack(alignment: .leading, spacing: 3) {
-                Text("Node running")
+                Text(mode)
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(ThemePalette.textPrimary)
-                Text("\(summary) · \(status.lanPeers.count) LAN \(status.lanPeers.count == 1 ? "peer" : "peers")")
+                Text(summary)
                     .font(.caption)
                     .foregroundStyle(ThemePalette.textSecondary)
             }
             Spacer()
             if status.queued > 0 {
-                Text("\(status.queued) queued")
+                Text(
+                    L10n.plural(
+                        "queued_count",
+                        count: Int(clamping: status.queued)))
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(ThemePalette.warning)
             }
@@ -303,21 +374,64 @@ private struct NodeDetailsView: View {
 
     private var natText: String {
         switch status.nat {
-        case .public: return "Public — directly reachable"
-        case .private: return "Private — behind NAT"
-        case .unknown: return "Unknown — not probed yet"
+        case .public: return L10n.text("nat_public")
+        case .private: return L10n.text("nat_private")
+        case .unknown: return L10n.text("nat_unknown")
+        }
+    }
+
+    private var modeText: String {
+        switch status.mode {
+        case .standard: return L10n.text("mode_standard")
+        case .private: return L10n.text("mode_private")
+        case .sovereign: return L10n.text("mode_sovereign")
+        }
+    }
+
+    private var connectionText: String {
+        switch status.connection {
+        case .connected: return L10n.text("connection_connected")
+        case .fallbackReady: return L10n.text("connection_fallback_ready")
+        case .waitingForRoute: return L10n.text("connection_waiting")
+        }
+    }
+
+    private var providerDirectoryText: String {
+        switch status.providerDirectory {
+        case .notConfigured: return L10n.text("directory_not_configured")
+        case .current: return L10n.text("directory_current")
+        case .retainedLastValid: return L10n.text("directory_retained")
+        case .stale: return L10n.text("directory_stale")
+        case .conflict: return L10n.text("directory_conflict")
+        case .unavailable: return L10n.text("directory_unavailable")
         }
     }
 
     var body: some View {
         NavigationStack {
             List {
+                Section("Operating mode") {
+                    LabeledContent("Mode", value: modeText)
+                    LabeledContent("Connection", value: connectionText)
+                    LabeledContent("Provider directory", value: providerDirectoryText)
+                    LabeledContent("Connected peers", value: String(status.connectedPeers))
+                }
                 Section("Identity") {
-                    LabeledContent("Address") {
+                    LabeledContent("Connect code") {
+                        Text(status.connectCode)
+                            .font(.footnote.monospaced())
+                            .textSelection(.enabled)
+                    }
+                    LabeledContent("Account fingerprint") {
                         Text(status.address)
                             .font(.footnote.monospaced())
                             .textSelection(.enabled)
                     }
+                    LabeledContent(
+                        "Legacy lookup",
+                        value: status.legacyDiscovery
+                            ? L10n.text("discovery_legacy_enabled")
+                            : L10n.text("discovery_legacy_retired"))
                 }
                 Section("Reachability") {
                     LabeledContent("NAT", value: natText)
@@ -422,6 +536,11 @@ private struct ConversationFiltersView: View {
 private struct MyBundleView: View {
     @EnvironmentObject private var model: AppModel
     @State private var bundleHex: String?
+    @State private var connectCode: String?
+    @State private var legacyDiscovery = false
+    @State private var working = false
+    @State private var confirmRotation = false
+    @State private var confirmLegacyRetirement = false
     @State private var error: String?
 
     var body: some View {
@@ -440,7 +559,11 @@ private struct MyBundleView: View {
                                 } else {
                                     QrCodeView(text: frames[index], correctionLevel: "L")
                                         .frame(width: 320, height: 320)
-                                    Text("Pairing frame \(index + 1) of \(frames.count) · keep the scanner pointed here")
+                                    Text(
+                                        L10n.text(
+                                            "my_qr_frame",
+                                            index + 1,
+                                            frames.count))
                                         .font(.footnote.weight(.semibold))
                                         .foregroundStyle(.secondary)
                                         .multilineTextAlignment(.center)
@@ -454,6 +577,29 @@ private struct MyBundleView: View {
                             .font(.caption2.monospaced())
                             .textSelection(.enabled)
                             .padding(.horizontal)
+                        if let connectCode {
+                            Divider()
+                            Text("Connect code")
+                                .font(.headline)
+                            QrCodeView(text: connectCode, correctionLevel: "M")
+                                .frame(width: 260, height: 260)
+                            Text(connectCode)
+                                .font(.caption2.monospaced())
+                                .textSelection(.enabled)
+                                .padding(.horizontal)
+                            Text("Rotating this capability changes reachability without changing your identity, contacts, history, or safety numbers.")
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                                .multilineTextAlignment(.center)
+                            Button("Rotate Connect code") { confirmRotation = true }
+                                .disabled(working)
+                            if legacyDiscovery {
+                                Button("Retire legacy lookup", role: .destructive) {
+                                    confirmLegacyRetirement = true
+                                }
+                                .disabled(working)
+                            }
+                        }
                     } else if let error {
                         Text(error).foregroundStyle(.red)
                     } else {
@@ -462,13 +608,57 @@ private struct MyBundleView: View {
                 }
                 .padding()
             }
-            .navigationTitle("My pairing QR")
+            .navigationTitle("My codes")
             .task {
                 do {
-                    bundleHex = try await model.myBundleHex()
+                    async let bundle = model.myBundleHex()
+                    async let code = model.connectCode()
+                    bundleHex = try await bundle
+                    connectCode = try await code
+                    legacyDiscovery = model.status?.legacyDiscovery ?? false
                 } catch {
                     self.error = errorText(error)
                 }
+            }
+            .confirmationDialog(
+                "Rotate Connect code?",
+                isPresented: $confirmRotation,
+                titleVisibility: .visible
+            ) {
+                Button("Rotate", role: .destructive) {
+                    Task {
+                        working = true
+                        defer { working = false }
+                        do {
+                            connectCode = try await model.rotateConnectCode()
+                            legacyDiscovery = false
+                        } catch {
+                            self.error = errorText(error)
+                        }
+                    }
+                }
+            } message: {
+                Text("Old codes stop finding you after their bounded records expire. Identity and safety numbers remain unchanged.")
+            }
+            .confirmationDialog(
+                "Retire legacy lookup?",
+                isPresented: $confirmLegacyRetirement,
+                titleVisibility: .visible
+            ) {
+                Button("Retire permanently", role: .destructive) {
+                    Task {
+                        working = true
+                        defer { working = false }
+                        do {
+                            connectCode = try await model.retireLegacyDiscovery()
+                            legacyDiscovery = false
+                        } catch {
+                            self.error = errorText(error)
+                        }
+                    }
+                }
+            } message: {
+                Text("This stops mailbox-only lookup under the stable Alpha address. It does not change identity or delete remote copies.")
             }
         }
     }

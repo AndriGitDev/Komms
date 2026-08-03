@@ -15,10 +15,17 @@ pub enum NodeError {
     Transport(kult_transport::TransportError),
     /// The peer is not a stored contact.
     UnknownPeer,
+    /// The bounded message-request id is absent or has expired.
+    UnknownMessageRequest,
+    /// The bounded group-invitation id is absent, invalid, or has expired.
+    UnknownGroupInvitation,
     /// A local petname is empty, control-bearing, or exceeds its canonical bound.
     InvalidContactName,
     /// The proposed petname has warnings that the caller has not acknowledged.
     ContactNameReviewRequired,
+    /// A copied-root reset preserved this petname, but the new account safety
+    /// number has not yet been compared out of band.
+    ContactReverificationRequired,
     /// Local text-formatting source or highlight ranges violate shared bounds.
     InvalidTextFormatting,
     /// No established session and no stored prekey bundle to start one —
@@ -35,10 +42,24 @@ pub enum NodeError {
     /// requested address — an unpublished peer and a forged record are
     /// deliberately indistinguishable here.
     BundleNotFound,
+    /// Optional post-pairing rendezvous is disabled, invalidly configured, or
+    /// lacks the authenticated session material required for this operation.
+    RendezvousUnavailable,
+    /// The same authenticated rendezvous generation described two different
+    /// complete provider sets or route records.
+    RendezvousConflict,
+    /// Optional native wake is disabled or lacks a configured client.
+    WakeUnavailable,
+    /// The same authenticated wake generation described different complete
+    /// capability sets.
+    WakeConflict,
     /// The group id names no stored group.
     UnknownGroup,
     /// Only the group's creator may add, remove, or re-key (ADR-0012).
     NotGroupCreator,
+    /// This group still has membership-authenticated sender-key state or an
+    /// active device that has not authenticated ADR-0029 support.
+    GroupSecurityUpgradeRequired,
     /// Mention targets or UTF-8 byte ranges are invalid for the current group.
     InvalidMention,
     /// One or more current co-members do not support exact Mention content.
@@ -113,6 +134,11 @@ pub enum NodeError {
     DeviceLinkTargetNotEmpty,
     /// No matching source/target ceremony is currently pending in memory.
     NoPendingDeviceLink,
+    /// No ordinary device-authority proposal is awaiting additional approval.
+    NoPendingDeviceAuthority,
+    /// An ordinary device-authority approval or proposal is malformed,
+    /// mismatched, or belongs to a different operation.
+    InvalidDeviceAuthority,
     /// The exact physical-device id is unknown or already revoked.
     UnknownLinkedDevice,
     /// The current physical installation cannot revoke itself in place.
@@ -121,6 +147,26 @@ pub enum NodeError {
     InvalidDeviceSync,
     /// A contact device manifest is stale, fork-losing, or rewrites authority.
     InvalidDeviceManifest,
+    /// A pre-ADR-0026 single-device profile requires explicit recovery export.
+    AuthorityMigrationRequired,
+    /// A copied-root Alpha profile requires a visible new-identity reset.
+    AuthorityResetRequired,
+    /// A root-free backup needs the separately held offline recovery package
+    /// and its mnemonic before stable identity recovery can proceed.
+    RecoveryAuthorityRequired,
+    /// Too many failed local attempts opened the same offline authority.
+    RecoveryAttemptLimited,
+    /// The one-time genesis recovery authority was already exported or this
+    /// profile was opened from an existing store.
+    RecoveryAuthorityUnavailable,
+    /// The proposed transition still lacks a strict majority of active devices.
+    DeviceQuorumRequired,
+    /// A concurrent valid ordinary authority branch was observed.
+    DeviceAuthorityFork,
+    /// Different root transitions claim the same recovery epoch.
+    DeviceRecoveryConflict,
+    /// Authority state descends from an already superseded recovery epoch.
+    OldDeviceAuthorityEpoch,
 }
 
 impl std::fmt::Display for NodeError {
@@ -131,17 +177,39 @@ impl std::fmt::Display for NodeError {
             Self::Protocol(e) => write!(f, "protocol error: {e}"),
             Self::Transport(e) => write!(f, "transport error: {e}"),
             Self::UnknownPeer => f.write_str("peer is not a stored contact"),
+            Self::UnknownMessageRequest => {
+                f.write_str("message request does not exist or has expired")
+            }
+            Self::UnknownGroupInvitation => {
+                f.write_str("group invitation does not exist or has expired")
+            }
             Self::InvalidContactName => f.write_str("invalid contact name"),
             Self::ContactNameReviewRequired => {
                 f.write_str("contact name warnings require explicit confirmation")
+            }
+            Self::ContactReverificationRequired => {
+                f.write_str("contact requires safety-number re-verification after authority reset")
             }
             Self::InvalidTextFormatting => f.write_str("invalid text formatting request"),
             Self::NoSession => f.write_str("no session and no prekey bundle for this peer"),
             Self::CorruptState => f.write_str("node state missing or corrupt"),
             Self::NoDiscovery => f.write_str("no usable discovery plane"),
             Self::BundleNotFound => f.write_str("no verifiable prekey bundle found for address"),
+            Self::RendezvousUnavailable => {
+                f.write_str("pairwise rendezvous is unavailable for this relationship")
+            }
+            Self::RendezvousConflict => {
+                f.write_str("conflicting pairwise rendezvous state was detected")
+            }
+            Self::WakeUnavailable => f.write_str("native wake is unavailable"),
+            Self::WakeConflict => {
+                f.write_str("conflicting native-wake capability state was detected")
+            }
             Self::UnknownGroup => f.write_str("group id names no stored group"),
             Self::NotGroupCreator => f.write_str("only the group creator may change it"),
+            Self::GroupSecurityUpgradeRequired => {
+                f.write_str("group security upgrade is required before this action")
+            }
             Self::InvalidMention => f.write_str("invalid group mention text, range, or target"),
             Self::MentionUnsupported => {
                 f.write_str("one or more group members do not support mentions")
@@ -196,6 +264,12 @@ impl std::fmt::Display for NodeError {
                 f.write_str("device linking target contains existing account state")
             }
             Self::NoPendingDeviceLink => f.write_str("no matching device link is pending"),
+            Self::NoPendingDeviceAuthority => {
+                f.write_str("no device authority proposal is pending")
+            }
+            Self::InvalidDeviceAuthority => {
+                f.write_str("invalid or mismatched device authority proposal")
+            }
             Self::UnknownLinkedDevice => f.write_str("linked device is unknown or revoked"),
             Self::CannotRevokeCurrentDevice => {
                 f.write_str("the current device cannot revoke itself")
@@ -203,6 +277,33 @@ impl std::fmt::Display for NodeError {
             Self::InvalidDeviceSync => f.write_str("invalid or replayed device sync bundle"),
             Self::InvalidDeviceManifest => {
                 f.write_str("invalid or rolled-back contact device manifest")
+            }
+            Self::AuthorityMigrationRequired => {
+                f.write_str("explicit offline-authority migration is required")
+            }
+            Self::AuthorityResetRequired => {
+                f.write_str("an authority reset with a new identity is required")
+            }
+            Self::RecoveryAuthorityRequired => {
+                f.write_str("the offline account recovery authority is required")
+            }
+            Self::RecoveryAttemptLimited => f.write_str(
+                "offline recovery attempts are temporarily limited; wait before retrying",
+            ),
+            Self::RecoveryAuthorityUnavailable => {
+                f.write_str("no unexported offline account recovery authority is available")
+            }
+            Self::DeviceQuorumRequired => {
+                f.write_str("additional active-device approval is required")
+            }
+            Self::DeviceAuthorityFork => {
+                f.write_str("a conflicting device-authority branch was detected")
+            }
+            Self::DeviceRecoveryConflict => {
+                f.write_str("conflicting account-root recoveries were detected")
+            }
+            Self::OldDeviceAuthorityEpoch => {
+                f.write_str("device authority belongs to an older recovery epoch")
             }
         }
     }

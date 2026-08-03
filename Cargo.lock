@@ -1681,6 +1681,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "kult-conformance"
+version = "0.3.0"
+dependencies = [
+ "argon2",
+ "blake3",
+ "chacha20poly1305",
+ "ed25519-dalek",
+ "hex",
+ "hkdf",
+ "kult-crypto",
+ "kult-protocol",
+ "kult-store",
+ "kult-transport",
+ "postcard",
+ "rand_core 0.6.4",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "x25519-dalek",
+]
+
+[[package]]
 name = "kult-crypto"
 version = "0.3.0"
 dependencies = [
@@ -1697,6 +1720,7 @@ dependencies = [
  "rand 0.8.7",
  "rand_core 0.6.4",
  "serde",
+ "serde_json",
  "sha2",
  "subtle",
  "x25519-dalek",
@@ -1713,6 +1737,7 @@ dependencies = [
  "kult-protocol",
  "kult-store",
  "kult-transport",
+ "postcard",
  "rand 0.8.7",
  "serde_json",
  "tempfile",
@@ -1721,16 +1746,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "kult-mailbox"
+version = "0.3.0"
+dependencies = [
+ "clap",
+ "kult-transport",
+ "libc",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "toml",
+]
+
+[[package]]
 name = "kult-node"
 version = "0.3.0"
 dependencies = [
  "async-trait",
+ "atomicwrites",
  "blake3",
  "futures",
  "futures-timer",
  "image",
  "kult-crypto",
  "kult-protocol",
+ "kult-rendezvous",
  "kult-store",
  "kult-transport",
  "postcard",
@@ -1747,6 +1788,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "kult-ohttp-relay"
+version = "0.3.0"
+dependencies = [
+ "clap",
+ "hex",
+ "hmac",
+ "libc",
+ "rand_core 0.6.4",
+ "rcgen",
+ "rustls",
+ "serde",
+ "sha2",
+ "tempfile",
+ "tokio",
+ "tokio-rustls",
+ "toml",
+ "zeroize",
+]
+
+[[package]]
 name = "kult-protocol"
 version = "0.3.0"
 dependencies = [
@@ -1759,6 +1820,43 @@ dependencies = [
  "rand_core 0.6.4",
  "serde",
  "sha2",
+ "zeroize",
+]
+
+[[package]]
+name = "kult-reference-service"
+version = "0.3.0"
+dependencies = [
+ "clap",
+ "futures",
+ "hex",
+ "hmac",
+ "kult-crypto",
+ "kult-protocol",
+ "kult-rendezvous",
+ "kult-transport",
+ "libc",
+ "libp2p",
+ "rand_core 0.6.4",
+ "rcgen",
+ "rustls",
+ "serde",
+ "sha2",
+ "tempfile",
+ "tokio",
+ "tokio-rustls",
+ "toml",
+ "zeroize",
+]
+
+[[package]]
+name = "kult-rendezvous"
+version = "0.3.0"
+dependencies = [
+ "kult-crypto",
+ "kult-protocol",
+ "rand 0.8.7",
+ "rand_core 0.6.4",
  "zeroize",
 ]
 
@@ -1786,18 +1884,64 @@ name = "kult-transport"
 version = "0.3.0"
 dependencies = [
  "async-trait",
+ "atomicwrites",
+ "cbor4ii",
+ "ed25519-dalek",
+ "fs2",
  "futures",
  "kult-crypto",
  "kult-protocol",
+ "libc",
  "libp2p",
  "libp2p-stream",
  "meshtastic",
+ "postcard",
  "rand 0.8.7",
+ "rand_core 0.6.4",
+ "rcgen",
+ "rusqlite",
+ "rustls",
  "serde",
+ "serde_json",
+ "sha2",
  "socket2 0.6.4",
  "tempfile",
  "tokio",
+ "tokio-rustls",
  "tracing",
+]
+
+[[package]]
+name = "kult-wake"
+version = "0.3.0"
+dependencies = [
+ "async-trait",
+ "base64",
+ "bytes",
+ "chacha20poly1305",
+ "clap",
+ "hex",
+ "hmac",
+ "http",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "kult-protocol",
+ "libc",
+ "rand 0.8.7",
+ "rand_core 0.6.4",
+ "rcgen",
+ "ring",
+ "rusqlite",
+ "rustls",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "tokio",
+ "tokio-rustls",
+ "toml",
+ "zeroize",
 ]
 
 [[package]]
@@ -3865,6 +4009,16 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
+]
+
+[[package]]
+name = "tokio-rustls"
+version = "0.26.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1729aa945f29d91ba541258c8df89027d5792d85a8841fb65e8bf0f4ede4ef61"
+dependencies = [
+ "rustls",
+ "tokio",
 ]
 
 [[package]]

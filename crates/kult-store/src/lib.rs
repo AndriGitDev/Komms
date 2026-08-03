@@ -24,9 +24,13 @@ use rusqlite::{Connection, Transaction, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
-use kult_crypto::{derive_kek, CryptoError, Identity, KdfProfile, Session, StorageKey};
-use kult_protocol::{CapabilityControl, Envelope};
+use kult_crypto::{
+    derive_kek, CryptoError, GroupMessage, Identity, IdentityPublic, KdfProfile, Session,
+    StorageKey, GROUP_MESSAGE_VERSION_LEGACY, GROUP_MESSAGE_VERSION_ORIGIN,
+};
+use kult_protocol::{CapabilityControl, Envelope, MAX_GROUP_AUTHORITY_MEMBERS};
 
+mod admission;
 mod backup;
 mod commit;
 mod devices;
@@ -38,24 +42,48 @@ mod migration;
 mod note;
 #[cfg(test)]
 mod opaque_tests;
+mod rendezvous;
 #[cfg(test)]
 mod scale_bench;
 mod scheduled;
 mod store_v2;
+mod wake;
 
-pub use backup::BACKUP_MAGIC;
+const ACCOUNT_PUBLIC_MAGIC: &[u8; 4] = b"KAP2";
+const PENDING_ENVELOPE_RECORD_VERSION: u8 = 1;
+
+#[derive(Serialize, Deserialize)]
+struct PendingEnvelopeRecord {
+    version: u8,
+    encoded: Vec<u8>,
+    first_seen: u64,
+    transport: AdmissionTransportClass,
+}
+
+pub use admission::{
+    AdmissionReplayTombstone, AdmissionTransportClass, BlockedIdentityRecord,
+    ProvisionalRequestRecord, MAX_ADMISSION_REPLAY_LIFETIME_SECS, MAX_ADMISSION_REPLAY_TOMBSTONES,
+    MAX_BLOCKED_IDENTITIES, MAX_PROVISIONAL_CONTENT_BYTES, MAX_PROVISIONAL_LIFETIME_SECS,
+    MAX_PROVISIONAL_PREVIEW_BYTES, MAX_PROVISIONAL_REQUESTS, MAX_PROVISIONAL_REQUEST_BYTES,
+    MAX_PROVISIONAL_SESSION_BYTES, PROVISIONAL_REQUEST_VERSION,
+};
+pub use backup::{AUTHORITY_BACKUP_MAGIC, BACKUP_MAGIC};
 pub use commit::{
-    AttachmentStagePlan, AttachmentStatePlan, CapabilityDelete, CommitPlan, CommitReceipt,
-    CommittedRecordIds, ContactDeviceDelete, ContactTransition, DeferredControlKind,
-    DeferredControlRecord, DeliveryTransition, DeviceControlPlan, DeviceLinkPlan,
+    AccountIdentityTransition, AdmissionAcceptPlan, AdmissionDiscardPlan, AdmissionStagePlan,
+    AdmissionSweepPlan, AttachmentStagePlan, AttachmentStatePlan, AuthorityDeviceControlPlan,
+    AuthorityDeviceLinkPlan, AuthorityMigrationPlan, AuthorityProfileBootstrapPlan,
+    CapabilityDelete, CommitPlan, CommitReceipt, CommittedRecordIds, ContactDeviceDelete,
+    ContactDeviceTransition, ContactTransition, DeferredControlKind, DeferredControlRecord,
+    DeliveryTransition, DeviceAuthorityStateTransition, DeviceControlPlan,
     DeviceLinkRecoveryTransition, DeviceProjection, DeviceProjectionPlan, DeviceStateTransition,
     EphemeralTransition, GroupAuthorityStateTransition, GroupAuthorityTransition,
     GroupChainStateTransition, GroupChainTransition, GroupMessageDelete, GroupMessageTransition,
     GroupReceivePlan, GroupSendPlan, GroupStatePlan, GroupStateTransition, GroupTransition,
-    HandshakeReceivePlan, IdentityTransition, MaintenancePlan, MediaDelete, MediaObjectTransition,
+    HandshakeReceivePlan, MaintenancePlan, MediaDelete, MediaObjectTransition,
     MediaTransferTransition, MessageDelete, MessageTransition, PairwiseReceivePlan,
-    PairwiseSendPlan, PendingDelete, PrekeyPublishPlan, PrekeyTransition, ProfileBootstrapPlan,
-    QueueDelete, QueueTransition, ReceiptReceivePlan, SessionDelete, SessionTransition,
+    PairwiseSendPlan, PendingDelete, PendingStagePlan, PrekeyPublishPlan, PrekeyTransition,
+    QueueDelete, QueueTransition, ReceiptReceivePlan, RendezvousServiceTransition, SessionDelete,
+    SessionTransition, WakeRevocationPlan, WakeRevocationTransition, WakeServiceTransition,
     MAX_ATTACHMENT_STAGE_MUTATIONS, MAX_COMMIT_MUTATIONS, MAX_COMMIT_QUEUE_ROWS,
     MAX_DEFERRED_CONTROLS, MAX_DEVICE_CONTROL_MUTATIONS, MAX_DEVICE_LINK_MUTATIONS,
     MAX_DEVICE_PROJECTION_MUTATIONS, MAX_GROUP_COMMIT_MUTATIONS, MAX_GROUP_COMMIT_QUEUE_ROWS,
@@ -64,25 +92,30 @@ pub use commit::{
 };
 #[cfg(feature = "test-failpoints")]
 pub use commit::{CommitFailpoint, CommitFailure};
+#[cfg(any(test, feature = "legacy-test-fixtures"))]
+pub use commit::{DeviceLinkPlan, IdentityTransition, ProfileBootstrapPlan};
 pub use devices::{
-    ContactDeviceRecord, DeviceChannelRecord, DeviceLinkRecoveryRecord, DeviceStateRecord,
-    DeviceTransferGroup, DeviceTransferSelection, DeviceTransferSnapshot,
-    MessageDeviceDeliveryRecord, MAX_DEVICE_SYNC_EVENTS, MAX_DEVICE_SYNC_EVENT_BYTES,
+    ContactDeviceRecord, DeviceAuthorityConflictKind, DeviceAuthorityConflictRecord,
+    DeviceAuthorityStateRecord, DeviceChannelRecord, DeviceLinkRecoveryRecord, DeviceStateRecord,
+    DeviceTransferGroup, DeviceTransferSelection, DeviceTransferSnapshot, DiscoveryCapabilityState,
+    MessageDeviceDeliveryRecord, MAX_DEVICE_AUTHORITY_CONFLICTS, MAX_DEVICE_SYNC_EVENTS,
+    MAX_DEVICE_SYNC_EVENT_BYTES,
 };
 pub use ephemeral::{EphemeralConversation, EphemeralMode, EphemeralRecord, EphemeralState};
 pub use local_metadata::{
-    render_label_color, valid_folder_name, valid_label_color, valid_label_name, ConversationId,
+    render_label_color, valid_folder_name, valid_label_color, valid_label_name,
+    AuthorityResetHistoryRecord, ContactAuthorityConflictRecord, ConversationId,
     ConversationMetadata, CustomIconRecord, CustomIconTarget, DraftRecord, FolderAssignment,
     FolderConversationResult, FolderRecord, FolderSelection, LabelAssignment, LabelFilterMode,
     LabelFilterResult, LabelRecord, LocalMetadataKey, LocalMetadataRecord, PinConversationRecord,
     PinConversationResult, PinRecord, PinStatusRecord, StaleFolderAssignment, StaleFolderReason,
     StaleLabelAssignment, StaleLabelReason, ThemePreference, UiPreferenceRecord,
-    CUSTOM_ICON_BUNDLED_GLYPHS, CUSTOM_ICON_DIMENSION, CUSTOM_ICON_MEDIA_TYPE,
-    FOLDER_ID_RETRY_LIMIT, LABEL_COLORS, LABEL_ID_RETRY_LIMIT, MAX_CUSTOM_ICONS,
-    MAX_CUSTOM_ICON_BYTES, MAX_CUSTOM_ICON_TOTAL_BYTES, MAX_DRAFT_BYTES, MAX_FOLDERS,
-    MAX_FOLDER_ASSIGNMENTS, MAX_LABELS, MAX_LABELS_PER_CONVERSATION, MAX_LABEL_ASSIGNMENTS,
-    MAX_LOCAL_METADATA_STRING_BYTES, MAX_PINS, MAX_UI_PREFERENCE_VALUE_BYTES, THEME_PREFERENCES,
-    THEME_PREFERENCE_KEY, THEME_SEMANTIC_ROLES,
+    AUTHORITY_RESET_HISTORY_KEY, CONTACT_AUTHORITY_CONFLICTS_KEY, CUSTOM_ICON_BUNDLED_GLYPHS,
+    CUSTOM_ICON_DIMENSION, CUSTOM_ICON_MEDIA_TYPE, FOLDER_ID_RETRY_LIMIT, LABEL_COLORS,
+    LABEL_ID_RETRY_LIMIT, MAX_AUTHORITY_RESET_CONTACTS, MAX_CUSTOM_ICONS, MAX_CUSTOM_ICON_BYTES,
+    MAX_CUSTOM_ICON_TOTAL_BYTES, MAX_DRAFT_BYTES, MAX_FOLDERS, MAX_FOLDER_ASSIGNMENTS, MAX_LABELS,
+    MAX_LABELS_PER_CONVERSATION, MAX_LABEL_ASSIGNMENTS, MAX_LOCAL_METADATA_STRING_BYTES, MAX_PINS,
+    MAX_UI_PREFERENCE_VALUE_BYTES, THEME_PREFERENCES, THEME_PREFERENCE_KEY, THEME_SEMANTIC_ROLES,
 };
 pub use maintenance::{
     StorageMaintenanceOptions, StorageMaintenanceReport, MAX_MAINTENANCE_VACUUM_PAGES,
@@ -94,7 +127,19 @@ pub use media::{
     DEFAULT_MEDIA_STORE_QUOTA, MAX_MEDIA_STORE_QUOTA,
 };
 pub use note::{NoteMessageRecord, MAX_NOTE_TEXT_BYTES, NOTE_TO_SELF_CONVERSATION_ID};
+pub use rendezvous::{
+    RendezvousLocalConfig, RendezvousLocalProvider, RendezvousProviderState,
+    RendezvousServiceState, RendezvousStoredRoute, MAX_RENDEZVOUS_LOCAL_CONFIG_BYTES,
+    MAX_RENDEZVOUS_LOCAL_PROVIDERS, MAX_RENDEZVOUS_PROVIDERS_PER_SESSION,
+    MAX_RENDEZVOUS_SERVICE_STATE_BYTES, RENDEZVOUS_LOCAL_CONFIG_VERSION,
+    RENDEZVOUS_SERVICE_STATE_VERSION,
+};
 pub use scheduled::{ScheduledConversation, ScheduledMessageRecord};
+pub use wake::{
+    WakeCapabilityDirection, WakeRevocationRecord, WakeServiceState, WakeStoredCapability,
+    MAX_WAKE_CAPABILITIES_PER_SESSION, MAX_WAKE_REVOCATION_RECORD_BYTES, MAX_WAKE_REVOCATION_ROWS,
+    MAX_WAKE_SERVICE_STATE_BYTES, WAKE_REVOCATION_RECORD_VERSION, WAKE_SERVICE_STATE_VERSION,
+};
 
 /// Failures surfaced by the store.
 #[derive(Debug)]
@@ -125,6 +170,8 @@ pub enum StoreError {
     GroupLimit,
     /// The bounded deferred-inbox item or sealed-byte quota is exhausted.
     PendingQuota,
+    /// The bounded provisional-request, replay, or local-block quota is exhausted.
+    AdmissionQuota,
     /// Configured or protocol-hard media quota would be exceeded.
     MediaQuota,
     /// Committing a media chunk would violate the free-space reserve.
@@ -226,6 +273,7 @@ impl std::fmt::Display for StoreError {
             Self::InvalidTransition => f.write_str("invalid durable protocol transition"),
             Self::GroupLimit => f.write_str("profile group limit exhausted"),
             Self::PendingQuota => f.write_str("deferred inbox quota exhausted"),
+            Self::AdmissionQuota => f.write_str("first-contact admission quota exhausted"),
             Self::MediaQuota => f.write_str("media quota exceeded"),
             Self::LowStorage => f.write_str("insufficient reserved filesystem space"),
             Self::MediaState => f.write_str("invalid media transfer state"),
@@ -324,6 +372,25 @@ where
         return Err(StoreError::Serialization);
     }
     Ok(value)
+}
+
+fn decode_pending_envelope(bytes: &[u8]) -> Result<(Envelope, u64, AdmissionTransportClass)> {
+    if let Ok(record) = decode_exact::<PendingEnvelopeRecord>(bytes) {
+        if record.version != PENDING_ENVELOPE_RECORD_VERSION {
+            return Err(StoreError::RecordBounds);
+        }
+        return Ok((
+            Envelope::decode(&record.encoded)?,
+            record.first_seen,
+            record.transport,
+        ));
+    }
+    let (encoded, first_seen): (Vec<u8>, u64) = decode_exact(bytes)?;
+    Ok((
+        Envelope::decode(&encoded)?,
+        first_seen,
+        AdmissionTransportClass::Unknown,
+    ))
 }
 
 fn direction_code(direction: Direction) -> u8 {
@@ -558,6 +625,151 @@ pub struct GroupDelivery {
     pub state: DeliveryState,
 }
 
+/// Authentication level retained with one sealed group-history row.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum GroupOriginAuthentication {
+    /// Legacy ADR-0012 membership authentication. Any member that held the
+    /// sender chain could have produced the row.
+    #[default]
+    LegacyMembership,
+    /// ADR-0029 recipient-device origin authentication was verified before
+    /// the sender chain advanced.
+    RecipientV1 {
+        /// Exact certified sender device from the pairwise session.
+        sender_device: [u8; 32],
+        /// Exact local recipient device named by the origin capability.
+        recipient_device: [u8; 32],
+        /// Exact sender-chain id bound by the recipient tag.
+        chain_key_id: [u8; 16],
+    },
+    /// A locally authored v1 row whose fan-out carries one independently
+    /// authenticated wrapper per exact recipient device.
+    OutboundV1 {
+        /// Exact certified local sending device.
+        sender_device: [u8; 32],
+        /// Exact sender-chain id shared by all recipient wrappers.
+        chain_key_id: [u8; 16],
+    },
+    /// Locally authored attachment manifest staged before its shared
+    /// ciphertext and recipient tags can be committed atomically.
+    PendingOutboundV1 {
+        /// Exact certified local device that must author the eventual wrapper.
+        sender_device: [u8; 32],
+    },
+}
+
+impl GroupOriginAuthentication {
+    /// Whether this row has individual recipient-authenticated origin.
+    pub fn is_recipient_authenticated(self) -> bool {
+        matches!(self, Self::RecipientV1 { .. } | Self::OutboundV1 { .. })
+    }
+
+    /// Whether this row is released membership-authenticated history.
+    pub fn is_legacy_membership(self) -> bool {
+        self == Self::LegacyMembership
+    }
+
+    /// Whether this row is local content waiting to be origin-wrapped.
+    pub fn is_recipient_authentication_pending(self) -> bool {
+        matches!(self, Self::PendingOutboundV1 { .. })
+    }
+}
+
+/// Versioned local-only encoding for a shared group ciphertext whose exact
+/// recipient-device copies have not all reached the durable transport queue.
+pub const GROUP_PENDING_FANOUT_MAGIC: &[u8; 4] = b"KGF2";
+/// Maximum exact recipient-device routes retained for one group ciphertext.
+pub const MAX_GROUP_PENDING_FANOUT_ROUTES: usize =
+    MAX_GROUP_AUTHORITY_MEMBERS * MAX_PAIRWISE_COMMIT_DEVICES;
+
+/// One exact recipient-device copy still owed from a shared group ciphertext.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GroupPendingFanoutRoute {
+    /// Stable recipient account.
+    pub account: [u8; 32],
+    /// Certified recipient device selected when the message was created.
+    pub device: [u8; 32],
+    /// ADR-0029 tag for this exact recipient, or `None` for a legacy group.
+    pub origin_tag: Option<[u8; 32]>,
+}
+
+/// Local pending-fan-out state that keeps the encrypt-once ciphertext and
+/// recipient tags without retaining any origin key.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GroupPendingFanout {
+    /// The one sender-key ciphertext shared by every recipient wrapper.
+    pub shared_ciphertext: Vec<u8>,
+    /// Exact recipient-device copies that have not reached a durable queue.
+    pub routes: Vec<GroupPendingFanoutRoute>,
+}
+
+impl GroupPendingFanout {
+    /// Validate and canonicalize a pending fan-out value.
+    pub fn new(
+        shared_ciphertext: Vec<u8>,
+        mut routes: Vec<GroupPendingFanoutRoute>,
+    ) -> Result<Self> {
+        routes.sort_by_key(|route| (route.account, route.device));
+        let pending = Self {
+            shared_ciphertext,
+            routes,
+        };
+        pending.validate()?;
+        Ok(pending)
+    }
+
+    /// Decode the exact versioned local representation.
+    pub fn decode(encoded: &[u8]) -> Result<Self> {
+        let body = encoded
+            .strip_prefix(GROUP_PENDING_FANOUT_MAGIC)
+            .ok_or(StoreError::InvalidTransition)?;
+        let pending: Self = decode_exact(body)?;
+        pending.validate()?;
+        Ok(pending)
+    }
+
+    /// Encode the exact versioned local representation.
+    pub fn encode(&self) -> Result<Vec<u8>> {
+        self.validate()?;
+        let body = postcard::to_allocvec(self).map_err(|_| StoreError::Serialization)?;
+        let mut encoded = Vec::with_capacity(GROUP_PENDING_FANOUT_MAGIC.len() + body.len());
+        encoded.extend_from_slice(GROUP_PENDING_FANOUT_MAGIC);
+        encoded.extend_from_slice(&body);
+        Ok(encoded)
+    }
+
+    fn validate(&self) -> Result<()> {
+        if self.shared_ciphertext.is_empty()
+            || self.shared_ciphertext.len() > kult_protocol::MAX_ENVELOPE_BYTES
+            || self.routes.is_empty()
+            || self.routes.len() > MAX_GROUP_PENDING_FANOUT_ROUTES
+            || self
+                .routes
+                .windows(2)
+                .any(|pair| (pair[0].account, pair[0].device) >= (pair[1].account, pair[1].device))
+            || self
+                .routes
+                .iter()
+                .any(|route| route.account == [0u8; 32] || route.device == [0u8; 32])
+        {
+            return Err(StoreError::InvalidTransition);
+        }
+        let shared = GroupMessage::decode(&self.shared_ciphertext)
+            .map_err(|_| StoreError::InvalidTransition)?;
+        let origin = self.routes[0].origin_tag.is_some();
+        if self
+            .routes
+            .iter()
+            .any(|route| route.origin_tag.is_some() != origin)
+            || (origin && shared.version() != GROUP_MESSAGE_VERSION_ORIGIN)
+            || (!origin && shared.version() != GROUP_MESSAGE_VERSION_LEGACY)
+        {
+            return Err(StoreError::InvalidTransition);
+        }
+        Ok(())
+    }
+}
+
 /// A group message record (sealed as one blob in the `group_msgs` table).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GroupMessageRecord {
@@ -575,10 +787,48 @@ pub struct GroupMessageRecord {
     pub body: Vec<u8>,
     /// Outbound only: one entry per co-member.
     pub deliveries: Vec<GroupDelivery>,
-    /// The encrypted wire body, retained while any member's copy could not
-    /// be created yet (their session is still forming); dropped once every
-    /// member is served.
+    /// Versioned local pending-fan-out state retained while any exact
+    /// recipient-device copy could not be queued; never exported in backup.
+    ///
+    /// Released Alpha rows may still contain one raw legacy ciphertext.
     pub wire_body: Option<Vec<u8>>,
+    /// Durable, accurately labelled author-authentication evidence.
+    ///
+    /// The default preserves decoding of released membership-authenticated
+    /// rows without rewriting their security meaning.
+    #[serde(default)]
+    pub origin: GroupOriginAuthentication,
+}
+
+/// Released postcard row shape before durable origin evidence was added.
+#[derive(Serialize, Deserialize)]
+struct ReleasedGroupMessageRecord {
+    id: [u8; 16],
+    group: [u8; 32],
+    sender: [u8; 32],
+    direction: Direction,
+    timestamp: u64,
+    body: Vec<u8>,
+    deliveries: Vec<GroupDelivery>,
+    wire_body: Option<Vec<u8>>,
+}
+
+fn decode_group_message_payload(payload: &[u8]) -> Result<GroupMessageRecord> {
+    if let Ok(record) = decode_exact::<GroupMessageRecord>(payload) {
+        return Ok(record);
+    }
+    let released: ReleasedGroupMessageRecord = decode_exact(payload)?;
+    Ok(GroupMessageRecord {
+        id: released.id,
+        group: released.group,
+        sender: released.sender,
+        direction: released.direction,
+        timestamp: released.timestamp,
+        body: released.body,
+        deliveries: released.deliveries,
+        wire_body: released.wire_body,
+        origin: GroupOriginAuthentication::LegacyMembership,
+    })
 }
 
 /// Legacy queue row: `(peer, msg_id, group_msg_id, envelope)`.
@@ -706,18 +956,58 @@ fn acquire_store_lock(path: &Path) -> Result<File> {
     Ok(lock)
 }
 
-/// Lock the opened database inode as a second writer-identity boundary.
+/// Lock a per-user sidecar derived from the opened database's filesystem
+/// identity as a second writer boundary.
 ///
-/// On Unix, this closes the hardlink-alias gap left by a pathname sidecar.
+/// On Unix, `(st_dev, st_ino)` gives every hardlink alias the same lock name.
+/// Locking the SQLite file itself is deliberately avoided: BSD-derived hosts
+/// make whole-file `flock` locks contend with SQLite's byte-range locks, so
+/// the owning process can otherwise lock itself out before `BEGIN IMMEDIATE`.
 /// The connection opens first but performs no schema or application write
-/// before this lock succeeds. Other platforms retain the canonical sidecar
-/// boundary until an equivalent file-identity strategy is qualified.
+/// before this identity lock succeeds. Other platforms retain the canonical
+/// pathname sidecar until an equivalent file-identity strategy is qualified.
 fn acquire_database_identity_lock(path: &Path) -> Result<Option<File>> {
     #[cfg(unix)]
     {
-        let database = OpenOptions::new().read(true).write(true).open(path)?;
-        match fs2::FileExt::try_lock_exclusive(&database) {
-            Ok(()) => Ok(Some(database)),
+        use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+
+        let database = std::fs::symlink_metadata(path)?;
+        if !database.file_type().is_file() {
+            return Err(StoreError::NotAStore);
+        }
+        let lock_directory =
+            std::env::temp_dir().join(format!("komms-store-locks-{}", database.uid()));
+        match std::fs::create_dir(&lock_directory) {
+            Ok(()) => {
+                std::fs::set_permissions(&lock_directory, std::fs::Permissions::from_mode(0o700))?;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(StoreError::Io(error)),
+        }
+        let directory_metadata = std::fs::symlink_metadata(&lock_directory)?;
+        if !directory_metadata.file_type().is_dir() || directory_metadata.uid() != database.uid() {
+            return Err(StoreError::NotAStore);
+        }
+        if directory_metadata.permissions().mode() & 0o077 != 0 {
+            std::fs::set_permissions(&lock_directory, std::fs::Permissions::from_mode(0o700))?;
+        }
+        let lock_directory = std::fs::canonicalize(&lock_directory)?;
+        let identity_path = lock_directory.join(format!(
+            "{:016x}-{:016x}.lock",
+            database.dev(),
+            database.ino()
+        ));
+        let mut options = OpenOptions::new();
+        options
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW);
+        let identity = options.open(identity_path)?;
+        match fs2::FileExt::try_lock_exclusive(&identity) {
+            Ok(()) => Ok(Some(identity)),
             Err(error) if is_lock_contention(&error) => Err(StoreError::AlreadyOpen),
             Err(error) => Err(StoreError::Io(error)),
         }
@@ -745,7 +1035,7 @@ pub struct Store {
     #[cfg(feature = "test-failpoints")]
     commit_failpoint: RefCell<Option<commit::ArmedCommitFailpoint>>,
     // Prevents another Unix process from bypassing the pathname sidecar via a
-    // hardlink alias to the same database inode.
+    // hardlink alias to the same database file identity.
     _database_lock: Option<File>,
     // Kept last so normal field drop order closes SQLite and clears every
     // store field before releasing the process-wide writer exclusion.
@@ -815,6 +1105,7 @@ impl Store {
         migration::cleanup_completed_replacement(path)?;
         backup::cleanup_completed_restore(path)?;
         backup::cleanup_completed_initialization(path)?;
+        backup::cleanup_completed_authority_reset(path)?;
         Ok(store)
     }
 
@@ -891,18 +1182,31 @@ impl Store {
         self.validate_scheduled_logical_rows()?;
         self.validate_ephemeral_logical_rows()?;
         self.validate_device_logical_rows()?;
+        self.validate_admission_logical_rows()?;
         self.validate_presentation_marker()?;
-        self.validate_deferred_controls()
+        self.validate_deferred_controls()?;
+        self.validate_rendezvous_logical_rows()?;
+        self.validate_wake_logical_rows()
     }
 
     fn validate_core_logical_rows(&self) -> Result<()> {
         self.validate_rows::<store_v2::IdentityRows, _>(|row| {
             row.verify_key(&store_v2::SingletonKey)?;
             row.verify_indexes(&store_v2::IndexKeys::none())?;
-            let bytes: [u8; 64] = row.payload[..]
-                .try_into()
-                .map_err(|_| StoreError::Serialization)?;
-            let _ = Identity::from_bytes(&bytes);
+            if let Some(encoded) = row.payload.strip_prefix(ACCOUNT_PUBLIC_MAGIC) {
+                let account: IdentityPublic = decode_exact(encoded)?;
+                account.verify()?;
+            } else {
+                // Legacy pre-ADR-0026 stores are admitted only so the explicit
+                // Alpha migration can inspect them. New/live profiles never
+                // write this root-secret shape.
+                let bytes: Zeroizing<[u8; 64]> = Zeroizing::new(
+                    row.payload[..]
+                        .try_into()
+                        .map_err(|_| StoreError::Serialization)?,
+                );
+                let _ = Identity::from_bytes(&bytes);
+            }
             Ok(())
         })?;
         self.validate_rows::<store_v2::SessionRows, _>(|row| {
@@ -952,9 +1256,8 @@ impl Store {
             row.verify_indexes(&store_v2::IndexKeys::none())
         })?;
         self.validate_rows::<store_v2::PendingRows, _>(|row| {
-            row.verify_indexes(&store_v2::IndexKeys::none())?;
-            let (encoded, _): (Vec<u8>, u64) = decode_exact(&row.payload)?;
-            let _ = Envelope::decode(&encoded)?;
+            let (envelope, _, _) = decode_pending_envelope(&row.payload)?;
+            row.verify_pending_indexes(&store_v2::ContentKey::new(envelope.content_id()))?;
             Ok(())
         })?;
         self.validate_rows::<store_v2::ResetRows, _>(|row| {
@@ -998,8 +1301,9 @@ impl Store {
 
     // ---- identity ---------------------------------------------------------
 
-    /// Persist the device identity (sealed).
-    pub fn put_identity(&self, id: &Identity, rng: &mut impl CryptoRngCore) -> Result<()> {
+    /// Persist a legacy account root while upgrading a released pre-ADR-0026
+    /// store. This is deliberately not part of the production public API.
+    fn put_identity(&self, id: &Identity, rng: &mut impl CryptoRngCore) -> Result<()> {
         self.put_equality::<store_v2::IdentityRows>(
             &store_v2::SingletonKey,
             id.to_bytes().as_ref(),
@@ -1008,16 +1312,74 @@ impl Store {
         )
     }
 
-    /// Load the device identity, if one was stored.
+    /// Construct released root-bearing store fixtures for migration tests.
+    #[cfg(feature = "legacy-test-fixtures")]
+    #[doc(hidden)]
+    pub fn put_legacy_identity_fixture(
+        &self,
+        id: &Identity,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<()> {
+        self.put_identity(id, rng)
+    }
+
+    /// Load a legacy account root, if this is a pre-ADR-0026 profile.
     pub fn get_identity(&self) -> Result<Option<Identity>> {
         let Some(row) = self.get_equality::<store_v2::IdentityRows>(&store_v2::SingletonKey)?
         else {
             return Ok(None);
         };
+        if row.payload.starts_with(ACCOUNT_PUBLIC_MAGIC) {
+            return Ok(None);
+        }
         let bytes: [u8; 64] = row.payload[..]
             .try_into()
             .map_err(|_| StoreError::Serialization)?;
         Ok(Some(Identity::from_bytes(&bytes)))
+    }
+
+    /// Persist only the stable public account trust anchor.
+    pub fn put_account_identity(
+        &self,
+        account: &IdentityPublic,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<()> {
+        account.verify()?;
+        let encoded = postcard::to_allocvec(account).map_err(|_| StoreError::Serialization)?;
+        let mut payload = Zeroizing::new(Vec::with_capacity(
+            ACCOUNT_PUBLIC_MAGIC.len() + encoded.len(),
+        ));
+        payload.extend_from_slice(ACCOUNT_PUBLIC_MAGIC);
+        payload.extend_from_slice(&encoded);
+        self.put_equality::<store_v2::IdentityRows>(
+            &store_v2::SingletonKey,
+            &payload,
+            store_v2::IndexKeys::none(),
+            rng,
+        )
+    }
+
+    /// Load the stable public account trust anchor from a live v2 profile.
+    pub fn get_account_identity(&self) -> Result<Option<IdentityPublic>> {
+        let Some(row) = self.get_equality::<store_v2::IdentityRows>(&store_v2::SingletonKey)?
+        else {
+            return Ok(None);
+        };
+        let Some(encoded) = row.payload.strip_prefix(ACCOUNT_PUBLIC_MAGIC) else {
+            return Ok(None);
+        };
+        let account: IdentityPublic = decode_exact(encoded)?;
+        account.verify()?;
+        Ok(Some(account))
+    }
+
+    /// Whether the profile still contains the pre-ADR-0026 account root.
+    pub fn contains_legacy_account_root(&self) -> Result<bool> {
+        let Some(row) = self.get_equality::<store_v2::IdentityRows>(&store_v2::SingletonKey)?
+        else {
+            return Ok(false);
+        };
+        Ok(!row.payload.starts_with(ACCOUNT_PUBLIC_MAGIC))
     }
 
     // ---- sessions ---------------------------------------------------------
@@ -1031,6 +1393,12 @@ impl Store {
     ) -> Result<()> {
         let payload =
             Zeroizing::new(postcard::to_allocvec(session).map_err(|_| StoreError::Serialization)?);
+        // Write the service row first. Commit-plan callers hold one SQLite
+        // transaction, so both rows become visible together. A direct
+        // autocommit interruption can at worst leave an unreachable orphan;
+        // it can never attach an exporter to the wrong ratchet session.
+        self.synchronize_rendezvous_session(peer, session, rng)?;
+        self.synchronize_wake_session(peer, session, rng)?;
         self.put_equality::<store_v2::SessionRows>(
             &store_v2::AccountKey::new(*peer),
             &payload,
@@ -1041,6 +1409,18 @@ impl Store {
 
     /// Load the session for a peer.
     pub fn get_session(&self, peer: &[u8; 32]) -> Result<Option<Session>> {
+        let Some(mut session) = self.get_session_ratchet(peer)? else {
+            return Ok(None);
+        };
+        let exporter = self
+            .get_rendezvous_service_state(peer)?
+            .filter(|state| state.session_id == *session.session_id())
+            .map(|state| state.hybrid_service_exporter);
+        session.restore_hybrid_service_exporter(exporter);
+        Ok(Some(session))
+    }
+
+    fn get_session_ratchet(&self, peer: &[u8; 32]) -> Result<Option<Session>> {
         self.get_equality::<store_v2::SessionRows>(&store_v2::AccountKey::new(*peer))?
             .map(|row| decode_exact(&row.payload))
             .transpose()
@@ -1048,6 +1428,12 @@ impl Store {
 
     /// Delete one exact physical-endpoint ratchet session.
     pub fn delete_session(&self, peer: &[u8; 32]) -> Result<()> {
+        if let Some(wake) = self.get_wake_service_state(peer)? {
+            let mut rng = rand_core::OsRng;
+            self.enqueue_issued_wake_revocations(&wake, &mut rng)?;
+        }
+        self.delete_rendezvous_service_state(peer)?;
+        self.delete_wake_service_state(peer)?;
         self.delete_equality::<store_v2::SessionRows>(&store_v2::AccountKey::new(*peer))?;
         Ok(())
     }
@@ -1417,14 +1803,41 @@ impl Store {
         first_seen: u64,
         rng: &mut impl CryptoRngCore,
     ) -> Result<i64> {
+        self.pending_push_with_transport(env, first_seen, AdmissionTransportClass::Unknown, rng)
+    }
+
+    /// Stash an inbound envelope with its coarse privacy-preserving carrier
+    /// class so deferred admission remains accurately budgeted after restart.
+    pub fn pending_push_with_transport(
+        &self,
+        env: &Envelope,
+        first_seen: u64,
+        transport: AdmissionTransportClass,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<i64> {
         let encoded = env.try_encode()?;
-        let plain =
-            postcard::to_allocvec(&(encoded, first_seen)).map_err(|_| StoreError::Serialization)?;
+        let plain = postcard::to_allocvec(&PendingEnvelopeRecord {
+            version: PENDING_ENVELOPE_RECORD_VERSION,
+            encoded,
+            first_seen,
+            transport,
+        })
+        .map_err(|_| StoreError::Serialization)?;
         if plain.len() > MAX_PENDING_BYTES {
             return Err(StoreError::PendingQuota);
         }
 
         let tx = Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
+        let content = store_v2::ContentKey::new(env.content_id());
+        if let Some(existing) = self.row_by_unique::<store_v2::PendingContentIndex>(&content)? {
+            let (stored, _, _) = decode_pending_envelope(&existing.payload)?;
+            if stored != *env {
+                tx.rollback()?;
+                return Err(StoreError::LogicalKeyMismatch);
+            }
+            tx.commit()?;
+            return Ok(existing.rowid);
+        }
         let count = usize::try_from(self.count_rows_on::<store_v2::PendingRows>(&tx)?)
             .map_err(|_| StoreError::Serialization)?;
         if count >= MAX_PENDING_ENVELOPES {
@@ -1435,7 +1848,7 @@ impl Store {
             &tx,
             None,
             &plain,
-            store_v2::IndexKeys::none(),
+            store_v2::IndexKeys::pending(&content),
             rng,
         )?;
         if self.sealed_bytes_on::<store_v2::PendingRows>(&tx)? > MAX_PENDING_BYTES as u64 {
@@ -1454,11 +1867,22 @@ impl Store {
     /// after the envelope is consumed or has expired. This gives deferred
     /// receive processing at-least-once crash semantics.
     pub fn pending_all(&self) -> Result<Vec<(i64, Envelope, u64)>> {
+        Ok(self
+            .pending_all_with_transport()?
+            .into_iter()
+            .map(|(sequence, envelope, first_seen, _)| (sequence, envelope, first_seen))
+            .collect())
+    }
+
+    /// Return every stashed envelope with its coarse ingress class.
+    pub fn pending_all_with_transport(
+        &self,
+    ) -> Result<Vec<(i64, Envelope, u64, AdmissionTransportClass)>> {
         self.rows::<store_v2::PendingRows>()?
             .into_iter()
             .map(|row| {
-                let (env_bytes, first_seen): (Vec<u8>, u64) = decode_exact(&row.payload)?;
-                Ok((row.rowid, Envelope::decode(&env_bytes)?, first_seen))
+                let (envelope, first_seen, transport) = decode_pending_envelope(&row.payload)?;
+                Ok((row.rowid, envelope, first_seen, transport))
             })
             .collect()
     }
@@ -1836,7 +2260,7 @@ impl Store {
     }
 
     fn decode_group_message_row(&self, row: &store_v2::RawRow) -> Result<GroupMessageRecord> {
-        let record: GroupMessageRecord = decode_exact(&row.payload)?;
+        let record = decode_group_message_payload(&row.payload)?;
         row.verify_key(&store_v2::GroupMessageKey::new(
             record.group,
             record.sender,
@@ -1944,6 +2368,28 @@ impl Store {
         }
         tx.commit()?;
         Ok(expired.len())
+    }
+}
+
+#[cfg(test)]
+mod group_message_compat_tests {
+    use super::*;
+
+    #[test]
+    fn released_group_rows_decode_as_membership_authenticated() {
+        let released = ReleasedGroupMessageRecord {
+            id: [1; 16],
+            group: [2; 32],
+            sender: [3; 32],
+            direction: Direction::Inbound,
+            timestamp: 4,
+            body: b"released history".to_vec(),
+            deliveries: Vec::new(),
+            wire_body: None,
+        };
+        let encoded = postcard::to_allocvec(&released).unwrap();
+        let decoded = decode_group_message_payload(&encoded).unwrap();
+        assert_eq!(decoded.origin, GroupOriginAuthentication::LegacyMembership);
     }
 }
 
@@ -2092,8 +2538,33 @@ mod queue_tests {
         let second = Envelope::new(EnvelopeKind::Receipt, [3; 32], vec![4]);
 
         let first_sequence = store.pending_push(&first, 100, &mut rng).unwrap();
-        let second_sequence = store.pending_push(&second, 200, &mut rng).unwrap();
+        assert_eq!(
+            store
+                .pending_push_with_transport(
+                    &first,
+                    101,
+                    AdmissionTransportClass::Mailbox,
+                    &mut rng,
+                )
+                .unwrap(),
+            first_sequence,
+            "exact duplicate staging keeps the first durable row"
+        );
+        let second_sequence = store
+            .pending_push_with_transport(&second, 200, AdmissionTransportClass::Mailbox, &mut rng)
+            .unwrap();
         assert_ne!(first_sequence, second_sequence);
+        let legacy = Envelope::new(EnvelopeKind::GroupControl, [5; 32], vec![6]);
+        let legacy_payload =
+            postcard::to_allocvec(&(legacy.try_encode().unwrap(), 300u64)).unwrap();
+        let legacy_sequence = store
+            .append_opaque::<store_v2::PendingRows>(
+                &legacy_payload,
+                store_v2::IndexKeys::none(),
+                &mut rng,
+            )
+            .unwrap()
+            .rowid;
 
         let first_read = store.pending_all().unwrap();
         let second_read = store.pending_all().unwrap();
@@ -2103,19 +2574,49 @@ mod queue_tests {
             vec![
                 (first_sequence, first.clone(), 100),
                 (second_sequence, second.clone(), 200),
+                (legacy_sequence, legacy.clone(), 300),
             ]
         );
+        let with_transport = vec![
+            (
+                first_sequence,
+                first.clone(),
+                100,
+                AdmissionTransportClass::Unknown,
+            ),
+            (
+                second_sequence,
+                second.clone(),
+                200,
+                AdmissionTransportClass::Mailbox,
+            ),
+            (
+                legacy_sequence,
+                legacy.clone(),
+                300,
+                AdmissionTransportClass::Unknown,
+            ),
+        ];
+        assert_eq!(store.pending_all_with_transport().unwrap(), with_transport);
 
         drop(store);
         let reopened = Store::open(&path, b"pass").unwrap();
         assert_eq!(reopened.pending_all().unwrap(), first_read);
+        assert_eq!(
+            reopened.pending_all_with_transport().unwrap(),
+            with_transport
+        );
 
         reopened.pending_ack(first_sequence).unwrap();
         assert_eq!(
             reopened.pending_all().unwrap(),
-            vec![(second_sequence, second, 200)]
+            vec![
+                (second_sequence, second, 200),
+                (legacy_sequence, legacy, 300),
+            ]
         );
         reopened.pending_ack(second_sequence).unwrap();
+        reopened.pending_ack(legacy_sequence).unwrap();
         assert!(reopened.pending_all().unwrap().is_empty());
     }
 

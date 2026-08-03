@@ -1,8 +1,8 @@
-//! The BIP-39 English wordlist (2048 words), verbatim.
+//! The MIT-licensed BIP-39 English wordlist (2048 words), verbatim.
 //!
 //! Embedded in-tree rather than pulled in as a dependency: the list is
-//! normative, frozen, and public-domain reference data — bringing in a
-//! crate for it would add supply-chain surface for zero code.
+//! normative and frozen, and the upstream notice is retained in
+//! `LICENSES/BIP-39-MIT.txt`.
 
 /// The 2048 words, sorted; a word's index is its 11-bit value.
 pub(crate) static WORDS: [&str; 2048] = [

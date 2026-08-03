@@ -8,7 +8,7 @@
 
 use alloc::{collections::BTreeMap, vec::Vec};
 
-use kult_crypto::{DeviceManifest, Identity, StorageKey};
+use kult_crypto::{DeviceAuthorityManifest, DeviceManifest, Identity, IdentityPublic, StorageKey};
 use rand_core::CryptoRngCore;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -16,6 +16,7 @@ use sha2::{Digest, Sha256};
 use crate::{ProtocolError, Result};
 
 const SYNC_BUNDLE_AD: &[u8] = b"Komms-device-sync-bundle-v1";
+const AUTHORITY_SYNC_BUNDLE_AD: &[u8] = b"Komms-device-sync-bundle-v2";
 /// Maximum logical sync mutations in one encrypted transfer.
 pub const MAX_DEVICE_SYNC_BUNDLE_EVENTS: usize = 4_096;
 /// Maximum encoded encrypted sync bundle bytes.
@@ -44,6 +45,8 @@ pub enum DeviceSyncNamespace {
     GroupPolls,
     /// Terminal consumed/expired tombstones only, never ephemeral plaintext.
     ExpiryTombstones,
+    /// Account-scoped Connect capability and legacy-bridge policy.
+    AccountCapabilities,
 }
 
 /// One signed state mutation from one exact certified physical device.
@@ -68,6 +71,50 @@ pub struct DeviceSyncEvent {
     /// Physical-device signature over every preceding field.
     #[serde(with = "bytes64")]
     pub signature: [u8; 64],
+}
+
+/// Read-only authority view needed to authenticate one sync event.
+pub trait DeviceSyncAuthority {
+    /// Stable account id.
+    fn sync_account_id(&self) -> [u8; 32];
+    /// Current authority generation.
+    fn sync_generation(&self) -> u64;
+    /// Device public identity and optional ordinary-revocation cutoff.
+    fn sync_device(&self, device: &[u8; 32]) -> Option<(&IdentityPublic, Option<u64>)>;
+}
+
+impl DeviceSyncAuthority for DeviceManifest {
+    fn sync_account_id(&self) -> [u8; 32] {
+        self.account.ed
+    }
+
+    fn sync_generation(&self) -> u64 {
+        self.generation
+    }
+
+    fn sync_device(&self, device: &[u8; 32]) -> Option<(&IdentityPublic, Option<u64>)> {
+        self.devices
+            .iter()
+            .find(|entry| entry.certificate.device_id() == *device)
+            .map(|entry| (&entry.certificate.device, entry.revoked_after_counter))
+    }
+}
+
+impl DeviceSyncAuthority for DeviceAuthorityManifest {
+    fn sync_account_id(&self) -> [u8; 32] {
+        self.account().ed
+    }
+
+    fn sync_generation(&self) -> u64 {
+        self.generation()
+    }
+
+    fn sync_device(&self, device: &[u8; 32]) -> Option<(&IdentityPublic, Option<u64>)> {
+        self.devices()
+            .iter()
+            .find(|entry| entry.certificate.device_id() == *device)
+            .map(|entry| (&entry.certificate.device, entry.revoked_after_counter))
+    }
 }
 
 impl DeviceSyncEvent {
@@ -128,26 +175,20 @@ impl DeviceSyncEvent {
     }
 
     /// Verify account/device authorization and the revocation counter cutoff.
-    pub fn verify(&self, manifest: &DeviceManifest) -> Result<()> {
+    pub fn verify(&self, manifest: &impl DeviceSyncAuthority) -> Result<()> {
         self.validate_bounds()?;
-        manifest.verify().map_err(|_| ProtocolError::Malformed)?;
-        if self.account != manifest.account.ed || self.manifest_generation > manifest.generation {
-            return Err(ProtocolError::Malformed);
-        }
-        let entry = manifest
-            .devices
-            .iter()
-            .find(|entry| entry.certificate.device_id() == self.author_device)
-            .ok_or(ProtocolError::Malformed)?;
-        if entry
-            .revoked_after_counter
-            .is_some_and(|cutoff| self.counter > cutoff)
+        if self.account != manifest.sync_account_id()
+            || self.manifest_generation > manifest.sync_generation()
         {
             return Err(ProtocolError::Malformed);
         }
-        entry
-            .certificate
-            .device
+        let (device, revoked_after_counter) = manifest
+            .sync_device(&self.author_device)
+            .ok_or(ProtocolError::Malformed)?;
+        if revoked_after_counter.is_some_and(|cutoff| self.counter > cutoff) {
+            return Err(ProtocolError::Malformed);
+        }
+        device
             .verify_device_sync_event(&self.canonical(), &self.signature)
             .map_err(|_| ProtocolError::Malformed)
     }
@@ -196,7 +237,7 @@ impl DeviceSyncEvent {
 
 /// Deterministically resolve all valid events to one winner per logical key.
 pub fn resolve_device_sync_events(
-    manifest: &DeviceManifest,
+    manifest: &impl DeviceSyncAuthority,
     events: impl IntoIterator<Item = DeviceSyncEvent>,
 ) -> BTreeMap<(DeviceSyncNamespace, Vec<u8>), DeviceSyncEvent> {
     let mut resolved = BTreeMap::new();
@@ -221,6 +262,137 @@ pub fn resolve_device_sync_events(
         }
     }
     resolved
+}
+
+/// Version-two sync bundle carrying a quorum-authorized manifest.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AuthorityDeviceSyncBundle {
+    /// Sending physical-device id.
+    pub sender: [u8; 32],
+    /// Exact intended receiving physical-device id.
+    pub recipient: [u8; 32],
+    /// Strictly increasing pairwise channel sequence.
+    pub sequence: u64,
+    /// AEAD-sealed authority proof and event set.
+    pub sealed: Vec<u8>,
+}
+
+/// Authenticated version-two bundle contents.
+pub struct OpenedAuthorityDeviceSyncBundle {
+    /// Latest quorum-authorized authority proof carried by the sender.
+    pub manifest: DeviceAuthorityManifest,
+    /// Valid signed events in encoded order.
+    pub events: Vec<DeviceSyncEvent>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct AuthorityDeviceSyncPayload {
+    manifest: DeviceAuthorityManifest,
+    events: Vec<DeviceSyncEvent>,
+}
+
+impl AuthorityDeviceSyncBundle {
+    /// Seal a bounded authority proof and event set to one linked peer.
+    #[allow(clippy::too_many_arguments)]
+    pub fn seal(
+        channel_root: &[u8; 32],
+        sender: [u8; 32],
+        recipient: [u8; 32],
+        sequence: u64,
+        manifest: DeviceAuthorityManifest,
+        events: Vec<DeviceSyncEvent>,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<Self> {
+        if sender == recipient || sequence == 0 || events.len() > MAX_DEVICE_SYNC_BUNDLE_EVENTS {
+            return Err(ProtocolError::Malformed);
+        }
+        manifest.verify().map_err(|_| ProtocolError::Malformed)?;
+        if manifest.active_certificate(&sender).is_none()
+            || !manifest
+                .devices()
+                .iter()
+                .any(|entry| entry.certificate.device_id() == recipient)
+        {
+            return Err(ProtocolError::Malformed);
+        }
+        for event in &events {
+            event.verify(&manifest)?;
+        }
+        let payload = AuthorityDeviceSyncPayload { manifest, events };
+        let plain = postcard::to_allocvec(&payload).map_err(|_| ProtocolError::Malformed)?;
+        if plain.len() > MAX_DEVICE_SYNC_BUNDLE_BYTES {
+            return Err(ProtocolError::TooLarge);
+        }
+        let ad = authority_bundle_ad(sender, recipient, sequence);
+        let sealed = StorageKey::from_bytes(*channel_root).seal(&ad, &plain, rng);
+        Ok(Self {
+            sender,
+            recipient,
+            sequence,
+            sealed,
+        })
+    }
+
+    /// Encode the bounded outer header.
+    pub fn encode(&self) -> Result<Vec<u8>> {
+        let bytes = postcard::to_allocvec(self).map_err(|_| ProtocolError::Malformed)?;
+        if bytes.len() > MAX_DEVICE_SYNC_BUNDLE_BYTES + 256 {
+            return Err(ProtocolError::TooLarge);
+        }
+        Ok(bytes)
+    }
+
+    /// Strictly decode the bounded outer header.
+    pub fn decode(bytes: &[u8]) -> Result<Self> {
+        if bytes.len() > MAX_DEVICE_SYNC_BUNDLE_BYTES + 256 {
+            return Err(ProtocolError::TooLarge);
+        }
+        let (bundle, remainder): (Self, &[u8]) =
+            postcard::take_from_bytes(bytes).map_err(|_| ProtocolError::Malformed)?;
+        if !remainder.is_empty()
+            || bundle.sender == bundle.recipient
+            || bundle.sequence == 0
+            || bundle.sealed.len() > MAX_DEVICE_SYNC_BUNDLE_BYTES + 64
+        {
+            return Err(ProtocolError::Malformed);
+        }
+        Ok(bundle)
+    }
+
+    /// Authenticate, decrypt, and validate all nested version-two state.
+    pub fn open(
+        &self,
+        channel_root: &[u8; 32],
+        local_device: &[u8; 32],
+        expected_sender: &[u8; 32],
+    ) -> Result<OpenedAuthorityDeviceSyncBundle> {
+        if &self.recipient != local_device || &self.sender != expected_sender {
+            return Err(ProtocolError::Malformed);
+        }
+        let ad = authority_bundle_ad(self.sender, self.recipient, self.sequence);
+        let plain = StorageKey::from_bytes(*channel_root)
+            .open(&ad, &self.sealed)
+            .map_err(|_| ProtocolError::Malformed)?;
+        if plain.len() > MAX_DEVICE_SYNC_BUNDLE_BYTES {
+            return Err(ProtocolError::TooLarge);
+        }
+        let (payload, remainder): (AuthorityDeviceSyncPayload, &[u8]) =
+            postcard::take_from_bytes(&plain).map_err(|_| ProtocolError::Malformed)?;
+        if !remainder.is_empty() || payload.events.len() > MAX_DEVICE_SYNC_BUNDLE_EVENTS {
+            return Err(ProtocolError::Malformed);
+        }
+        payload
+            .manifest
+            .verify()
+            .map_err(|_| ProtocolError::Malformed)?;
+        for event in &payload.events {
+            event.verify(&payload.manifest)?;
+        }
+        Ok(OpenedAuthorityDeviceSyncBundle {
+            manifest: payload.manifest,
+            events: payload.events,
+        })
+    }
 }
 
 /// Minimal outer header for one channel-encrypted sync bundle.
@@ -360,6 +532,15 @@ impl DeviceSyncBundle {
 fn bundle_ad(sender: [u8; 32], recipient: [u8; 32], sequence: u64) -> Vec<u8> {
     let mut ad = Vec::with_capacity(SYNC_BUNDLE_AD.len() + 72);
     ad.extend_from_slice(SYNC_BUNDLE_AD);
+    ad.extend_from_slice(&sender);
+    ad.extend_from_slice(&recipient);
+    ad.extend_from_slice(&sequence.to_le_bytes());
+    ad
+}
+
+fn authority_bundle_ad(sender: [u8; 32], recipient: [u8; 32], sequence: u64) -> Vec<u8> {
+    let mut ad = Vec::with_capacity(AUTHORITY_SYNC_BUNDLE_AD.len() + 72);
+    ad.extend_from_slice(AUTHORITY_SYNC_BUNDLE_AD);
     ad.extend_from_slice(&sender);
     ad.extend_from_slice(&recipient);
     ad.extend_from_slice(&sequence.to_le_bytes());

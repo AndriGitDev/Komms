@@ -46,6 +46,8 @@ button {
   background: none;
   border: none;
   cursor: pointer;
+  min-block-size: 44px;
+  min-inline-size: 44px;
 }
 button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible {
   outline: 3px solid var(--focus);
@@ -87,6 +89,7 @@ input[type="text"], input[type="password"], input[type="datetime-local"], input[
   padding: 0.5em 0.7em;
   font: inherit;
   margin-top: 0.3em;
+  min-block-size: 44px;
 }
 textarea { resize: vertical; font-family: ui-monospace, monospace; font-size: 0.85em; }
 input:focus, textarea:focus, select:focus { outline: 1px solid var(--accent-dim); }
@@ -412,6 +415,17 @@ button.settings-row:hover { border-color: var(--accent-dim); background: var(--b
     radial-gradient(circle at 78% 12%, rgba(242, 183, 5, 0.055), transparent 28rem),
     var(--bg);
 }
+.authority-reset-banner {
+  display: grid;
+  gap: 0.25rem;
+  padding: 0.7rem 1.25rem;
+  color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 10%, var(--surface));
+  border-bottom: 1px solid color-mix(in srgb, var(--warn) 45%, var(--line));
+  font-size: 0.86rem;
+}
+.authority-reset-banner[hidden] { display: none; }
+.authority-reset-banner span { color: var(--text); }
 #chat-empty {
   flex: 1;
   display: flex; align-items: center; justify-content: center;
@@ -1017,6 +1031,38 @@ fieldset.hints legend { color: var(--text-dim); font-size: 0.85em; padding: 0 0.
   word-break: break-word;
 }
 .toast.error { border-left-color: var(--danger); }
+
+.request-inbox { display: grid; gap: 1rem; }
+.request-list { display: grid; gap: .75rem; }
+.request-list:empty { display: none; }
+.request-card {
+  display: grid;
+  gap: .65rem;
+  padding: .9rem;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--bg-raised);
+}
+.request-card h3, .request-card p, .request-card blockquote { margin: 0; }
+.request-preview {
+  padding: .7rem .85rem;
+  border-inline-start: 3px solid var(--brand);
+  border-radius: 4px;
+  background: var(--bg-hover);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.request-safety {
+  color: var(--text-dim);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: .82rem;
+}
+.request-group-name { font-size: 1.05rem; font-weight: 650; overflow-wrap: anywhere; }
+.request-actions { flex-wrap: wrap; }
+.request-actions button {
+  min-block-size: 44px;
+  min-inline-size: 44px;
+}
 
 [data-resolved-theme="light"] {
     --bg: #fafafa; --bg-raised: #ffffff; --bg-hover: #fff8dc; --line: #e4e1d8;

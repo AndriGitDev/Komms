@@ -1,0 +1,32 @@
+version = 1
+database_file = "/var/lib/komms-mailbox/mailbox-v2.db"
+row_key_file = "/run/komms-mailbox-keys/mailbox-v2.key"
+transport_identity_file = "/run/komms-mailbox-keys/mailbox-v2.transport.key"
+
+[network]
+listen = [
+  "/ip4/0.0.0.0/udp/4406/quic-v1",
+  "/ip4/0.0.0.0/tcp/4406",
+]
+health_listen = "127.0.0.1:8083"
+
+[mailbox]
+max_tokens = 65536
+max_tokens_per_client = 4096
+max_per_token = 256
+max_bytes_per_token = 16777216
+max_per_client = 4096
+max_bytes_per_client = 33554432
+max_total_items = 65536
+max_total_bytes = 67108864
+envelope_ttl_seconds = 2592000
+registration_ttl_seconds = 5184000
+lease_ttl_seconds = 120
+max_live_leases_per_client = 4
+max_live_leases_per_token = 2
+max_live_leases = 4096
+max_requests_per_client_per_minute = 2048
+max_requests_per_minute = 8192
+
+[runtime]
+shutdown_grace_seconds = 10

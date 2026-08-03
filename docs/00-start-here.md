@@ -15,8 +15,9 @@ Three things make it different from the messengers you know:
 
 1. **There is no mandatory exclusive provider.** Komms messages may travel
    directly, through chosen volunteer mailbox operators holding sealed
-   ciphertext, or over local and radio links. A future Standard mode may offer
-   disclosed, replaceable defaults for easy setup. Optional post-pairing
+   ciphertext, or over local and radio links. Standard mode can consume
+   disclosed, signed, replaceable defaults, although no qualified default
+   operator currently ships. Optional post-pairing
    rendezvous and phone wake services cannot read message content or hold
    identity private keys; removing them leaves the pure-core routes available.
 2. **It is designed for more than one kind of network.** Messages can use
@@ -68,9 +69,9 @@ production-signed or notarized, the Android APK is debug-signed, and iOS remains
 source/Simulator-only. Hands-on device qualification, signed and store
 distribution, the physical radio bench, and an external audit remain before a
 stable release. Fresh internet installs also need deliberate bootstrap/mailbox
-configuration today; the replaceable-default Standard journey and the
-separately demonstrated pure-core journey are P0 work, not a current
-plug-and-play claim.
+configuration today. Deterministic local Standard-blackhole, replacement, and
+pure-core journeys now exist, but clean supported devices behind distinct real
+NATs and qualified operators remain P0 work, not a current plug-and-play claim.
 
 Messages may use a small safe formatting subset for emphasis, strong text,
 quotes, lists, and code. The exact readable source stays encrypted in history
@@ -87,9 +88,10 @@ warning and user action before operating-system handoff. See
 You can edit canonical text you authored in a pairwise or group conversation.
 Komms sends that change as a new encrypted event, keeps an **edited** marker and
 inspectable version history, and derives the same winner even when offline
-carriers deliver edits out of order. Pairwise authorship is authenticated; in
-the current Alpha, a malicious group member can forge another member's apparent
-edit. Editing does not erase what another device already received or copied. See
+carriers deliver edits out of order. Current pairwise and upgraded group
+authorship is authenticated separately for each recipient device; legacy group
+history retains its visible weaker label. Editing does not erase what another
+device already received or copied. See
 [Authenticated Message Editing](18-message-editing.md).
 
 You can also choose disappearing text or a view-once attachment. Komms removes
@@ -103,9 +105,12 @@ not the exact deadline or content. See
 Groups can also create encrypted single-choice polls. Votes and voter identities
 are visible to members—Komms does not call them anonymous—and the apparent
 creator closes the exact vote snapshot they have received. Offline, duplicate,
-and reordered events still converge locally. In the current Alpha, another
-group member can forge an apparent voter or creator; ADR-0029 is required before
-stable. See [Group Polls](20-group-polls.md).
+and reordered events still converge locally. Current Alpha groups authenticate
+each claimed voter and creator separately to every recipient device while
+retaining one shared sender-key ciphertext and recipient deniability. Legacy
+group history remains labelled as membership-authenticated. See
+[Group Polls](20-group-polls.md) and
+[ADR-0029](adr/0029-recipient-authenticated-groups.md).
 
 Groups can upgrade to signed owner, admin, and member roles. There is always one
 owner. Admins can request common work while the owner is offline, but the owner
@@ -117,10 +122,12 @@ close. There is no server account or hidden moderator behind these roles. See
 
 One Komms identity can authorize up to eight independently keyed devices through
 a mutually confirmed QR or paste ceremony. Sync is explicit and encrypted
-between those devices; there is no cloud account. Current Alpha revocation
-excludes one known id but cannot permanently contain a compromised device that
-retained the copied account root. Recovery creates fresh device credentials
-rather than reviving credentials from a backup. See
+between those devices; there is no cloud account. The stable account root is a
+separately held offline recovery authority and never enters ordinary device
+linking. Routine changes require a strict majority of the previous active set;
+forks remain visible and fail closed. Recovery revokes the former set and
+creates fresh device credentials rather than reviving credentials from a
+backup. See
 [Linked Devices](22-linked-devices.md).
 
 Already paired contacts can also make alpha live-audio calls when both devices
@@ -166,9 +173,20 @@ Platform build instructions:
 | what disappearing/view-once means—and what it cannot erase | [Disappearing Messages and View-Once Attachments](19-ephemeral-messages.md) |
 | how encrypted group polls converge and why votes are visible | [Group Polls](20-group-polls.md) |
 | how signed group roles, ownership transfer, and moderation work | [Group Roles, Ownership, and Moderation](21-group-roles.md) |
-| how one account currently authorizes and syncs devices—and why revocation still needs redesign | [Linked Devices](22-linked-devices.md) |
+| how one account authorizes, syncs, revokes, and recovers devices | [Linked Devices](22-linked-devices.md) |
 | when live audio calls work—and when they deliberately do not | [Live Audio Calls](23-live-audio-calls.md) |
 | how a release is validated locally before any hosted run | [Local Release Gate](24-local-release-gate.md) |
+| how a tagged candidate becomes a protected draft or public release | [Release Runbook](25-release-runbook.md) |
+| how release keys are separated, recovered, rotated, and revoked | [Release Security and Recovery](39-release-security-and-recovery.md) |
+| what a revision-bound release evidence bundle contains | [Release Evidence Bundles](40-release-evidence-bundles.md) |
+| how to read or run the stand-alone stable-v1 protocol kit | [Stable-v1 Protocol Conformance](41-protocol-conformance.md) |
+| what an independent reviewer receives and what evidence remains open | [Independent Security-Review Readiness](42-independent-security-review.md) |
+| how physical devices, real networks, accessibility, and radios are qualified | [Field Qualification](43-field-qualification.md) |
+| how the consent pilot, P0 audit, rollback, and stable-beta decision fit together | [Stable-Beta Pilot and Release Decision](51-stable-beta-pilot-and-release-decision.md) |
+| how to build and validate one bounded contribution target | [Contributor Path](44-contributor-path.md) |
+| how localization and cross-shell accessibility are implemented and bounded | [Localization and Accessibility](45-localization-accessibility.md) |
+| how the optional content-free phone-wake gateway is bounded and operated | [Native-Wake Operations](37-native-wake-operations.md) |
+| how the fixed-mapping OHTTP relay strips metadata and remains unqualified | [Oblivious HTTP Relay Operations](52-ohttp-relay-operations.md) |
 | what evidence is required before stable or wire v1 | [Stabilization Program](29-stabilization-program.md) |
 | which persisted protocol transitions are atomic and which remain open | [Atomic Transition Inventory](34-atomic-transition-inventory.md) |
 | why a technical decision was made | [ADR Index](adr/README.md) |
@@ -181,7 +199,9 @@ Platform build instructions:
 - **Organizer / activist?** Read the [threat model](02-threat-model.md) and tell us
   where it doesn't match your reality on the ground.
 - **Developer?** Start with [CONTRIBUTING](../CONTRIBUTING.md) and the
-  [implementation guide](09-implementation-guide.md).
+  [bounded contributor path](44-contributor-path.md), then use the
+  [implementation guide](09-implementation-guide.md) for the relevant
+  architectural boundary.
 - **Cryptographer?** Attack the [crypto spec](04-cryptography.md). Please.
 
 ## Why does this exist?

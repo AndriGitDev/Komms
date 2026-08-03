@@ -383,6 +383,60 @@ private func listenAddr(_ session: Session) throws -> String {
     }
 }
 
+private func waitGroupSecurityReady(
+    _ initiator: Session,
+    _ peer: Session,
+    group: String,
+    allowInitialUpgrade: Bool
+) throws -> (GroupSecurity, GroupSecurity) {
+    let deadline = Date().addingTimeInterval(30)
+    var upgradeStarted = false
+    while true {
+        var initiatorSecurity = try initiator.groupSecurity(group: group)
+        if allowInitialUpgrade,
+           !upgradeStarted,
+           initiatorSecurity.level == .upgradeRequired {
+            try initiator.upgradeGroupSecurity(group: group)
+            upgradeStarted = true
+            initiatorSecurity = try initiator.groupSecurity(group: group)
+        }
+        let peerSecurity = try peer.groupSecurity(group: group)
+        if initiatorSecurity.level == .recipientAuthenticated,
+           peerSecurity.level == .recipientAuthenticated {
+            return (initiatorSecurity, peerSecurity)
+        }
+        guard Date() < deadline else {
+            throw Timeout(
+                what: "group origin exchange: initiator=\(initiatorSecurity) peer=\(peerSecurity)")
+        }
+        Thread.sleep(forTimeInterval: 0.05)
+    }
+}
+
+private func acceptGroupInvitation(
+    _ session: Session,
+    _ events: Events,
+    group: String,
+    what: String
+) throws {
+    _ = try events.wait(what) { event -> Void? in
+        if case let .groupInvitationReceived(_, invitedGroup, _) = event,
+           invitedGroup == group { return () }
+        return nil
+    }
+    let invitation = try session.groupInvitations().first { $0.group == group }
+    XCTAssertNotNil(invitation)
+    XCTAssertEqual(
+        group,
+        try session.acceptGroupInvitation(invitation: invitation!.id)
+    )
+    _ = try events.wait("group invitation acceptance") { event -> Void? in
+        if case let .groupInvitationAccepted(_, joinedGroup) = event,
+           joinedGroup == group { return () }
+        return nil
+    }
+}
+
 private func multiaddrHint(_ addr: String) -> [HintSpec] { [HintSpec("multiaddr", addr)] }
 
 private func canonicalAudio(samples: Int = 1_600) -> Data {
@@ -454,8 +508,13 @@ final class SessionE2eTests: XCTestCase {
         let targetDevice = try target.deviceId()
         let offer = try source.beginDeviceLink()
         XCTAssertEqual(offer.uppercased(), deviceLinkQrText(offer))
+        let offerAssembler = BundleQrAssembler()
+        var offerText: String?
+        for frame in deviceLinkQrFrames(offer).reversed() {
+            offerText = offerAssembler.accept(frame)?.completeText ?? offerText
+        }
         let accepted = try target.acceptDeviceLink(
-            offerHex: offer, deviceName: "iPad")
+            offerHex: try XCTUnwrap(offerText), deviceName: "iPad")
         XCTAssertEqual(6, accepted.confirmationCode.count)
         let responseHex = hexEncode(accepted.response)
         XCTAssertEqual(
@@ -479,15 +538,50 @@ final class SessionE2eTests: XCTestCase {
             return nil
         }
 
-        try source.renameLinkedDevice(device: targetDevice, name: "Travel iPad")
+        let third = try open(directory, "third", Events())
+        let thirdOffer = try source.beginDeviceLink()
+        let thirdAssembler = BundleQrAssembler()
+        var thirdOfferText: String?
+        for frame in deviceLinkQrFrames(thirdOffer).reversed() {
+            thirdOfferText = thirdAssembler.accept(frame)?.completeText ?? thirdOfferText
+        }
+        let thirdAccepted = try third.acceptDeviceLink(
+            offerHex: try XCTUnwrap(thirdOfferText), deviceName: "iPhone")
+        XCTAssertThrowsError(try source.approveDeviceLink(
+            responseHex: hexEncode(thirdAccepted.response),
+            contacts: false,
+            organization: false,
+            history: false,
+            confirmed: true))
+        let linkRequest = try source.deviceLinkApprovalRequest()
+        let linkApproval = try target.approveDeviceLinkRequest(requestHex: linkRequest)
+        let thirdPackage = try XCTUnwrap(
+            source.acceptDeviceLinkApproval(approvalHex: linkApproval))
+        try third.completeDeviceLink(packageHex: thirdPackage, confirmed: true)
+        XCTAssertEqual(3, try source.linkedDevices().count)
+
+        _ = try target.importDeviceSync(
+            bundleHex: source.exportDeviceSync(device: targetDevice))
+        XCTAssertThrowsError(
+            try source.renameLinkedDevice(device: targetDevice, name: "Travel iPad"))
+        let authorityRequest = try source.deviceAuthorityApprovalRequest()
+        let authorityApproval = try target.approveDeviceAuthorityRequest(
+            requestHex: authorityRequest)
+        XCTAssertTrue(try source.acceptDeviceAuthorityApproval(
+            approvalHex: authorityApproval))
         _ = try target.importDeviceSync(
             bundleHex: source.exportDeviceSync(device: targetDevice))
         XCTAssertTrue(try target.linkedDevices().contains {
             $0.id == targetDevice && $0.name == "Travel iPad"
         })
+        XCTAssertTrue(try source.deviceAuthorityConflicts().isEmpty)
+        XCTAssertTrue(try target.deviceAuthorityConflicts().isEmpty)
+        XCTAssertTrue(try source.contactAuthorityConflicts().isEmpty)
+        XCTAssertTrue(try target.contactAuthorityConflicts().isEmpty)
 
         source.stop()
         target.stop()
+        third.stop()
     }
 
     func testMessageEditSharedFixtureHasCanonicalWireAndWinner() throws {
@@ -603,10 +697,11 @@ final class SessionE2eTests: XCTestCase {
         let text = try files.map { try String(contentsOf: $0, encoding: .utf8) }.joined(separator: "\n")
         let occurrences = { (needle: String) in text.components(separatedBy: needle).count - 1 }
         let editors = occurrences("TextField(") + occurrences("SecureField(") + occurrences("TextEditor(")
-        XCTAssertEqual(31, editors)
+        XCTAssertEqual(41, editors)
         XCTAssertEqual(editors, occurrences(".incognitoKeyboard("))
         let gate = try String(contentsOf: source.appendingPathComponent("GateView.swift"), encoding: .utf8)
-        XCTAssertTrue(gate.contains("SecureField(\"24-word mnemonic\""))
+        XCTAssertTrue(gate.contains("SecureField(\"24-word backup mnemonic\""))
+        XCTAssertTrue(gate.contains("Different 24-word authority mnemonic"))
     }
 
     func testScreenSecurityPolicyIsAvailableBeforeUnlockAndDoesNotOverclaimIOS() throws {
@@ -721,6 +816,28 @@ final class SessionE2eTests: XCTestCase {
         session.stop()
     }
 
+    func testConnectCodeRotatesWithoutChangingIdentityAndLegacyDiscoveryRetires() throws {
+        let dir = try tempDir()
+        let session = try open(dir, "connect-code", Events())
+        let address = session.address
+        let first = try session.connectCode
+        let status = try session.status()
+        XCTAssertTrue(address.hasPrefix("kk1"))
+        XCTAssertTrue(first.hasPrefix("kc2"))
+        XCTAssertEqual(first, status.connectCode)
+        XCTAssertFalse(status.legacyDiscovery)
+
+        let rotated = try session.rotateConnectCode()
+        XCTAssertTrue(rotated.hasPrefix("kc2"))
+        XCTAssertNotEqual(first, rotated)
+        XCTAssertEqual(address, session.address)
+        XCTAssertEqual(rotated, try session.connectCode)
+        XCTAssertEqual(rotated, try session.status().connectCode)
+        XCTAssertEqual(rotated, try session.retireLegacyDiscovery())
+        XCTAssertFalse(try session.status().legacyDiscovery)
+        session.stop()
+    }
+
     func testTwoPhonesPairByScannedBundleHexAndMessage() throws {
         let dir = try tempDir()
         let aEv = Events()
@@ -747,6 +864,14 @@ final class SessionE2eTests: XCTestCase {
         let bAddr = try listenAddr(bob)
         let bobPeer = try alice.addContact(name: "bob", bundleHex: scanned, hints: multiaddrHint(bAddr))
         let alicePeer = try bob.addContact(name: "alice", bundleHex: aBundle, hints: multiaddrHint(aAddr))
+        try alice.requestRendezvousRefresh(peer: bobPeer)
+        try alice.setRendezvousConversationActive(peer: bobPeer, active: true)
+        try alice.setRendezvousConversationActive(peer: bobPeer, active: false)
+        XCTAssertThrowsError(
+            try alice.requestRendezvousRefresh(peer: String(repeating: "ff", count: 32)))
+        XCTAssertThrowsError(
+            try alice.setRendezvousConversationActive(
+                peer: String(repeating: "ff", count: 32), active: true))
 
         // Send → the event stream walks the honest ladder.
         let formattedSource = "**hello** from iOS ![pixel](https://invalid.test/p.png)"
@@ -1087,7 +1212,65 @@ final class SessionE2eTests: XCTestCase {
         session.stop()
     }
 
-    func testGroupUXCreatesManagesMessagesAndShowsPartialDelivery() throws {
+    func testMessageRequestsRequireExplicitAcceptDeleteOrBlock() throws {
+        let dir = try tempDir()
+        let bobEvents = Events()
+        let bob = try open(dir, "request-bob", bobEvents)
+        defer { bob.stop() }
+        let bobAddress = try listenAddr(bob)
+
+        func sendRequest(_ name: String, _ preview: String) throws {
+            let sender = try open(dir, name, Events())
+            defer { sender.stop() }
+            _ = try listenAddr(sender)
+            _ = try sender.myBundleHex()
+            let bobPeer = try sender.addContact(
+                name: "Bob",
+                bundleHex: try bob.myBundleHex(),
+                hints: multiaddrHint(bobAddress)
+            )
+            _ = try sender.send(peer: bobPeer, body: preview)
+            let deadline = Date().addingTimeInterval(30)
+            while try bob.messageRequests().contains(where: { $0.preview == preview }) == false {
+                guard Date() < deadline else {
+                    throw Timeout(what: "request preview in sealed inbox")
+                }
+                Thread.sleep(forTimeInterval: 0.05)
+            }
+        }
+
+        try sendRequest("request-accept", "please accept")
+        try sendRequest("request-delete", "please delete")
+        try sendRequest("request-block", "please block")
+
+        XCTAssertTrue(try bob.contacts().isEmpty)
+        let requests = try bob.messageRequests()
+        XCTAssertEqual(3, requests.count)
+        func id(_ preview: String) -> String {
+            requests.first(where: { $0.preview == preview })!.id
+        }
+        let peer = try bob.acceptMessageRequest(
+            request: id("please accept"), name: "Accepted sender")
+        try bob.deleteMessageRequest(request: id("please delete"))
+        try bob.blockMessageRequest(request: id("please block"))
+        XCTAssertTrue(try bob.messageRequests().isEmpty)
+        XCTAssertEqual("Accepted sender", try bob.contacts().first?.name)
+        XCTAssertEqual("please accept", try bob.messages(peer: peer).first?.body)
+        _ = try bobEvents.wait("request accepted") { event -> Void? in
+            if case .messageRequestAccepted = event { return () }
+            return nil
+        }
+        _ = try bobEvents.wait("request deleted") { event -> Void? in
+            if case .messageRequestDeleted = event { return () }
+            return nil
+        }
+        _ = try bobEvents.wait("request blocked") { event -> Void? in
+            if case .messageRequestBlocked = event { return () }
+            return nil
+        }
+    }
+
+    func testGroupUXUpgradesOriginsAndBlocksAnUnreadyRoster() throws {
         let dir = try tempDir()
         let aEv = Events()
         let bEv = Events()
@@ -1120,10 +1303,7 @@ final class SessionE2eTests: XCTestCase {
         // The create flow selects one stored contact; the creator then adds
         // another from the members screen.
         let group = try alice.createGroup(name: "Trail crew", members: [bobPeer])
-        _ = try bEv.wait("Bob's group invite") { event -> Void? in
-            if case let .groupUpdated(updated) = event, updated == group { return () }
-            return nil
-        }
+        try acceptGroupInvitation(bob, bEv, group: group, what: "Bob's group invite")
         var listed = try alice.groups()
         XCTAssertEqual(1, listed.count)
         XCTAssertEqual(group, listed[0].id)
@@ -1149,6 +1329,10 @@ final class SessionE2eTests: XCTestCase {
             }
             return nil
         }
+        let (aliceSecurity, bobSecurity) = try waitGroupSecurityReady(
+            alice, bob, group: group, allowInitialUpgrade: true)
+        XCTAssertEqual(0, aliceSecurity.legacyHistoryRows)
+        XCTAssertEqual(0, bobSecurity.legacyHistoryRows)
 
         // The same Session surface covers one encrypt-once group attachment.
         let selectedImage = dir.appendingPathComponent("ios-group-selected.png")
@@ -1255,8 +1439,28 @@ final class SessionE2eTests: XCTestCase {
             XCTAssertTrue(ffi.reasonText.contains("creator"), "got: \(ffi.reasonText)")
         }
 
-        // Bob receives while offline Carol remains queued/sent. Outbound
-        // history exposes one truthful state per recipient.
+        // The offline member has no authenticated pairwise session, so the
+        // roster change rotates origins and blocks new content rather than
+        // falling back to membership-only attribution.
+        XCTAssertEqual(.upgrading, try alice.groupSecurity(group: group).level)
+        XCTAssertThrowsError(
+            try alice.sendGroup(group: group, body: "must not use a legacy origin")
+        ) { error in
+            guard let ffi = error as? FfiError, case .Node = ffi else {
+                return XCTFail("expected FfiError.Node, got: \(error)")
+            }
+            XCTAssertTrue(
+                ffi.reasonText.contains("security upgrade"),
+                "got: \(ffi.reasonText)")
+        }
+
+        // Removing the unresolved member erases its pending capability and
+        // completes a fresh exchange for the remaining exact device set.
+        try alice.removeGroupMember(group: group, peer: carolPeer)
+        XCTAssertEqual(2, try alice.groups()[0].members.count)
+        _ = try waitGroupSecurityReady(
+            alice, bob, group: group, allowInitialUpgrade: false)
+
         let first = try alice.sendGroup(group: group, body: "Meet at the north trailhead")
         _ = try bEv.wait("Bob's group message") { event -> Void? in
             if case let .groupMessageReceived(receivedGroup, _, _, _, body, _, _, _) = event,
@@ -1277,24 +1481,16 @@ final class SessionE2eTests: XCTestCase {
         let history = allHistory.filter { $0.contentKind != .attachment }
         XCTAssertEqual(1, history.count)
         XCTAssertEqual(.outbound, history[0].direction)
-        XCTAssertEqual(2, history[0].deliveries.count)
+        XCTAssertEqual(1, history[0].deliveries.count)
         XCTAssertEqual(
             .delivered,
             history[0].deliveries.first(where: { $0.peer == bobPeer })?.state)
-        let carolState = history[0].deliveries.first(where: { $0.peer == carolPeer })?.state
-        XCTAssertTrue(carolState == .queued || carolState == .sent)
         let bobHistory = try bob.groupMessages(group: group).filter {
             $0.contentKind != .attachment
         }
         XCTAssertEqual(aliceAtBob, bobHistory[0].sender)
         XCTAssertEqual(.inbound, bobHistory[0].direction)
         XCTAssertTrue(bobHistory[0].deliveries.isEmpty)
-
-        // Creator removal rotates the roster immediately. A member can leave;
-        // their live group disappears locally and the creator converges too.
-        try alice.removeGroupMember(group: group, peer: carolPeer)
-        XCTAssertEqual(2, try alice.groups()[0].members.count)
-        Thread.sleep(forTimeInterval: 0.3)
 
         // C6 remains fully typed through the Swift wrapper: upgrade, roles,
         // admin results, signed owner moderation, and ownership transfer.
@@ -1319,10 +1515,14 @@ final class SessionE2eTests: XCTestCase {
         XCTAssertEqual(aliceAtBob, upgraded.owner)
         XCTAssertEqual(.member, upgraded.myRole)
         XCTAssertEqual(2, upgraded.members.count)
+        _ = try waitGroupSecurityReady(
+            alice, bob, group: group, allowInitialUpgrade: false)
 
         _ = try alice.setGroupRole(group: group, peer: bobPeer, role: .admin)
         let adminGeneration = upgradeGeneration + 1
         XCTAssertEqual(.admin, try authorityAt(bob, adminGeneration).myRole)
+        _ = try waitGroupSecurityReady(
+            alice, bob, group: group, allowInitialUpgrade: false)
         XCTAssertThrowsError(
             try bob.setGroupRole(group: group, peer: aliceAtBob, role: .member)
         ) { error in
@@ -1344,6 +1544,8 @@ final class SessionE2eTests: XCTestCase {
             return nil
         }
         _ = try authorityAt(bob, renameGeneration)
+        _ = try waitGroupSecurityReady(
+            alice, bob, group: group, allowInitialUpgrade: false)
         let renameDeadline = Date().addingTimeInterval(30)
         while try !bob.groups().contains(where: {
             $0.id == group && $0.name == "Authority trail crew"
@@ -1372,6 +1574,9 @@ final class SessionE2eTests: XCTestCase {
             }
             return nil
         }
+        _ = try authorityAt(bob, moderationGeneration)
+        _ = try waitGroupSecurityReady(
+            alice, bob, group: group, allowInitialUpgrade: false)
         let moderationDeadline = Date().addingTimeInterval(30)
         var moderated = try XCTUnwrap(
             bob.groupPolls(group: group).first(where: { $0.id == moderatedPoll }))
@@ -1392,6 +1597,8 @@ final class SessionE2eTests: XCTestCase {
         XCTAssertEqual(bobPeer, bobOwner.owner)
         XCTAssertEqual(1, bobOwner.ownerEpoch)
         XCTAssertEqual(.owner, bobOwner.myRole)
+        _ = try waitGroupSecurityReady(
+            alice, bob, group: group, allowInitialUpgrade: false)
         XCTAssertThrowsError(try bob.leaveGroup(group: group)) { error in
             guard let ffi = error as? FfiError, case .Node = ffi else {
                 return XCTFail("expected FfiError.Node, got: \(error)")
@@ -1404,8 +1611,12 @@ final class SessionE2eTests: XCTestCase {
         let aliceOwner = try authorityAt(alice, aliceOwnerGeneration)
         XCTAssertEqual(aliceAtBob, aliceOwner.owner)
         XCTAssertEqual(2, aliceOwner.ownerEpoch)
+        _ = try waitGroupSecurityReady(
+            alice, bob, group: group, allowInitialUpgrade: false)
         _ = try alice.setGroupRole(group: group, peer: bobPeer, role: .member)
         _ = try authorityAt(bob, aliceOwnerGeneration + 1)
+        _ = try waitGroupSecurityReady(
+            alice, bob, group: group, allowInitialUpgrade: false)
 
         let editable = try alice.sendGroup(group: group, body: "iOS group edit original")
         _ = try bEv.wait("Bob's editable iOS group Text") { event -> Void? in
@@ -1468,10 +1679,7 @@ final class SessionE2eTests: XCTestCase {
         let aliceAtBob = try bob.addContact(
             name: "Same name", bundleHex: alice.myBundleHex(), hints: multiaddrHint(aliceAddr))
         let group = try alice.createGroup(name: "Unicode crew", members: [bobPeer])
-        _ = try bEv.wait("mention group invite") { event -> Void? in
-            if case let .groupUpdated(updated) = event, updated == group { return () }
-            return nil
-        }
+        try acceptGroupInvitation(bob, bEv, group: group, what: "mention group invite")
 
         let handshake = try alice.send(peer: bobPeer, body: "mention capability handshake")
         _ = try bEv.wait("mention capability handshake") { event -> Void? in
@@ -1484,6 +1692,8 @@ final class SessionE2eTests: XCTestCase {
                id == handshake, state == .delivered { return () }
             return nil
         }
+        _ = try waitGroupSecurityReady(
+            alice, bob, group: group, allowInitialUpgrade: true)
 
         let capabilityDeadline = Date().addingTimeInterval(5)
         var capability = try alice.groupMentionCapability(group: group)
@@ -1558,12 +1768,33 @@ final class SessionE2eTests: XCTestCase {
         })
     }
 
+    func testLegacyBackupResetPreparationExposesFreshReviewedAuthority() throws {
+        let directory = try tempDir()
+        let authority = directory.appendingPathComponent("legacy-archive-authority.kra")
+        let prepared = try Session.prepareLegacyArchiveReset(recoveryPath: authority)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: authority.path))
+        XCTAssertFalse(prepared.newAddress.isEmpty)
+        XCTAssertEqual(
+            24,
+            prepared.recoveryMnemonic.split(whereSeparator: { $0.isWhitespace }).count)
+        XCTAssertThrowsError(
+            try Session.prepareLegacyArchiveReset(recoveryPath: authority))
+    }
+
     func testBackupMnemonicRestoreFlow() throws {
         let dir = try tempDir()
         var aEv = Events()
         let bEv = Events()
         var alice = try open(dir, "alice", aEv)
         let bob = try open(dir, "bob", bEv)
+
+        let recoveryPackage = dir.appendingPathComponent("komms-account-authority.kra")
+        let recoveryMnemonic = try alice.exportAccountRecoveryAuthority(to: recoveryPackage)
+        XCTAssertEqual(
+            24, recoveryMnemonic.split(whereSeparator: { $0.isWhitespace }).count)
+        XCTAssertThrowsError(
+            try alice.exportAccountRecoveryAuthority(
+                to: dir.appendingPathComponent("second-authority.kra")))
 
         let aAddr = try listenAddr(alice)
         let bAddr = try listenAddr(bob)
@@ -1596,6 +1827,23 @@ final class SessionE2eTests: XCTestCase {
                 dataDir: dir.appendingPathComponent("alice-wrong"), passphrase: "new-pass",
                 backupPath: backup,
                 mnemonic: String(repeating: "abandon ", count: 23) + "art",
+                recoveryPackagePath: recoveryPackage,
+                recoveryMnemonic: recoveryMnemonic,
+                settings: testSettings(), kdf: .mobile, sink: Events().sink)
+        ) { err in
+            guard let ffi = err as? FfiError, case .Startup = ffi else {
+                return XCTFail("expected FfiError.Startup, got: \(err)")
+            }
+        }
+
+        XCTAssertThrowsError(
+            try Session.restore(
+                dataDir: dir.appendingPathComponent("alice-wrong-authority"),
+                passphrase: "new-pass",
+                backupPath: backup,
+                mnemonic: mnemonic,
+                recoveryPackagePath: recoveryPackage,
+                recoveryMnemonic: String(repeating: "abandon ", count: 23) + "art",
                 settings: testSettings(), kdf: .mobile, sink: Events().sink)
         ) { err in
             guard let ffi = err as? FfiError, case .Startup = ffi else {
@@ -1608,6 +1856,8 @@ final class SessionE2eTests: XCTestCase {
         alice = try Session.restore(
             dataDir: dir.appendingPathComponent("alice-new"), passphrase: "new-pass",
             backupPath: backup, mnemonic: mnemonic,
+            recoveryPackagePath: recoveryPackage,
+            recoveryMnemonic: recoveryMnemonic,
             settings: testSettings(), kdf: .mobile, sink: aEv.sink)
         XCTAssertEqual(addressBefore, alice.address)
         XCTAssertEqual("bob", try alice.contacts()[0].name)

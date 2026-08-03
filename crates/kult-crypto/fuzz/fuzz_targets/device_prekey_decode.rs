@@ -1,4 +1,4 @@
-//! Fuzz: certified per-device prekey wrappers are strict and panic-free.
+//! Fuzz: certified prekey and capability-bearing pairing wrappers are strict.
 #![no_main]
 use libfuzzer_sys::fuzz_target;
 
@@ -7,6 +7,20 @@ fuzz_target!(|data: &[u8]| {
         let _ = bundle.verify(1_800_000_000);
         if let Ok(encoded) = bundle.encode() {
             let decoded = kult_crypto::DevicePrekeyBundle::decode(&encoded).unwrap();
+            let _ = decoded.verify(1_800_000_000);
+        }
+    }
+    if let Ok(bundle) = kult_crypto::AuthorityDevicePrekeyBundle::decode(data) {
+        let _ = bundle.verify(1_800_000_000);
+        if let Ok(encoded) = bundle.encode() {
+            let decoded = kult_crypto::AuthorityDevicePrekeyBundle::decode(&encoded).unwrap();
+            let _ = decoded.verify(1_800_000_000);
+        }
+    }
+    if let Ok(bundle) = kult_crypto::AuthorityPairingBundle::decode(data) {
+        let _ = bundle.verify(1_800_000_000);
+        if let Ok(encoded) = bundle.encode() {
+            let decoded = kult_crypto::AuthorityPairingBundle::decode(&encoded).unwrap();
             let _ = decoded.verify(1_800_000_000);
         }
     }

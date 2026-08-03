@@ -1,0 +1,42 @@
+name: reference service container CI
+
+on:
+  pull_request:
+    paths:
+      - deploy/reference-service/**
+      - crates/kult-reference-service/**
+      - crates/kult-rendezvous/**
+      - crates/kult-protocol/src/rendezvous.rs
+      - crates/kult-crypto/src/rendezvous.rs
+      - Cargo.toml
+      - Cargo.lock
+      - .github/workflows/reference-service-container-ci.yml
+      - .github/workflows/reference-service-container.yml
+  push:
+    branches: [main]
+    paths:
+      - deploy/reference-service/**
+      - crates/kult-reference-service/**
+      - crates/kult-rendezvous/**
+      - crates/kult-protocol/src/rendezvous.rs
+      - crates/kult-crypto/src/rendezvous.rs
+      - Cargo.toml
+      - Cargo.lock
+      - .github/workflows/reference-service-container-ci.yml
+      - .github/workflows/reference-service-container.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: reference-service-container-ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  container:
+    name: build, harden, restart
+    permissions:
+      contents: read
+    uses: ./.github/workflows/reference-service-container.yml
+    with:
+      push: false

@@ -1,0 +1,99 @@
+name: OHTTP relay container
+
+on:
+  workflow_call:
+    inputs:
+      push:
+        description: Push the qualified image to GHCR
+        required: true
+        type: boolean
+      release_tag:
+        description: Existing vMAJOR.MINOR.PATCH source tag
+        required: false
+        default: ""
+        type: string
+    outputs:
+      digest:
+        description: Published multi-platform image digest
+        value: ${{ jobs.build.outputs.digest }}
+
+env:
+  IMAGE_NAME: ghcr.io/andrigitdev/komms-ohttp-relay
+
+jobs:
+  build:
+    name: ${{ inputs.push && 'publish multi-arch image' || 'build and exercise image' }}
+    runs-on: ubuntu-latest
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ inputs.release_tag || github.sha }}
+      - name: Record immutable build inputs
+        id: source
+        run: |
+          echo "revision=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "source_date_epoch=$(git show -s --format=%ct HEAD)" >> "$GITHUB_OUTPUT"
+      - name: Set up QEMU
+        if: inputs.push
+        uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
+      - name: Log in to GitHub Container Registry
+        if: inputs.push
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: Generate image metadata
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          tags: |
+            type=sha
+            type=raw,value=ohttp-relay-ci,enable=${{ !inputs.push }}
+            type=semver,pattern={{version}},value=${{ inputs.release_tag }},enable=${{ inputs.push }}
+            type=raw,value=0.3-alpha,enable=${{ inputs.push && inputs.release_tag == 'v0.3.0' }}
+            type=raw,value=alpha,enable=${{ inputs.push && inputs.release_tag == 'v0.3.0' }}
+          labels: |
+            org.opencontainers.image.title=Komms OHTTP relay
+            org.opencontainers.image.description=Least-authority fixed-mapping RFC 9458 Oblivious HTTP relay
+            org.opencontainers.image.licenses=AGPL-3.0-only
+            org.opencontainers.image.revision=${{ steps.source.outputs.revision }}
+      - name: Build and optionally publish
+        id: build
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+        with:
+          context: .
+          file: deploy/ohttp-relay/Dockerfile
+          platforms: ${{ inputs.push && 'linux/amd64,linux/arm64' || 'linux/amd64' }}
+          push: ${{ inputs.push }}
+          load: ${{ !inputs.push }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          annotations: ${{ steps.meta.outputs.annotations }}
+          build-args: |
+            KOMMS_SOURCE_REVISION=${{ steps.source.outputs.revision }}
+            SOURCE_DATE_EPOCH=${{ steps.source.outputs.source_date_epoch }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: ${{ inputs.push && 'mode=max' || 'false' }}
+          sbom: ${{ inputs.push }}
+      - name: Exercise hardened container
+        if: ${{ !inputs.push }}
+        env:
+          KOMMS_SOURCE_REVISION: ${{ steps.source.outputs.revision }}
+          SOURCE_DATE_EPOCH: ${{ steps.source.outputs.source_date_epoch }}
+          KOMMS_OHTTP_RELAY_IMAGE: ${{ env.IMAGE_NAME }}:ohttp-relay-ci
+        run: deploy/ohttp-relay/smoke-test.sh
+      - name: Record published digest
+        if: inputs.push
+        run: |
+          {
+            echo "Image: $IMAGE_NAME@${{ steps.build.outputs.digest }}"
+            echo "Source: ${{ steps.source.outputs.revision }}"
+            echo "BuildKit provenance and SBOM attestations are attached to the image index."
+          } >> "$GITHUB_STEP_SUMMARY"

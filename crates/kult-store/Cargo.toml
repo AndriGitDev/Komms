@@ -10,6 +10,7 @@ repository.workspace = true
 [features]
 default = []
 test-failpoints = []
+legacy-test-fixtures = []
 
 [dependencies]
 kult-crypto = { version = "0.3.0", path = "../kult-crypto" }
@@ -29,3 +30,13 @@ atomicwrites = "0.4.4"
 proptest = "1"
 rand = "0.8"
 tempfile = "3"
+
+[[test]]
+name = "backup"
+path = "tests/backup.rs"
+required-features = ["legacy-test-fixtures"]
+
+[[test]]
+name = "m2_sneakernet"
+path = "tests/m2_sneakernet.rs"
+required-features = ["legacy-test-fixtures"]

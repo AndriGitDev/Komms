@@ -1,0 +1,87 @@
+{
+  "schema": "komms-incident-tabletop-set/v1",
+  "as_of": "2026-07-31",
+  "exercise_kind": "repository-policy-dry-run",
+  "independent_or_live_evidence": false,
+  "scenarios": [
+    {
+      "id": "service-key-compromise",
+      "trigger": "A runtime service key or host is suspected compromised.",
+      "required_actions": [
+        "remove-affected-default",
+        "stop-or-isolate-service",
+        "identify-affected-role-and-time-window",
+        "rotate-only-the-affected-credential-domain",
+        "rebuild-from-reviewed-immutable-revision",
+        "publish-metadata-risk-and-residual-risk",
+        "preserve-core-fallback"
+      ],
+      "forbidden_actions": [
+        "reuse-release-key",
+        "reuse-directory-key",
+        "claim-message-plaintext-was-impossible-to-observe",
+        "restore-stale-wake-revocation-state",
+        "import-gateway-hpke-key-into-ohttp-relay"
+      ],
+      "dry_run_result": "pass-with-live-operator-and-notification-gates-open"
+    },
+    {
+      "id": "lawful-request",
+      "trigger": "A request seeks project, operator, or user information.",
+      "required_actions": [
+        "preserve-exact-request-and-deadline",
+        "verify-authority-and-scope",
+        "seek-qualified-counsel-where-proportionate",
+        "inventory-only-data-actually-held",
+        "minimize-response",
+        "preserve-objections-and-appeal-options",
+        "notify-affected-users-when-permitted-and-safe",
+        "publish-aggregate-transparency-record"
+      ],
+      "forbidden_actions": [
+        "create-unheld-data",
+        "expand-logging",
+        "promise-secrecy-from-operator",
+        "publish-sensitive-request-details"
+      ],
+      "dry_run_result": "pass-with-qualified-counsel-unassigned"
+    },
+    {
+      "id": "cross-role-correlation",
+      "trigger": "One administrative domain can correlate two optional service roles.",
+      "required_actions": [
+        "identify-shared-host-dns-network-and-credential-control",
+        "withdraw-private-non-collusion-claim",
+        "separate-administrative-domains-or-use-tor-only-wording",
+        "update-provider-directory-and-operator-record",
+        "notify-users-of-material-metadata-change"
+      ],
+      "forbidden_actions": [
+        "describe-process-isolation-as-operator-independence",
+        "claim-fixed-shape-traffic-prevents-correlation",
+        "co-locate-ohttp-relay-and-gateway-while-claiming-private"
+      ],
+      "dry_run_result": "pass-with-no-private-non-collusion-claim"
+    },
+    {
+      "id": "operator-overload-and-eol",
+      "trigger": "An operator cannot sustain capacity or must leave service.",
+      "required_actions": [
+        "refuse-new-custody-before-overcommit",
+        "publish-capacity-or-end-date",
+        "identify-replacement-without-making-it-mandatory",
+        "overlap-only-within-role-retention-and-key-policy",
+        "disable-retired-service-keys",
+        "preserve-client-fallback-and-sender-custody",
+        "publish-outage-and-loss-window"
+      ],
+      "forbidden_actions": [
+        "report-refusal-as-sent",
+        "silently-delete-unacknowledged-mailbox-rows",
+        "claim-rendezvous-or-wake-loss-breaks-core-delivery",
+        "retry-ambiguous-ohttp-request"
+      ],
+      "dry_run_result": "pass-with-real-operator-exercise-open"
+    }
+  ]
+}

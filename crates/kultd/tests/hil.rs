@@ -16,9 +16,10 @@
 //! What only hardware can prove — and this test therefore pins — is the
 //! real path: serial framing against actual firmware, the radio config
 //! handshake (node number, LoRa modem params, region → duty-cycle budget),
-//! and delivery over actual RF. The frame-count and duty-cycle *logic* are
-//! already pinned deterministically by the fake-radio integration tests;
-//! here they run against the real regulatory region the radios report.
+//! and delivery over actual RF. The final content-free result records exact
+//! frames handed/received, estimated airtime, refusals, and the radio-reported
+//! configuration. It contains no port path, node number, delivery token,
+//! peer, ciphertext, or message identifier.
 
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -27,6 +28,7 @@ use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 
+use kult_transport::MeshtasticStats;
 use kultd::{Daemon, DaemonConfig};
 
 /// Argon2id light enough for tests: the store lives in a tempdir and holds
@@ -56,6 +58,19 @@ fn radio_only_config(dir: &Path, name: &str, serial_port: &str) -> DaemonConfig 
     cfg.mdns = false;
     cfg.meshtastic_serial = Some(serial_port.to_owned());
     cfg.tick_interval = Duration::from_millis(250);
+    cfg.checkin_interval = Duration::from_secs(1);
+    cfg
+}
+
+fn internet_only_config(dir: &Path, name: &str) -> DaemonConfig {
+    let data = dir.join(name);
+    std::fs::create_dir_all(&data).unwrap();
+    let mut cfg = DaemonConfig::new(&data, b"test-passphrase".to_vec());
+    cfg.kdf = TEST_KDF;
+    cfg.listen = vec!["/ip4/127.0.0.1/udp/0/quic-v1".to_owned()];
+    cfg.mdns = false;
+    cfg.tick_interval = Duration::from_millis(250);
+    cfg.checkin_interval = Duration::from_secs(1);
     cfg
 }
 
@@ -138,6 +153,27 @@ fn bench_env(name: &str) -> String {
             "{name} not set — the HIL test needs two USB Meshtastic radios; \
              see docs/10-hil-bench.md"
         )
+    })
+}
+
+fn stats_json(stats: MeshtasticStats) -> Value {
+    json!({
+        "region_code": stats.region_code,
+        "duty_cycle_percent": stats.duty_cycle_percent,
+        "modem": {
+            "bandwidth_hz": stats.modem_params.bandwidth_hz,
+            "spreading_factor": stats.modem_params.spreading_factor,
+            "coding_rate_denominator": stats.modem_params.coding_rate_denominator,
+            "preamble_symbols": stats.modem_params.preamble_symbols,
+        },
+        "handed_frames": stats.handed_frames,
+        "handed_envelope_bytes": stats.handed_envelope_bytes,
+        "handed_airtime_micros": stats.handed_airtime_micros,
+        "airtime_refusals": stats.airtime_refusals,
+        "received_private_frames": stats.received_private_frames,
+        "received_private_bytes": stats.received_private_bytes,
+        "decoded_envelopes": stats.decoded_envelopes,
+        "malformed_private_frames": stats.malformed_private_frames,
     })
 }
 
@@ -247,6 +283,178 @@ async fn two_real_radios_message_over_the_air_alone() {
         reply_at.elapsed()
     );
 
+    let alice_radios = alice.meshtastic_stats();
+    let bob_radios = bob.meshtastic_stats();
+    let [alice_stats] = alice_radios.as_slice() else {
+        panic!("alice must have exactly one configured radio");
+    };
+    let [bob_stats] = bob_radios.as_slice() else {
+        panic!("bob must have exactly one configured radio");
+    };
+    assert!(alice_stats.handed_frames > 0);
+    assert!(bob_stats.handed_frames > 0);
+    assert!(alice_stats.received_private_frames > 0);
+    assert!(bob_stats.received_private_frames > 0);
+    assert!(alice_stats.decoded_envelopes > 0);
+    assert!(bob_stats.decoded_envelopes > 0);
+    assert!(alice_stats.handed_airtime_micros > 0);
+    assert!(bob_stats.handed_airtime_micros > 0);
+    println!(
+        "KOMMS_HIL_RESULT={}",
+        json!({
+            "format": "komms-meshtastic-hil-result-v1",
+            "elapsed_millis": u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+            "alice": stats_json(*alice_stats),
+            "bob": stats_json(*bob_stats),
+        })
+    );
+
     alice.shutdown().await;
     bob.shutdown().await;
+}
+
+/// Mixed-path bench: one endpoint radio, one bridge radio, and one local QUIC
+/// endpoint exchange both ways through the bridge's durable mailbox. This
+/// proves the real serial/RF half and the production bridge path together. It
+/// does not by itself qualify a separately administered Internet path; the
+/// field record keeps that stronger row open until two hosts/networks run it.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "hardware-in-loop: needs two USB Meshtastic radios (KOMMS_HIL_SERIAL_A/_B); run serially; see docs/10-hil-bench.md"]
+async fn real_radios_bridge_to_durable_local_quic_both_ways() {
+    let port_a = bench_env("KOMMS_HIL_SERIAL_A");
+    let port_b = bench_env("KOMMS_HIL_SERIAL_B");
+    let dir = tempfile::tempdir().unwrap();
+    let started = Instant::now();
+
+    let mesh = Daemon::start(radio_only_config(dir.path(), "mesh", &port_a))
+        .await
+        .unwrap_or_else(|error| panic!("mesh endpoint radio unavailable: {error}"));
+    let mut bridge_cfg = radio_only_config(dir.path(), "bridge", &port_b);
+    bridge_cfg.serve_mailbox = true;
+    let bridge = Daemon::start(bridge_cfg)
+        .await
+        .unwrap_or_else(|error| panic!("bridge radio unavailable: {error}"));
+    let mailbox_addr = bridge
+        .net
+        .wait_listen_addr()
+        .await
+        .expect("bridge listen address");
+    let mut internet_cfg = internet_only_config(dir.path(), "internet");
+    internet_cfg.mailboxes = vec![mailbox_addr.clone()];
+    let internet = Daemon::start(internet_cfg)
+        .await
+        .expect("internet endpoint");
+
+    let mut mesh_rpc = Client::connect(&mesh.socket_path).await;
+    let mut internet_rpc = Client::connect(&internet.socket_path).await;
+    let mesh_bundle = mesh_rpc.ok(json!({ "op": "bundle" })).await["bundle"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let internet_bundle = internet_rpc.ok(json!({ "op": "bundle" })).await["bundle"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let internet_peer = mesh_rpc
+        .ok(json!({
+            "op": "add_contact",
+            "name": "internet endpoint",
+            "bundle": internet_bundle,
+            "hints": [{ "mesh": u32::MAX }],
+        }))
+        .await["peer"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let mesh_peer = internet_rpc
+        .ok(json!({
+            "op": "add_contact",
+            "name": "mesh endpoint",
+            "bundle": mesh_bundle,
+            "hints": [{ "relay": mailbox_addr }],
+        }))
+        .await["peer"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    let mut mesh_events = Client::connect(&mesh.socket_path).await;
+    let mut internet_events = Client::connect(&internet.socket_path).await;
+    mesh_events.ok(json!({ "op": "subscribe" })).await;
+    internet_events.ok(json!({ "op": "subscribe" })).await;
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+
+    let sent = mesh_rpc
+        .ok(json!({
+            "op": "send",
+            "peer": internet_peer,
+            "body": "mesh to bridge fixture",
+        }))
+        .await;
+    let mesh_message = sent["id"].as_str().unwrap().to_owned();
+    let received = internet_events
+        .wait_event("internet endpoint receiving mesh message", |event| {
+            event["type"] == json!("message")
+        })
+        .await;
+    assert_eq!(received["body"], json!("mesh to bridge fixture"));
+    assert_eq!(received["peer"], json!(mesh_peer));
+    mesh_events
+        .wait_event("mesh endpoint delivered receipt", |event| {
+            event["id"] == json!(mesh_message) && event["state"] == json!("delivered")
+        })
+        .await;
+
+    let sent = internet_rpc
+        .ok(json!({
+            "op": "send",
+            "peer": mesh_peer,
+            "body": "bridge to mesh fixture",
+        }))
+        .await;
+    let internet_message = sent["id"].as_str().unwrap().to_owned();
+    let received = mesh_events
+        .wait_event("mesh endpoint receiving internet message", |event| {
+            event["type"] == json!("message")
+        })
+        .await;
+    assert_eq!(received["body"], json!("bridge to mesh fixture"));
+    internet_events
+        .wait_event("internet endpoint delivered receipt", |event| {
+            event["id"] == json!(internet_message) && event["state"] == json!("delivered")
+        })
+        .await;
+
+    let mut bridge_rpc = Client::connect(&bridge.socket_path).await;
+    let status = bridge_rpc.ok(json!({ "op": "status" })).await;
+    assert_eq!(status["contacts"], json!(0));
+    assert_eq!(status["mailbox"]["schema_version"], json!(2));
+    let mesh_radios = mesh.meshtastic_stats();
+    let bridge_radios = bridge.meshtastic_stats();
+    let [mesh_stats] = mesh_radios.as_slice() else {
+        panic!("mesh endpoint must have exactly one radio");
+    };
+    let [bridge_stats] = bridge_radios.as_slice() else {
+        panic!("bridge must have exactly one radio");
+    };
+    assert!(mesh_stats.handed_frames > 0);
+    assert!(mesh_stats.received_private_frames > 0);
+    assert!(bridge_stats.handed_frames > 0);
+    assert!(bridge_stats.received_private_frames > 0);
+    println!(
+        "KOMMS_HIL_BRIDGE_RESULT={}",
+        json!({
+            "format": "komms-meshtastic-hil-bridge-result-v1",
+            "scope": "physical-rf-plus-local-quic",
+            "elapsed_millis": u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+            "mesh_endpoint": stats_json(*mesh_stats),
+            "bridge": stats_json(*bridge_stats),
+            "bridge_contacts": status["contacts"],
+            "mailbox_schema_version": status["mailbox"]["schema_version"],
+        })
+    );
+
+    mesh.shutdown().await;
+    bridge.shutdown().await;
+    internet.shutdown().await;
 }

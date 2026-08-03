@@ -10,6 +10,10 @@ plugins {
     alias(libs.plugins.kotlin.android)
 }
 
+// Pin every app and flavor dependency graph. Refresh deliberately with:
+//   gradle :app:dependencies --write-locks -Pkomms.androidApp=true
+dependencyLocking { lockAllConfigurations() }
+
 // The cargo workspace this build is embedded in (apps/android → repo root).
 val repoRoot = rootDir.resolve("../..").normalize()
 val rustJniLibs = layout.buildDirectory.dir("rustJniLibs")
@@ -51,10 +55,22 @@ fun signingValue(property: String, env: String): String? =
     keystoreProperties.getProperty(property) ?: System.getenv(env)
 
 val releaseStore = signingValue("storeFile", "KOMMS_ANDROID_KEYSTORE")
+val nativeWakeProperties = Properties().apply {
+    val file = rootDir.resolve("native-wake.properties")
+    if (file.exists()) file.inputStream().use { load(it) }
+}
+
+fun nativeWakeValue(property: String, env: String): String =
+    nativeWakeProperties.getProperty(property) ?: System.getenv(env).orEmpty()
+
+fun buildString(value: String): String =
+    "\"" + value.replace("\\", "\\\\").replace("\"", "\\\"") + "\""
 
 android {
     namespace = "komms.android"
     compileSdk = 35
+    buildToolsVersion = "35.0.0"
+    ndkVersion = "27.2.12479018"
 
     defaultConfig {
         // Matches the desktop app's bundle identifier family.
@@ -93,6 +109,38 @@ android {
         }
     }
 
+    flavorDimensions += "distribution"
+    productFlavors {
+        create("play") {
+            dimension = "distribution"
+            buildConfigField("boolean", "NATIVE_WAKE_SUPPORTED", "true")
+            buildConfigField(
+                "String",
+                "FCM_APPLICATION_ID",
+                buildString(nativeWakeValue("applicationId", "KOMMS_FCM_APPLICATION_ID")),
+            )
+            buildConfigField(
+                "String",
+                "FCM_PROJECT_ID",
+                buildString(nativeWakeValue("projectId", "KOMMS_FCM_PROJECT_ID")),
+            )
+            buildConfigField(
+                "String",
+                "FCM_API_KEY",
+                buildString(nativeWakeValue("apiKey", "KOMMS_FCM_API_KEY")),
+            )
+            buildConfigField(
+                "String",
+                "FCM_SENDER_ID",
+                buildString(nativeWakeValue("senderId", "KOMMS_FCM_SENDER_ID")),
+            )
+        }
+        create("googleFree") {
+            dimension = "distribution"
+            buildConfigField("boolean", "NATIVE_WAKE_SUPPORTED", "false")
+        }
+    }
+    buildFeatures { buildConfig = true }
     sourceSets["main"].jniLibs.srcDir(rustJniLibs)
 }
 
@@ -121,6 +169,8 @@ dependencies {
     implementation(libs.camera.lifecycle)
     implementation(libs.camera.view)
     implementation(libs.zxing.core)
+    implementation(libs.androidx.work.runtime)
+    add("playImplementation", libs.firebase.messaging)
 
     testImplementation(libs.junit)
 }

@@ -64,7 +64,7 @@ receipt, the queue copy is removed and retained history becomes
 | Link protocols | QUIC (primary), TCP+Noise+Yamux (fallback) |
 | Discovery | Kademlia DHT; bootstrap from a *user-editable* list of community nodes + manual peer addresses + rendezvous points shared out-of-band (QR) |
 | NAT traversal | AutoNAT + Circuit Relay v2 + DCUtR hole punching |
-| Prekey bundles | Current Alpha: signed bundles ([06: Identity & Trust](06-identity-trust.md)) published under stable `H(IK_pub)` locators. This authenticates contents but exposes a polling and route-correlation oracle; [ADR-0031](adr/0031-capability-scoped-dht-discovery.md) proposes capability-scoped rotating locators before wire v1. |
+| Prekey bundles | Current Alpha: fixed 1,179,648-byte encrypted [ADR-0031](adr/0031-capability-scoped-dht-discovery.md) records under weekly Connect-capability locators. Each record contains a complete ADR-0026 proof, at most two device bundles, at most three introduction routes, and a complete active-device signature. Standard and Private records are mailbox-only. |
 | Mailbox relays | Ordinary nodes advertising a relay protocol; recipients pick relays and list them (as hints) in their bundle |
 
 Bootstrap deserves emphasis: a fresh internet-only install still needs one
@@ -77,27 +77,72 @@ and two users who exchange a QR code need no project bootstrap at all. Before
 stable, release tests must blackhole every configured default and exercise an
 alternate peer and an out-of-band path.
 
+First contact normally uses a `kc2` Connect code: the stable account digest plus
+a random rotatable 32-byte bearer discovery capability and checksum. For local
+weekly epoch `e`, publication writes exactly `e-1..=e+4` and lookup requests
+only `e-1`, `e`, and `e+1`. The locator and XChaCha20-Poly1305 record key use
+separate derivations. One locator retains at most eight distinct exact-size
+candidates before decryption; valid records are selected deterministically
+after full authority, certificate, prekey, admission, time, locator, padding,
+and signature verification. Invalid-candidate crowding or an authority
+fork/recovery conflict makes discovery unavailable instead of selecting
+attacker-controlled state.
+
+The random capability is included only in sealed local state, authenticated
+owned-device sync, and current encrypted recovery. A holder can poll the
+records, so public sharing makes the account publicly reachable and is not an
+anonymity promise. Rotation does not change the account fingerprint or safety
+number. Existing Alpha profiles may temporarily dual-publish a mailbox-only
+`/kk/prekeys/1` record; new profiles use `/kk/prekeys/2` only, and no legacy
+record discloses the new capability. Paired contacts receive updates through
+the authenticated ratchet, and ordinary delivery never falls back to public
+identity-indexed lookup.
+
+Direct QR/link/file pairing uses a signed `KPB2` wrapper around the
+authority-bound device prekey. It carries the current Connect capability and
+generation so a new-profile recipient can pre-register the corresponding
+device/day introduction token at a selected mailbox. Raw legacy pairing
+bundles do not silently recover identity-derived reachability.
+
 Direct sealed-envelope delivery negotiates `/komms/envelope/2`. One encoded
 envelope is capped at **128 KiB** across carriers. The receiver keeps at most
 256 unsolicited direct envelopes and 8 MiB of their encoded bytes between
-delivery-engine drains. Its response has only two meanings:
+delivery-engine drains as a bounded prefilter, but keeps the interactive
+response open until the node has completed its admission decision. Its
+response has only two meanings:
 
-- `accepted`: the bounded in-process next-hop inbox retained the envelope for
-  the delivery engine;
-- `refused`: the request was understood but the next hop did not retain it,
-  for example because that inbox was full.
+- `accepted`: the node fully consumed the envelope or transactionally staged
+  that exact envelope in bounded durable state;
+- `refused`: the request was understood but the next hop did not durably
+  retain or consume it.
 
 A timeout, dial error, malformed response, or response-write failure is neither
 answer and never becomes an acknowledgement. The sender keeps the durable
 envelope retryable and may try another supported path. Version 2 deliberately
 does not negotiate the older `/komms/envelope/1` unit response, which could not
 distinguish retention from refusal; Alpha peers must be upgraded together.
-These bounds protect one ingress surface. They do not replace first-contact
-admission, identity blocking, mailbox durability, or operator abuse controls in
-the [stabilization program](29-stabilization-program.md). In particular, the
-current `accepted` boundary is volatile RAM rather than ADR-0030's target
-transactional admission boundary, so it is Alpha next-hop evidence—not a
-durability or end-to-end receipt.
+Embeddings without a durable receive boundary may still read the copy through
+the ordinary transport API, but that path returns `refused`; only the staged
+receive/settlement API can claim custody.
+The response is still only a next-hop custody result: it is not a delivery,
+read, or end-to-end receipt. Unknown introductions are checked against the
+signed admission descriptor, invitation or puzzle proof, carrier/work budgets,
+exact-bundle binding, size, expiry, and replay state before KEM work where
+possible. Invalid, expired, under-difficulty, oversized, duplicate, and
+over-budget introductions receive the same bounded refusal shape and never
+enter the generic pending domain. A valid stranger is atomically sealed into
+the fixed provisional request domain rather than contacts or normal history.
+These controls implement the local and direct-carrier boundary in
+[ADR-0030](adr/0030-first-contact-admission.md). Durable mailbox-v2 custody is
+implemented under [ADR-0032](adr/0032-leased-mailbox-delivery.md);
+operator-level abuse, capacity, upgrade, and real-network qualification remain
+separate open gates.
+
+An internet-to-mesh bridge may copy an unregistered deposit into its bounded
+transit queue, but that volatile handoff returns `refused`. Best-effort
+forwarding therefore never earns next-hop custody: the sender retains its
+durable ciphertext and retry responsibility unless a registered durable
+mailbox or endpoint has accepted it.
 
 The libp2p swarm also caps pending inbound/outbound connections at 32 each,
 established inbound connections at 64, established connections at 96 total,
@@ -105,24 +150,37 @@ and connections per peer at 8. Envelope and mailbox protocols independently
 cap active streams per connection. These are memory/concurrency containment,
 not first-contact rate limits or Sybil resistance.
 
-Unknown-token envelopes that survive that volatile boundary enter an encrypted
-deferred inbox only when their exact content id is not already present. The
-interim store ceiling is 2,048 envelopes and 64 MiB of sealed rows, with the
-older of exact multipath duplicates retained under one stable row id. Reaching
-that ceiling prevents further persistence, but current `/komms/envelope/2`
-cannot relay the late refusal back after it has already answered `accepted`.
-That semantic gap is why these quotas are containment rather than closure of
-ADR-0030.
+Non-introduction envelopes with no currently consumable token enter an
+encrypted deferred inbox only when their exact content id is not already
+present. The store ceiling is 2,048 envelopes and 64 MiB of sealed rows, with
+the older of exact multipath duplicates retained under one stable row id.
+Reaching that ceiling prevents persistence and the held direct response is
+`refused`. Delayed carriers preserve their ingress class in the sealed row so a
+later admission pass applies the correct per-carrier budget after restart.
 
-Mailbox-v1 collection is likewise bounded while its crash-safe replacement is
-designed: one check-in carries at most 4,096 token filters and returns at most
-512 envelopes / 2 MiB; the daemon rotates larger token sets, rotates beyond
-eight configured mailboxes across later lifecycle ticks, and admits at most
-eight pages (4,096 rows / 16 MiB) before the node drains the carrier. These
-bounds prevent honest large contact or relay sets from failing or starving.
-They do **not** make v1 durable: the relay still removes a page before the
-endpoint transactionally stages and acknowledges it. [ADR-0032](adr/0032-leased-mailbox-delivery.md)
-replaces that delete-before-response behavior with leased pages.
+`/komms/mailbox/2` accepts a deposit only after a `synchronous=FULL` SQLite
+transaction commits its row-bound sealed record. Collection creates or
+retransmits one 120-second idempotent lease of at most 128 rows / 1 MiB. Each
+row has a random relay id. The endpoint first commits the complete encoded
+envelope through the typed `PendingStage` plan, then acknowledges the exact
+lease and accepted row ids. The relay deletes only those rows in one
+transaction. Lost responses, process stops, duplicate pages, duplicate
+acknowledgements, partial local capacity, or expired leases therefore leave
+unacknowledged rows retryable.
+
+One check-in carries at most 4,096 token filters. Each lifecycle interval
+selects at most eight configured mailboxes, requests one page from each, and
+admits at most 1,024 rows / 8 MiB into an independently bounded collection
+inbox. Mailbox and token cursors rotate; success and failure use jittered
+backoff capped at one hour. The command queue, pending outbound work, request
+and response bytes, streams, relay quotas, registration/lease lifetimes, and
+endpoint pending store are all separately bounded. No collection path loops
+until a relay returns empty.
+
+Current clients and `kultd` use v2 only. Destructive `/komms/mailbox/1` serving
+is disabled by default and available only through an explicit library
+compatibility switch; there is no automatic client fallback. Its
+delete-before-response risk prevents any stable custody claim.
 
 **Censorship posture (A3)**: QUIC-on-443 blends adequately against casual blocking. Full
 DPI resistance (pluggable obfuscated transports, arti/Tor onion services as a transport)
@@ -130,26 +188,38 @@ is milestone M6: tracked, not hand-waved.
 
 ### 2.1 Optional post-pairing reachability and native wake
 
-The Hybrid Infrastructure Layer is a proposed convenience adjunct, not another
-message transport. [ADR-0018](adr/0018-pairwise-rendezvous.md) lets established
-peers store fixed-size encrypted `DeliveryHint` records under rotating pairwise
-slots. The DHT remains first-contact discovery, and recipient-selected mailbox
-relays remain durable store-and-forward. Rendezvous success alone is not a
-`SendReceipt` or F4 capability; `kult-node` must probe the returned hint through
-the ordinary transport contract.
+The Hybrid Infrastructure Layer is a reversible convenience adjunct, not
+another message transport. The ADR-0018 Alpha implementation lets established
+peers store fixed-size encrypted `DeliveryHint` records under rotating
+provider-, direction-, and epoch-separated pairwise slots. Capability-scoped
+DHT records remain first-contact discovery, and recipient-selected mailbox
+relays remain durable store-and-forward. Rendezvous service processing or
+self-lookup confirmation is not a `SendReceipt` or F4 capability; `kult-node`
+probes the returned source-scoped hint through the ordinary transport contract.
+The dedicated two-role reference-service artifact is deployable, but no default
+provider or running network service ships.
 
 [ADR-0019](adr/0019-native-wake-gateway.md) emits a static APNs/FCM tick only
 after a direct peer or mailbox acknowledged the sealed envelope. It carries no
 envelope or conversation data, and provider acknowledgement never changes
 delivery state. Sovereign mode registers with neither service. Private mode
 uses Tor or a non-colluding Oblivious HTTP ingress; Standard mode uses direct
-HTTPS. Complete failure falls back to the unchanged transports in this document.
+HTTPS. The Alpha gateway/core implementation has fixed codecs, pinned clients,
+sealed per-session capabilities, durable identity-free revoke retries, bounded
+generic collection, a dedicated service binary, and hardened deployment
+artifacts. A separate fixed-mapping RFC 9458 relay artifact strips client
+metadata and holds no gateway HPKE key, but no client/gateway integration,
+deployment, or non-collusion evidence exists. Native mobile token/background integration and physical
+qualification remain open. Complete failure falls back to the unchanged
+transports in this document. See the
+[native-wake runbook](37-native-wake-operations.md) and
+[OHTTP relay runbook](52-ohttp-relay-operations.md).
 
-[ADR-0034](adr/0034-operator-minimized-reference-discovery.md) proposes the
-initial founder-operated Hetzner profile: Standard-mode bootstrap/DHT caching
-and post-pairing rendezvous with RAM-backed mutable state. It is not a mailbox
-or wake gateway and cannot claim zero metadata, Private-mode non-collusion, or
-plural operation.
+[ADR-0034](adr/0034-operator-minimized-reference-discovery.md) defines the
+validated but undeployed Standard-mode bootstrap/DHT cache and post-pairing
+rendezvous profile with RAM-backed mutable state. It is not a mailbox or wake
+gateway and cannot claim zero metadata, Private-mode non-collusion, or plural
+operation.
 
 ### 2.2 Ephemeral retention at intermediaries
 

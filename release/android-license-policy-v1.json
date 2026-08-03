@@ -1,0 +1,91 @@
+{
+  "schema": "komms-android-license-policy/v1",
+  "review_status": "declared-license-inventory-not-legal-opinion",
+  "group_prefixes": [
+    {
+      "group_prefix": "androidx",
+      "spdx": "Apache-2.0"
+    },
+    {
+      "group_prefix": "com.google.android.datatransport",
+      "spdx": "Apache-2.0"
+    },
+    {
+      "group_prefix": "com.google.android.gms",
+      "spdx": "LicenseRef-Android-SDK-Terms"
+    },
+    {
+      "group_prefix": "com.google.auto.value",
+      "spdx": "Apache-2.0"
+    },
+    {
+      "group_prefix": "com.google.errorprone",
+      "spdx": "Apache-2.0"
+    },
+    {
+      "group_prefix": "com.google.firebase",
+      "spdx": "Apache-2.0"
+    },
+    {
+      "group_prefix": "com.google.guava",
+      "spdx": "Apache-2.0"
+    },
+    {
+      "group_prefix": "com.google.zxing",
+      "spdx": "Apache-2.0"
+    },
+    {
+      "group_prefix": "javax.inject",
+      "spdx": "Apache-2.0"
+    },
+    {
+      "group_prefix": "junit",
+      "spdx": "EPL-1.0"
+    },
+    {
+      "group_prefix": "net.java.dev.jna",
+      "spdx": "Apache-2.0 OR LGPL-2.1-or-later"
+    },
+    {
+      "group_prefix": "org.hamcrest",
+      "spdx": "BSD-3-Clause"
+    },
+    {
+      "group_prefix": "org.jetbrains",
+      "spdx": "Apache-2.0"
+    },
+    {
+      "group_prefix": "org.jetbrains.intellij.deps",
+      "spdx": "LGPL-2.1-only"
+    },
+    {
+      "group_prefix": "org.jetbrains.kotlin",
+      "spdx": "Apache-2.0"
+    },
+    {
+      "group_prefix": "org.jetbrains.kotlinx",
+      "spdx": "Apache-2.0"
+    }
+  ],
+  "exact_overrides": [
+    {
+      "coordinate": "androidx.camera:camera-core:1.4.1",
+      "spdx": "Apache-2.0 OR BSD-3-Clause"
+    },
+    {
+      "coordinate": "com.google.firebase:firebase-iid-interop:17.1.0",
+      "spdx": "LicenseRef-Android-SDK-Terms"
+    },
+    {
+      "coordinate": "com.google.firebase:firebase-measurement-connector:19.0.0",
+      "spdx": "LicenseRef-Android-SDK-Terms"
+    }
+  ],
+  "custom_licenses": [
+    {
+      "id": "LicenseRef-Android-SDK-Terms",
+      "description": "Terms declared by Google Android service artifacts; review the applicable Android SDK terms before distribution."
+    }
+  ],
+  "claim": "This policy records upstream declared license expressions for the exact locked Android graph. It is not a legal opinion or a compatibility approval."
+}

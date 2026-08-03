@@ -16,6 +16,8 @@
     })();
   </script>
   <link rel="stylesheet" href="style.css" />
+  <script src="locales.generated.js" defer></script>
+  <script src="localization.js" defer></script>
   <script src="main.js" defer></script>
 </head>
 <body>
@@ -50,9 +52,19 @@
               <label>Backup file (.kkr)
                 <input type="text" id="gate-backup" data-incognito-input="technical" spellcheck="false" placeholder="/path/to/backup.kkr" />
               </label>
-              <label>Recovery mnemonic (24 words)
+              <label>Backup mnemonic (24 words)
                 <input type="password" id="gate-mnemonic" data-incognito-input="mnemonic" spellcheck="false" />
               </label>
+              <label class="check"><input type="checkbox" id="gate-legacy-backup" /> This is a legacy KKR1–KKR7 copied-root backup</label>
+              <p class="hint" id="gate-legacy-warning" hidden>Legacy backups cannot safely resume their former identity. Komms will require a fresh address, preserve only a clearly marked local archive and petnames, clear routes and trust, and require every contact to compare a new safety number.</p>
+              <div id="gate-current-authority-fields">
+                <label>Offline account authority file (.kra)
+                  <input type="text" id="gate-recovery-package" data-incognito-input="technical" spellcheck="false" placeholder="/offline/path/account-authority.kra" />
+                </label>
+                <label>Offline authority mnemonic (24 different words)
+                  <input type="password" id="gate-recovery-mnemonic" data-incognito-input="mnemonic" spellcheck="false" />
+                </label>
+              </div>
             </div>
 
             <label><span id="gate-pass-label">Passphrase</span>
@@ -65,6 +77,26 @@
                 <option value="light">Light</option>
                 <option value="dark">Dark</option>
               </select>
+            </label>
+
+            <label><span data-l10n="language_title">Language</span>
+              <select id="gate-locale" data-l10n-aria-label="language_title">
+                <option value="system" data-l10n="language_system">System language</option>
+                <option value="en-US" data-l10n="language_english">English</option>
+                <option value="is" data-l10n="language_icelandic">Icelandic</option>
+              </select>
+            </label>
+
+            <fieldset class="theme-options" aria-describedby="mode-disclosure">
+              <legend>How Komms connects</legend>
+              <label><input type="radio" name="set-mode" value="standard" checked /> Standard</label>
+              <label><input type="radio" name="set-mode" value="private" /> Private</label>
+              <label><input type="radio" name="set-mode" value="sovereign" /> Sovereign</label>
+            </fieldset>
+            <p class="hint" id="mode-disclosure"></p>
+            <label class="check" id="standard-disclosure-row">
+              <input type="checkbox" id="set-standard-disclosure" />
+              I understand configured convenience providers can observe network addresses, timing, and availability, but not message content.
             </label>
           </div>
 
@@ -84,6 +116,22 @@
 
           <details id="gate-advanced">
             <summary>Network settings</summary>
+            <label>Signed provider directory
+              <input type="text" id="set-provider-directory" data-incognito-input="technical" spellcheck="false" placeholder="/path/to/providers.json" />
+            </label>
+            <label>Trusted directory keys (one 64-character lowercase hex key per line)
+              <textarea id="set-provider-roots" rows="2" data-incognito-input="technical" spellcheck="false"></textarea>
+            </label>
+            <label>Rendezvous providers (origin,leaf-certificate-sha256,standard|private|both)
+              <textarea id="set-rendezvous" rows="2" data-incognito-input="technical" spellcheck="false"></textarea>
+            </label>
+            <label>Native-wake gateways (separate service keys; origin,leaf-certificate-sha256,standard|private|both)
+              <textarea id="set-wake" rows="2" data-incognito-input="technical" spellcheck="false"></textarea>
+            </label>
+            <label>Private-mode Tor SOCKS5 proxy
+              <input type="text" id="set-tor-proxy" data-incognito-input="technical" spellcheck="false" placeholder="127.0.0.1:9050" />
+            </label>
+            <label class="check" id="sovereign-direct-row"><input type="checkbox" id="set-sovereign-direct" /> In Sovereign mode, publish direct routes to Connect-code holders (advanced metadata warning)</label>
             <label class="check"><input type="checkbox" id="set-mdns" checked /> Discover peers on the local network (mDNS)</label>
             <label>Listen addresses (one multiaddr per line; port 0 = OS-assigned)
               <textarea id="set-listen" rows="2" data-incognito-input="technical" spellcheck="false"></textarea>
@@ -123,9 +171,9 @@
     <aside id="sidebar">
       <header class="me">
         <div class="me-name"><span class="brand-badge compact" aria-hidden="true"><svg viewBox="0 0 192 192"><path d="M24 25h43v55l49-55h53l-61 66H24V25zm0 74h84l61 68h-53l-37-50-12 13v37H24V99z"/></svg></span>Komms</div>
-        <div class="me-address" id="my-address" title="Your kult address"></div>
+        <div class="me-address" id="my-address" title="Your Connect code"></div>
         <div class="me-actions">
-          <button id="btn-copy-address" class="ghost" title="Copy address">Copy</button>
+          <button id="btn-copy-address" class="ghost" title="Copy Connect code">Copy</button>
           <button id="btn-share" class="ghost" title="Show pairing QR / bundle">Share</button>
           <button id="btn-settings" class="ghost" title="Settings">Settings</button>
         </div>
@@ -178,6 +226,16 @@
           </nav>
         </section>
         <section class="conversation-section">
+          <nav aria-label="Message requests">
+            <button id="btn-message-requests" class="contact" type="button">
+              <span class="avatar" aria-hidden="true">?</span>
+              <span class="c-name">Message requests</span>
+              <span id="request-summary" class="c-detail">Checking…</span>
+              <span id="request-count" class="unread" hidden></span>
+            </button>
+          </nav>
+        </section>
+        <section class="conversation-section">
           <div class="contacts-head">
             <span>Contacts</span>
             <button id="btn-add-contact" class="ghost">+ Add</button>
@@ -194,9 +252,10 @@
       </div>
 
       <footer id="status-bar" title="Transport status">
-        <span class="stat" id="stat-discovery">Discovery: …</span>
-        <span class="stat" id="stat-nat">NAT: …</span>
-        <span class="stat" id="stat-lan">LAN: 0</span>
+        <span class="stat" id="stat-mode">Standard</span>
+        <span class="stat" id="stat-discovery">Waiting for a route</span>
+        <span class="stat" id="stat-nat" hidden>NAT: …</span>
+        <span class="stat" id="stat-lan" hidden>LAN: 0</span>
         <span class="stat" id="stat-scheduled">Scheduled: 0</span>
         <span class="stat" id="stat-queued">Queued: 0</span>
         <span class="stat" id="stat-transit" hidden>Bridging: 0</span>
@@ -205,6 +264,10 @@
     </aside>
 
     <main id="chat">
+      <aside id="authority-reset-banner" class="authority-reset-banner" role="status" aria-live="polite" hidden>
+        <strong>Former-identity local archive</strong>
+        <span id="authority-reset-summary"></span>
+      </aside>
       <div id="chat-empty">
         <div class="empty-state">
           <span class="brand-badge large" aria-hidden="true"><svg viewBox="0 0 192 192"><path d="M24 25h43v55l49-55h53l-61 66H24V25zm0 74h84l61 68h-53l-37-50-12 13v37H24V99z"/></svg></span>
@@ -235,6 +298,11 @@
           </div>
         </header>
         <p id="call-status" class="call-status" role="status" aria-live="polite" hidden></p>
+        <section id="group-security" class="call-status" role="status" aria-live="polite" hidden>
+          <strong id="group-security-title"></strong>
+          <span id="group-security-detail"></span>
+          <button type="button" id="btn-group-security-upgrade" class="ghost" hidden>Upgrade group security</button>
+        </section>
         <section id="group-polls" aria-label="Group polls" hidden></section>
         <div id="messages" role="log" aria-label="Conversation messages"></div>
         <section id="attachment-transfers" aria-label="Attachment transfers" hidden></section>
@@ -297,24 +365,43 @@
   <!-- ══ Modal templates ══ -->
   <template id="tpl-share">
     <section data-f="share-dialog">
-      <p class="modal-note">Someone adds you by scanning every bundle frame (or pasting the hex), or by your address if both of you can reach the DHT. Komms keeps a valid signed bundle ready and refreshes it in the background after sharing.</p>
+      <p class="modal-note">Someone adds you by scanning every bundle frame (or pasting the hex), or by your capability-scoped Connect code. Rotating the code changes reachability without changing your identity or safety numbers.</p>
       <p class="modal-note" data-f="share-status" role="status">Preparing fresh bundle and QR codes…</p>
       <div data-f="share-content" hidden>
         <div class="qr-tabs">
           <button class="tab active" data-share="bundle">Bundle QR</button>
-          <button class="tab" data-share="address">Address QR</button>
+          <button class="tab" data-share="address">Connect QR</button>
         </div>
         <div class="qr-card" data-pane="bundle"></div>
         <p class="qr-progress" data-f="qr-progress" aria-live="polite"></p>
         <div class="qr-card" data-pane="address" hidden></div>
+        <label>Connect code
+          <input class="share-connect-code" type="text" readonly spellcheck="false" />
+        </label>
+        <label>Stable account fingerprint (verification)
+          <input class="share-account-fingerprint" type="text" readonly spellcheck="false" />
+        </label>
         <label>Bundle (hex, paste into “Add contact” or <code>kult add</code>)
           <textarea class="share-hex" rows="4" readonly></textarea>
         </label>
         <div class="row">
           <button class="ghost" data-act="copy-hex">Copy bundle</button>
-          <button class="ghost" data-act="publish">Publish to DHT</button>
+          <button class="ghost" data-act="copy-connect">Copy Connect code</button>
+          <button class="ghost" data-act="rotate-connect">Rotate Connect code</button>
+          <button class="ghost" data-act="retire-legacy">Retire legacy lookup</button>
+          <button class="ghost" data-act="publish">Republish reachability</button>
         </div>
       </div>
+    </section>
+  </template>
+
+  <template id="tpl-message-requests">
+    <section class="request-inbox" aria-describedby="request-inbox-note">
+      <p id="request-inbox-note" class="modal-note">People you have not accepted stay separate from contacts and conversation history. Review the preview and safety number before deciding.</p>
+      <p data-f="request-status" class="sr-status" role="status" aria-live="polite"></p>
+      <div data-f="direct-requests" class="request-list" role="list" aria-label="Message requests"></div>
+      <div data-f="group-requests" class="request-list" role="list" aria-label="Group invitations"></div>
+      <p data-f="request-empty" class="modal-note" hidden>No pending requests.</p>
     </section>
   </template>
 
@@ -435,7 +522,7 @@
     </label>
     <div class="tabs">
       <button class="tab active" data-add="bundle">From bundle</button>
-      <button class="tab" data-add="address">From address</button>
+      <button class="tab" data-add="address">From Connect code</button>
     </div>
     <div data-pane="bundle">
       <label>Their pairing QR payload or bundle hex
@@ -443,8 +530,8 @@
       </label>
     </div>
     <div data-pane="address" hidden>
-      <label>Their kult address (looked up on the DHT)
-        <input type="text" data-f="address" data-incognito-input="technical" spellcheck="false" placeholder="kk1…" />
+      <label>Their Connect code (capability-scoped DHT lookup)
+        <input type="text" data-f="address" data-incognito-input="technical" spellcheck="false" placeholder="kc2…" />
       </label>
     </div>
     <fieldset class="hints" data-f="hints">
@@ -544,7 +631,7 @@
   </template>
 
   <template id="tpl-backup">
-    <p class="modal-note">Writes one encrypted file carrying your identity, contacts, and history, sealed under a 24-word recovery mnemonic shown <strong>exactly once</strong>. Ratchet sessions are excluded by design; peers re-handshake automatically after a restore.</p>
+    <p class="modal-note">Writes a root-free encrypted file carrying contacts and history, sealed under a 24-word backup mnemonic shown <strong>exactly once</strong>. Live sessions, device keys, rendezvous secrets, and the offline account authority are excluded. Restoring the stable identity also requires the separately held authority package and its different mnemonic.</p>
     <label>Write backup to
       <input type="text" data-f="path" data-incognito-input="technical" spellcheck="false" />
     </label>
@@ -554,13 +641,62 @@
     </div>
   </template>
 
+  <template id="tpl-recovery-authority">
+    <section data-f="export-stage">
+      <p class="modal-note warn"><strong>This step is required before messaging.</strong> Anyone holding both this encrypted file and its 24 words can take over your stable identity and revoke every current device. Save the file on offline or removable storage, separate from the words. It is not a routine backup.</p>
+      <label>Write offline account authority to
+        <input type="text" data-f="path" data-incognito-input="technical" spellcheck="false" placeholder="/offline/path/komms-account-authority.kra" />
+      </label>
+      <p class="error" data-f="error" role="alert" hidden></p>
+      <div class="row end">
+        <button class="primary" data-act="export-authority">Write offline authority</button>
+      </div>
+    </section>
+    <section data-f="result-stage" hidden>
+      <p class="modal-note warn">Write these 24 words down separately. They are shown once and open only the offline account-authority file. Anyone with both parts controls this identity.</p>
+      <ol class="mnemonic" data-f="mnemonic"></ol>
+      <div class="row end">
+        <button class="primary" data-act="authority-done">I stored both parts separately</button>
+      </div>
+    </section>
+  </template>
+
+  <template id="tpl-authority-upgrade">
+    <section data-f="prepare-stage">
+      <p class="modal-note warn" data-f="explanation"></p>
+      <label>Write the new offline authority to
+        <input type="text" data-f="path" data-incognito-input="technical" spellcheck="false" placeholder="/offline/path/komms-account-authority.kra" />
+      </label>
+      <p class="error" data-f="error" role="alert" hidden></p>
+      <div class="row end">
+        <button class="ghost" data-act="reset-instead">I exported or copied a legacy backup</button>
+        <button class="primary" data-act="prepare">Prepare without changing this profile</button>
+      </div>
+    </section>
+    <section data-f="confirm-stage" hidden>
+      <p class="modal-note warn" data-f="consequence"></p>
+      <p data-f="new-address-row" hidden>New address: <code data-f="new-address"></code></p>
+      <ol class="mnemonic" data-f="mnemonic"></ol>
+      <label class="check"><input type="checkbox" data-f="saved" /> I stored this file and these 24 words separately</label>
+      <label class="check" data-f="identity-confirm-row" hidden><input type="checkbox" data-f="identity-confirm" /> I understand my address and every safety number will change</label>
+      <p class="error" data-f="complete-error" role="alert" hidden></p>
+      <div class="row end">
+        <button class="primary" data-act="complete">Complete security upgrade</button>
+      </div>
+    </section>
+  </template>
+
   <template id="tpl-devices">
     <p class="modal-note">Each installation has its own authenticated keys. Revocation is permanent and immediately excludes that exact device from new delivery and sync.</p>
+    <div data-f="authority-conflicts" class="error" role="alert" hidden></div>
     <div data-f="device-list" class="member-list" aria-live="polite"></div>
     <p class="error" data-f="error" role="alert" hidden></p>
     <div class="row split">
       <button class="primary" data-act="begin-link">Link another device</button>
       <button class="ghost" data-act="join-link">Link this new device</button>
+      <button class="ghost" data-act="approve-link">Approve another device’s link</button>
+      <button class="ghost" data-act="approve-authority">Approve another device’s change</button>
+      <button class="ghost" data-act="continue-authority">Continue pending device change</button>
       <button class="ghost" data-act="import-sync">Import device sync</button>
     </div>
   </template>
@@ -587,12 +723,51 @@
       <label class="check"><input type="checkbox" data-f="confirmed" /> I compared the six digits on both devices</label>
       <button class="primary" data-act="approve">Approve and create package</button>
     </div>
+    <div data-f="quorum" hidden>
+      <p class="modal-note warn">Another active device must approve this exact proposal. Move the request to that device, then paste its returned approval here.</p>
+      <label>Approval request
+        <textarea data-f="approval-request" rows="4" readonly data-incognito-input="technical" spellcheck="false"></textarea>
+      </label>
+      <button class="ghost" data-act="copy-approval-request">Copy request</button>
+      <label>Approval from another active device
+        <textarea data-f="additional-approval" rows="4" data-incognito-input="technical" spellcheck="false"></textarea>
+      </label>
+      <button class="primary" data-act="accept-additional-approval">Continue with approval</button>
+    </div>
     <div data-f="package-wrap" hidden>
       <label>Encrypted package for the new device
         <textarea data-f="package" rows="5" readonly data-incognito-input="technical" spellcheck="false"></textarea>
       </label>
       <button class="ghost" data-act="copy-package">Copy package</button>
     </div>
+    <p class="error" data-f="error" role="alert" hidden></p>
+  </template>
+
+  <template id="tpl-device-approval">
+    <p class="modal-note" data-f="explanation"></p>
+    <label>Exact request from the proposing active device
+      <textarea data-f="request" rows="5" data-incognito-input="technical" spellcheck="false"></textarea>
+    </label>
+    <button class="primary" data-act="approve-request">Verify and approve exact request</button>
+    <div data-f="result" hidden>
+      <label>Detached approval to return
+        <textarea data-f="approval" rows="5" readonly data-incognito-input="technical" spellcheck="false"></textarea>
+      </label>
+      <button class="ghost" data-act="copy-approval">Copy approval</button>
+    </div>
+    <p class="error" data-f="error" role="alert" hidden></p>
+  </template>
+
+  <template id="tpl-pending-authority">
+    <p class="modal-note warn">The pending rename or revocation will commit only after a strict majority of the previous active device set signs this exact proposal.</p>
+    <label>Approval request
+      <textarea data-f="request" rows="5" readonly data-incognito-input="technical" spellcheck="false"></textarea>
+    </label>
+    <button class="ghost" data-act="copy-request">Copy request</button>
+    <label>Detached approval from another active device
+      <textarea data-f="approval" rows="5" data-incognito-input="technical" spellcheck="false"></textarea>
+    </label>
+    <button class="primary" data-act="accept-approval">Apply approval</button>
     <p class="error" data-f="error" role="alert" hidden></p>
   </template>
 
@@ -638,6 +813,14 @@
       <label><input type="radio" name="theme-preference" value="dark" /> Dark</label>
     </fieldset>
     <p id="theme-status" class="hint" role="status" aria-live="polite">Color is never the only delivery or security cue.</p>
+    <label><span data-l10n="language_title">Language</span>
+      <select data-f="locale" data-l10n-aria-label="language_title">
+        <option value="system" data-l10n="language_system">System language</option>
+        <option value="en-US" data-l10n="language_english">English</option>
+        <option value="is" data-l10n="language_icelandic">Icelandic</option>
+      </select>
+    </label>
+    <p class="hint" data-l10n="language_note">Language changes apply immediately on this device.</p>
     <p class="error" data-f="error" hidden></p>
     <div class="row end"><button class="ghost" data-act="close">Done</button></div>
   </template>
@@ -721,7 +904,7 @@
   </template>
 
   <template id="tpl-mnemonic">
-    <p class="modal-note warn">Write these 24 words down and keep them offline. This is the only time they are shown; without them the backup file is irrecoverable noise.</p>
+    <p class="modal-note warn">Write these backup words down and keep them separately. This is the only time they are shown. Stable-identity recovery also needs the distinct offline account-authority file and its own mnemonic.</p>
     <ol class="mnemonic"></ol>
     <div class="row end">
       <button class="primary" data-act="done">I wrote them down</button>

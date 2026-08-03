@@ -581,6 +581,13 @@ table!(MessageDeviceDeliveryRows, 25, Equality, MessageDeviceKey);
 table!(PresentationMarkerRows, 26, Equality, SingletonKey);
 table!(DeferredControlRows, 27, Equality, ContentKey);
 table!(DeviceLinkRecoveryRows, 28, Equality, AccountKey);
+table!(ProvisionalRequestRows, 29, Equality, AccountKey);
+table!(AdmissionReplayRows, 30, Equality, ContentKey);
+table!(BlockedIdentityRows, 31, Equality, AccountDeviceKey);
+table!(RendezvousServiceRows, 32, Equality, AccountKey);
+table!(RendezvousConfigRows, 33, Equality, SingletonKey);
+table!(WakeServiceRows, 34, Equality, AccountKey);
+table!(WakeRevocationRows, 35, Equality, DigestKey);
 pub(crate) struct MigrationCheckpointRows;
 
 impl TableSpec for MigrationCheckpointRows {
@@ -631,6 +638,13 @@ impl IndexKeys {
             b: message.map(LogicalKey::encode),
             c: group_message.map(LogicalKey::encode),
             d: Some(envelope.encode()),
+            ..Self::default()
+        }
+    }
+
+    pub(crate) fn pending(content: &ContentKey) -> Self {
+        Self {
+            unique: Some(content.encode()),
             ..Self::default()
         }
     }
@@ -723,6 +737,13 @@ lookup_index!(QueuePeerIndex, QueueRows, AccountKey, 2, "index_a");
 lookup_index!(QueueMessageIndex, QueueRows, ContentKey, 3, "index_b");
 lookup_index!(QueueGroupMessageIndex, QueueRows, ContentKey, 4, "index_c");
 lookup_index!(QueueEnvelopeIndex, QueueRows, ContentKey, 5, "index_d");
+lookup_index!(
+    PendingContentIndex,
+    PendingRows,
+    ContentKey,
+    1,
+    "unique_index"
+);
 lookup_index!(GroupChainGroupIndex, GroupChainRows, GroupKey, 2, "index_a");
 lookup_index!(
     GroupMessageIdIndex,
@@ -794,6 +815,14 @@ impl RawRow {
 
     pub(crate) fn verify_indexes(&self, expected: &IndexKeys) -> Result<()> {
         if &self.indexes == expected {
+            Ok(())
+        } else {
+            Err(StoreError::LogicalKeyMismatch)
+        }
+    }
+
+    pub(crate) fn verify_pending_indexes(&self, content: &ContentKey) -> Result<()> {
+        if self.indexes == IndexKeys::none() || self.indexes == IndexKeys::pending(content) {
             Ok(())
         } else {
             Err(StoreError::LogicalKeyMismatch)
@@ -1867,6 +1896,7 @@ fn validate_index_shape(domain: u8, indexes: &IndexKeys) -> Result<()> {
     let expected = match domain {
         MessageRows::DOMAIN => [true, true, false, false, false],
         QueueRows::DOMAIN => [false, true, shape[2], shape[3], true],
+        PendingRows::DOMAIN => [shape[0], false, false, false, false],
         GroupChainRows::DOMAIN => [false, true, false, false, false],
         GroupMessageRows::DOMAIN => [true, true, false, false, false],
         MediaObjectRows::DOMAIN => [false, true, false, false, false],
@@ -1874,7 +1904,7 @@ fn validate_index_shape(domain: u8, indexes: &IndexKeys) -> Result<()> {
         DeviceSyncRows::DOMAIN => [true, false, false, false, false],
         ContactDeviceRows::DOMAIN => [false, true, false, false, false],
         MessageDeviceDeliveryRows::DOMAIN => [false, true, true, false, false],
-        1..=28 => [false; 5],
+        1..=35 => [false; 5],
         MigrationCheckpointRows::DOMAIN => [false; 5],
         _ => return Err(StoreError::SchemaMismatch),
     };
@@ -1913,6 +1943,13 @@ fn table_locator_kind(domain: u8) -> Result<LocatorKind> {
         | PresentationMarkerRows::DOMAIN
         | DeferredControlRows::DOMAIN
         | DeviceLinkRecoveryRows::DOMAIN
+        | ProvisionalRequestRows::DOMAIN
+        | AdmissionReplayRows::DOMAIN
+        | BlockedIdentityRows::DOMAIN
+        | RendezvousServiceRows::DOMAIN
+        | RendezvousConfigRows::DOMAIN
+        | WakeServiceRows::DOMAIN
+        | WakeRevocationRows::DOMAIN
         | MigrationCheckpointRows::DOMAIN => Ok(LocatorKind::Equality),
         MessageRows::DOMAIN
         | QueueRows::DOMAIN
@@ -1930,12 +1967,16 @@ fn validate_key_for_domain(domain: u8, key: &[u8]) -> Result<()> {
         | PrekeyRows::DOMAIN
         | DeviceStateRows::DOMAIN
         | PresentationMarkerRows::DOMAIN
+        | RendezvousConfigRows::DOMAIN
         | MigrationCheckpointRows::DOMAIN => SingletonKey::validate_encoded(key),
         SessionRows::DOMAIN
         | CapabilityRows::DOMAIN
         | ContactRows::DOMAIN
         | ResetRows::DOMAIN
-        | DeviceLinkRecoveryRows::DOMAIN => AccountKey::validate_encoded(key),
+        | DeviceLinkRecoveryRows::DOMAIN
+        | ProvisionalRequestRows::DOMAIN
+        | RendezvousServiceRows::DOMAIN
+        | WakeServiceRows::DOMAIN => AccountKey::validate_encoded(key),
         MessageRows::DOMAIN => MessageKey::validate_encoded(key),
         QueueRows::DOMAIN | PendingRows::DOMAIN => OpaqueRowKey::validate_encoded(key),
         SeenRows::DOMAIN
@@ -1943,14 +1984,17 @@ fn validate_key_for_domain(domain: u8, key: &[u8]) -> Result<()> {
         | DeferredControlRows::DOMAIN
         | NoteRows::DOMAIN
         | ScheduledRows::DOMAIN => ContentKey::validate_encoded(key),
+        AdmissionReplayRows::DOMAIN => ContentKey::validate_encoded(key),
         GroupRows::DOMAIN | GroupAuthorityRows::DOMAIN => GroupKey::validate_encoded(key),
         GroupChainRows::DOMAIN => GroupMemberKey::validate_encoded(key),
         GroupMessageRows::DOMAIN => GroupMessageKey::validate_encoded(key),
         MediaTransferRows::DOMAIN | MediaObjectRows::DOMAIN => LocalIdKey::validate_encoded(key),
         LocalMetadataRows::DOMAIN => MetadataKey::validate_encoded(key),
         EphemeralRows::DOMAIN => EphemeralKey::validate_encoded(key),
-        DeviceSyncRows::DOMAIN => DigestKey::validate_encoded(key),
-        ContactDeviceRows::DOMAIN => AccountDeviceKey::validate_encoded(key),
+        DeviceSyncRows::DOMAIN | WakeRevocationRows::DOMAIN => DigestKey::validate_encoded(key),
+        ContactDeviceRows::DOMAIN | BlockedIdentityRows::DOMAIN => {
+            AccountDeviceKey::validate_encoded(key)
+        }
         MessageDeviceDeliveryRows::DOMAIN => MessageDeviceKey::validate_encoded(key),
         _ => return Err(StoreError::SchemaMismatch),
     };

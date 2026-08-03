@@ -6,7 +6,9 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
 
-use kultd::{read_secret_file, Daemon, DaemonConfig};
+use kult_transport::{OperatingMode, ProviderRendezvous};
+use kultd::{read_secret_file, AuthorityStartup, Daemon, DaemonConfig};
+use rand::rngs::OsRng;
 use zeroize::Zeroizing;
 
 async fn shutdown_signal() {
@@ -61,6 +63,17 @@ OPTIONS:
     --relay MULTIADDR       relay for circuit reservation when NAT-ed
                             [default: first bootstrap peer]
     --mailbox MULTIADDR     mailbox relay to check in with, repeatable
+    --mode MODE             standard, private, or sovereign [default: standard]
+    --confirm-standard-provider-disclosure
+                            confirm disclosed default-provider metadata access
+    --sovereign-publish-direct-routes
+                            acknowledge Connect-code holders can poll direct routes
+    --provider-directory FILE
+                            candidate signed, user-editable provider directory
+    --provider-directory-root HEX
+                            trusted offline directory Ed25519 key, repeatable
+    --rendezvous SPEC       ORIGIN,LEAF_SHA256,standard|private|both; repeatable
+    --tor-proxy IP:PORT     loopback Tor SOCKS5 endpoint for Private rendezvous
     --serve-mailbox         volunteer bounded mailbox service for others
     --no-mdns               do not announce/discover peers on the local network
     --spool DIR             also receive sneakernet bundles from this directory
@@ -71,13 +84,33 @@ OPTIONS:
                             traffic between mesh and internet (bridging is otherwise
                             on whenever a radio is configured)
     --restore FILE          first run only: restore the store from this encrypted
-                            backup instead of creating a fresh identity; the
-                            mnemonic comes from --restore-mnemonic-file, the
+                            root-free backup; also requires the separately held
+                            offline recovery authority and both mnemonics. The
+                            backup mnemonic comes from --restore-mnemonic-file,
+                            the
                             KULTD_RESTORE_MNEMONIC_FILE environment variable,
                             or the KULTD_RESTORE_MNEMONIC environment variable,
                             in that order. Refused if node.db already exists.
     --restore-mnemonic-file PATH
                             read the backup's 24-word mnemonic from this file
+    --recovery-authority FILE
+                            encrypted offline account-authority package
+    --recovery-authority-mnemonic-file PATH
+                            read its separate 24-word mnemonic from this file
+    --prepare-authority-migration FILE
+                            one-shot: write the offline authority for an
+                            undistributed single-device Alpha root and exit
+    --prepare-authority-reset FILE
+                            one-shot: write a fresh-identity offline authority,
+                            show the new address, and exit
+    --migrate-authority FILE
+                            complete a prepared in-place authority migration
+                            before starting network service
+    --reset-authority FILE  complete a confirmed copied-root new-identity reset
+                            before starting network service
+    --authority-mnemonic-file PATH
+                            read the confirmed phrase for --migrate-authority
+                            or --reset-authority
     --kdf desktop|mobile    Argon2id profile for store creation [default: desktop]
     --tick-secs N           delivery-engine heartbeat [default: 0.5s granularity]
     --checkin-secs N        mailbox check-in cadence  [default: 300]
@@ -88,7 +121,21 @@ Runtime diagnostics go to stderr and are controlled by RUST_LOG
 contain message content, keys, or contact identities.
 ";
 
-fn parse_args() -> Result<DaemonConfig, String> {
+enum StartupAction {
+    Run(Box<DaemonConfig>),
+    PrepareMigration {
+        db_path: PathBuf,
+        passphrase: Zeroizing<Vec<u8>>,
+        destination: PathBuf,
+    },
+    PrepareReset {
+        db_path: PathBuf,
+        passphrase: Zeroizing<Vec<u8>>,
+        destination: PathBuf,
+    },
+}
+
+fn parse_args() -> Result<StartupAction, String> {
     let mut data_dir: Option<PathBuf> = None;
     let mut socket: Option<PathBuf> = None;
     let mut passphrase_file: Option<PathBuf> = None;
@@ -96,6 +143,13 @@ fn parse_args() -> Result<DaemonConfig, String> {
     let mut bootstrap: Vec<String> = Vec::new();
     let mut relay: Option<String> = None;
     let mut mailboxes: Vec<String> = Vec::new();
+    let mut mode = OperatingMode::Standard;
+    let mut standard_disclosure_confirmed = false;
+    let mut sovereign_publish_direct_routes = false;
+    let mut provider_directory: Option<PathBuf> = None;
+    let mut provider_directory_roots = Vec::new();
+    let mut rendezvous = Vec::new();
+    let mut tor_proxy = None;
     let mut serve_mailbox = false;
     let mut mdns = true;
     let mut spool: Option<PathBuf> = None;
@@ -104,6 +158,13 @@ fn parse_args() -> Result<DaemonConfig, String> {
     let mut bridge = true;
     let mut restore: Option<PathBuf> = None;
     let mut restore_mnemonic_file: Option<PathBuf> = None;
+    let mut recovery_authority: Option<PathBuf> = None;
+    let mut recovery_authority_mnemonic_file: Option<PathBuf> = None;
+    let mut prepare_authority_migration: Option<PathBuf> = None;
+    let mut prepare_authority_reset: Option<PathBuf> = None;
+    let mut migrate_authority: Option<PathBuf> = None;
+    let mut reset_authority: Option<PathBuf> = None;
+    let mut authority_mnemonic_file: Option<PathBuf> = None;
     let mut kdf = kult_crypto::KDF_PROFILE_DESKTOP;
     let mut tick_secs: Option<u64> = None;
     let mut checkin_secs: Option<u64> = None;
@@ -121,6 +182,29 @@ fn parse_args() -> Result<DaemonConfig, String> {
             "--bootstrap" => bootstrap.push(value("--bootstrap")?),
             "--relay" => relay = Some(value("--relay")?),
             "--mailbox" => mailboxes.push(value("--mailbox")?),
+            "--mode" => {
+                mode = match value("--mode")?.as_str() {
+                    "standard" => OperatingMode::Standard,
+                    "private" => OperatingMode::Private,
+                    "sovereign" => OperatingMode::Sovereign,
+                    other => return Err(format!("unknown operating mode: {other}")),
+                }
+            }
+            "--confirm-standard-provider-disclosure" => standard_disclosure_confirmed = true,
+            "--sovereign-publish-direct-routes" => sovereign_publish_direct_routes = true,
+            "--provider-directory" => {
+                provider_directory = Some(value("--provider-directory")?.into())
+            }
+            "--provider-directory-root" => provider_directory_roots
+                .push(parse_directory_key(&value("--provider-directory-root")?)?),
+            "--rendezvous" => rendezvous.push(parse_rendezvous(&value("--rendezvous")?)?),
+            "--tor-proxy" => {
+                let raw = value("--tor-proxy")?;
+                tor_proxy = Some(
+                    raw.parse()
+                        .map_err(|_| "--tor-proxy must be a numeric IP:PORT")?,
+                )
+            }
             "--serve-mailbox" => serve_mailbox = true,
             "--no-mdns" => mdns = false,
             "--spool" => spool = Some(value("--spool")?.into()),
@@ -130,6 +214,24 @@ fn parse_args() -> Result<DaemonConfig, String> {
             "--restore" => restore = Some(value("--restore")?.into()),
             "--restore-mnemonic-file" => {
                 restore_mnemonic_file = Some(value("--restore-mnemonic-file")?.into())
+            }
+            "--recovery-authority" => {
+                recovery_authority = Some(value("--recovery-authority")?.into())
+            }
+            "--recovery-authority-mnemonic-file" => {
+                recovery_authority_mnemonic_file =
+                    Some(value("--recovery-authority-mnemonic-file")?.into())
+            }
+            "--prepare-authority-migration" => {
+                prepare_authority_migration = Some(value("--prepare-authority-migration")?.into())
+            }
+            "--prepare-authority-reset" => {
+                prepare_authority_reset = Some(value("--prepare-authority-reset")?.into())
+            }
+            "--migrate-authority" => migrate_authority = Some(value("--migrate-authority")?.into()),
+            "--reset-authority" => reset_authority = Some(value("--reset-authority")?.into()),
+            "--authority-mnemonic-file" => {
+                authority_mnemonic_file = Some(value("--authority-mnemonic-file")?.into())
             }
             "--kdf" => {
                 kdf = match value("--kdf")?.as_str() {
@@ -185,6 +287,49 @@ fn parse_args() -> Result<DaemonConfig, String> {
         return Err("passphrase must not be empty".to_owned());
     }
 
+    let authority_mode_count = [
+        prepare_authority_migration.is_some(),
+        prepare_authority_reset.is_some(),
+        migrate_authority.is_some(),
+        reset_authority.is_some(),
+    ]
+    .into_iter()
+    .filter(|selected| *selected)
+    .count();
+    if authority_mode_count > 1 {
+        return Err("choose exactly one authority migration/reset mode".to_owned());
+    }
+    if authority_mode_count > 0
+        && (restore.is_some()
+            || restore_mnemonic_file.is_some()
+            || recovery_authority.is_some()
+            || recovery_authority_mnemonic_file.is_some())
+    {
+        return Err(
+            "authority migration/reset and backup restore are mutually exclusive".to_owned(),
+        );
+    }
+    if let Some(destination) = prepare_authority_migration {
+        if authority_mnemonic_file.is_some() {
+            return Err("--authority-mnemonic-file is only for completing an upgrade".to_owned());
+        }
+        return Ok(StartupAction::PrepareMigration {
+            db_path: data_dir.join("node.db"),
+            passphrase,
+            destination,
+        });
+    }
+    if let Some(destination) = prepare_authority_reset {
+        if authority_mnemonic_file.is_some() {
+            return Err("--authority-mnemonic-file is only for completing an upgrade".to_owned());
+        }
+        return Ok(StartupAction::PrepareReset {
+            db_path: data_dir.join("node.db"),
+            passphrase,
+            destination,
+        });
+    }
+
     let restore_mnemonic = if restore.is_some() {
         let restore_mnemonic_file =
             restore_mnemonic_file.or_else(|| secret_path_env("KULTD_RESTORE_MNEMONIC_FILE"));
@@ -205,14 +350,91 @@ fn parse_args() -> Result<DaemonConfig, String> {
     } else {
         None
     };
+    let recovery_authority_mnemonic = if restore.is_some() {
+        let path = recovery_authority_mnemonic_file
+            .or_else(|| secret_path_env("KULTD_RECOVERY_AUTHORITY_MNEMONIC_FILE"));
+        let phrase =
+            match path {
+                Some(path) => {
+                    let raw = read_secret_file(&path, "recovery authority mnemonic file")?;
+                    Zeroizing::new(String::from_utf8(raw).map_err(|_| {
+                        "recovery authority mnemonic file: not valid UTF-8".to_owned()
+                    })?)
+                }
+                None => Zeroizing::new(
+                    std::env::var("KULTD_RECOVERY_AUTHORITY_MNEMONIC").map_err(|_| {
+                        "restore needs the recovery authority mnemonic: set \
+                     --recovery-authority-mnemonic-file, \
+                     KULTD_RECOVERY_AUTHORITY_MNEMONIC_FILE, or \
+                     KULTD_RECOVERY_AUTHORITY_MNEMONIC"
+                    })?,
+                ),
+            };
+        Some(Zeroizing::new(phrase.trim().to_owned()))
+    } else {
+        if recovery_authority.is_some() || recovery_authority_mnemonic_file.is_some() {
+            return Err("--recovery-authority is valid only with --restore".to_owned());
+        }
+        None
+    };
+    if restore.is_some() && recovery_authority.is_none() {
+        return Err("restore needs --recovery-authority FILE".to_owned());
+    }
+
+    let authority_mnemonic = if migrate_authority.is_some() || reset_authority.is_some() {
+        let path =
+            authority_mnemonic_file.or_else(|| secret_path_env("KULTD_AUTHORITY_MNEMONIC_FILE"));
+        let phrase = match path {
+            Some(path) => {
+                let raw = read_secret_file(&path, "authority mnemonic file")?;
+                Zeroizing::new(
+                    String::from_utf8(raw)
+                        .map_err(|_| "authority mnemonic file: not valid UTF-8".to_owned())?,
+                )
+            }
+            None => Zeroizing::new(std::env::var("KULTD_AUTHORITY_MNEMONIC").map_err(|_| {
+                "authority upgrade needs its confirmed phrase: set \
+                 --authority-mnemonic-file, KULTD_AUTHORITY_MNEMONIC_FILE, or \
+                 KULTD_AUTHORITY_MNEMONIC"
+            })?),
+        };
+        Some(Zeroizing::new(phrase.trim().to_owned()))
+    } else {
+        if authority_mnemonic_file.is_some() {
+            return Err(
+                "--authority-mnemonic-file requires --migrate-authority or --reset-authority"
+                    .to_owned(),
+            );
+        }
+        None
+    };
 
     let mut cfg = DaemonConfig::new(&data_dir, passphrase);
     cfg.kdf = kdf;
     cfg.restore_from = restore;
     cfg.restore_mnemonic = restore_mnemonic;
+    cfg.recovery_authority_from = recovery_authority;
+    cfg.recovery_authority_mnemonic = recovery_authority_mnemonic;
+    cfg.authority_startup = match (migrate_authority, reset_authority, authority_mnemonic) {
+        (Some(package), None, Some(mnemonic)) => {
+            Some(AuthorityStartup::Migrate { package, mnemonic })
+        }
+        (None, Some(package), Some(mnemonic)) => {
+            Some(AuthorityStartup::Reset { package, mnemonic })
+        }
+        (None, None, None) => None,
+        _ => return Err("invalid authority startup selection".to_owned()),
+    };
     if let Some(socket) = socket {
         cfg.socket_path = socket;
     }
+    cfg.mode = mode;
+    cfg.standard_disclosure_confirmed = standard_disclosure_confirmed;
+    cfg.sovereign_publish_direct_routes = sovereign_publish_direct_routes;
+    cfg.provider_directory = provider_directory;
+    cfg.provider_directory_roots = provider_directory_roots;
+    cfg.rendezvous = rendezvous;
+    cfg.tor_proxy = tor_proxy;
     if !listen.is_empty() {
         cfg.listen = listen;
     }
@@ -231,17 +453,109 @@ fn parse_args() -> Result<DaemonConfig, String> {
     if let Some(secs) = checkin_secs {
         cfg.checkin_interval = Duration::from_secs(secs.max(1));
     }
-    Ok(cfg)
+    Ok(StartupAction::Run(Box::new(cfg)))
+}
+
+fn parse_directory_key(value: &str) -> Result<[u8; 32], String> {
+    if value.len() != 64
+        || value
+            .bytes()
+            .any(|byte| !byte.is_ascii_digit() && !(b'a'..=b'f').contains(&byte))
+    {
+        return Err(
+            "--provider-directory-root must be exactly 64 lowercase hex characters".to_owned(),
+        );
+    }
+    let mut out = [0u8; 32];
+    for (index, pair) in value.as_bytes().chunks_exact(2).enumerate() {
+        let nibble = |byte| match byte {
+            b'0'..=b'9' => byte - b'0',
+            b'a'..=b'f' => byte - b'a' + 10,
+            _ => 0,
+        };
+        out[index] = (nibble(pair[0]) << 4) | nibble(pair[1]);
+    }
+    Ok(out)
+}
+
+fn parse_rendezvous(value: &str) -> Result<ProviderRendezvous, String> {
+    let mut fields = value.split(',');
+    let origin = fields.next().unwrap_or_default();
+    let static_key = fields.next().unwrap_or_default();
+    let access = fields.next().unwrap_or_default();
+    if fields.next().is_some() {
+        return Err("--rendezvous has too many comma-separated fields".to_owned());
+    }
+    parse_directory_key(static_key)?;
+    let (standard, private_via_tor) = match access {
+        "standard" => (true, false),
+        "private" => (false, true),
+        "both" => (true, true),
+        _ => return Err("--rendezvous access must be standard, private, or both".to_owned()),
+    };
+    Ok(ProviderRendezvous {
+        origin: origin.to_owned(),
+        static_key: static_key.to_owned(),
+        standard,
+        private_via_tor,
+    })
 }
 
 #[tokio::main]
 async fn main() -> ExitCode {
-    let cfg = match parse_args() {
-        Ok(cfg) => cfg,
+    let action = match parse_args() {
+        Ok(action) => action,
         Err(message) => {
             eprintln!("kultd: {message}\n\n{USAGE}");
             return ExitCode::FAILURE;
         }
+    };
+    let cfg = match action {
+        StartupAction::Run(cfg) => *cfg,
+        StartupAction::PrepareMigration {
+            db_path,
+            passphrase,
+            destination,
+        } => match kult_node::Node::prepare_authority_migration(
+            &db_path,
+            &passphrase,
+            &destination,
+            &mut OsRng,
+        ) {
+            Ok(mnemonic) => {
+                println!("Offline authority written to {}", destination.display());
+                println!("Recovery mnemonic (shown once): {}", mnemonic.as_str());
+                return ExitCode::SUCCESS;
+            }
+            Err(error) => {
+                eprintln!("kultd: authority migration preparation failed: {error}");
+                return ExitCode::FAILURE;
+            }
+        },
+        StartupAction::PrepareReset {
+            db_path,
+            passphrase,
+            destination,
+        } => match kult_node::Node::prepare_authority_reset(
+            &db_path,
+            &passphrase,
+            &destination,
+            &mut OsRng,
+        ) {
+            Ok(prepared) => {
+                println!("Offline authority written to {}", destination.display());
+                println!("New account address: {}", prepared.new_address);
+                println!(
+                    "Recovery mnemonic (shown once): {}",
+                    prepared.mnemonic.as_str()
+                );
+                return ExitCode::SUCCESS;
+            }
+            Err(error) => {
+                eprintln!("kultd: authority reset preparation failed: {error}");
+                return ExitCode::FAILURE;
+            }
+        },
     };
 
     // Logging policy (docs/09-implementation-guide.md): events describe only

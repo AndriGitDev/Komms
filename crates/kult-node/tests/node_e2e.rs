@@ -12,7 +12,8 @@ use rand::rngs::StdRng;
 use rand::SeedableRng;
 
 use kult_crypto::{
-    Identity, KdfProfile, OneTimePrekeySecret, PqPrekeySecret, PrekeyBundle, SignedPrekeySecret,
+    AuthorityPairingBundle, ConnectCode, Identity, KdfProfile, OneTimePrekeySecret, PqPrekeySecret,
+    PrekeyBundle, SignedPrekeySecret,
 };
 use kult_node::{ContentStatus, Event, Node};
 use kult_protocol::{
@@ -65,9 +66,25 @@ fn pairing_bundle_carries_signed_first_message_routes() {
     let encoded = node
         .handshake_bundle_with_hints(&hints, NOW, &mut rng)
         .unwrap();
-    let bundle = PrekeyBundle::decode(&encoded).unwrap();
+    let pairing = AuthorityPairingBundle::decode(&encoded).unwrap();
+    pairing.verify(NOW).unwrap();
+    let code = ConnectCode::parse(&node.connect_code().unwrap()).unwrap();
+    assert_eq!(pairing.discovery_capability, code.capability());
+    assert!(pairing.discovery_generation > 0);
+    let mut wrong_capability = pairing.clone();
+    wrong_capability.discovery_capability[0] ^= 0x80;
+    assert!(wrong_capability.verify(NOW).is_err());
+    let mut trailing = encoded.clone();
+    trailing.push(0);
+    assert!(AuthorityPairingBundle::decode(&trailing).is_err());
+    let bundle = &pairing.device_bundle;
+    assert!(
+        bundle.prekey.relay_hints.len() > hints.len(),
+        "the signed bundle also carries its bounded admission extension"
+    );
     let decoded = bundle
-        .relay_hints
+        .prekey
+        .transport_hints()
         .iter()
         .map(|bytes| postcard::from_bytes::<DeliveryHint>(bytes).unwrap())
         .collect::<Vec<_>>();
@@ -155,7 +172,23 @@ async fn rescanning_a_fresh_bundle_rekeys_and_retries_unconfirmed_messages() {
 
     sender.tick(NOW + 4, &mut rng).await.unwrap();
     let events = receiver.tick(NOW + 5, &mut rng).await.unwrap();
+    assert_eq!(count_received(&events), 0);
+    assert!(events
+        .iter()
+        .any(|event| matches!(event, Event::MessageRequestReceived { .. })));
+    let request = receiver.message_requests().unwrap().remove(0);
+    assert_eq!(request.preview, "first attempt");
+    receiver
+        .accept_message_request(&request.id, "sender", NOW + 6, &mut rng)
+        .unwrap();
+    let events = receiver.tick(NOW + 7, &mut rng).await.unwrap();
     assert_eq!(count_received(&events), 2);
+    let history = receiver.messages_with(&request.account).unwrap();
+    assert_eq!(history.len(), 2);
+    assert!(history
+        .iter()
+        .any(|message| message.body == b"first attempt"));
+    assert!(history.iter().any(|message| message.body == b"follow-up"));
 }
 
 #[tokio::test]
@@ -197,8 +230,21 @@ async fn one_way_pairing_imports_the_initiators_signed_return_route() {
 
     phone.tick(NOW + 1, &mut rng).await.unwrap();
     let events = desktop.tick(NOW + 2, &mut rng).await.unwrap();
-    assert_eq!(count_received(&events), 1);
+    assert_eq!(count_received(&events), 0);
+    assert!(events
+        .iter()
+        .any(|event| matches!(event, Event::MessageRequestReceived { .. })));
+    assert!(desktop.contacts().unwrap().is_empty());
+    let request = desktop.message_requests().unwrap().remove(0);
+    assert_eq!(request.preview, "one scan is bidirectional");
+    desktop
+        .accept_message_request(&request.id, "phone", NOW + 2, &mut rng)
+        .unwrap();
     assert_eq!(desktop.contacts().unwrap().len(), 1);
+    assert_eq!(
+        desktop.messages_with(&request.account).unwrap()[0].body,
+        b"one scan is bidirectional"
+    );
     desktop.tick(NOW + 3, &mut rng).await.unwrap();
     let events = phone.tick(NOW + 4, &mut rng).await.unwrap();
     assert!(delivered_ids(&events).contains(&message));
@@ -717,23 +763,24 @@ async fn retry_with_backoff_until_link_recovers() {
         .send_message(&peer, b"stubborn", NOW, &mut rng)
         .unwrap();
 
-    // Link down: message and terminal capability control both stay queued.
+    // Link down: the message plus terminal content- and discovery-capability
+    // controls all stay queued.
     alice.tick(NOW, &mut rng).await.unwrap();
-    assert_eq!(attempts.load(Ordering::SeqCst), 2);
-    assert_eq!(alice.queued().unwrap(), 2);
+    assert_eq!(attempts.load(Ordering::SeqCst), 3);
+    assert_eq!(alice.queued().unwrap(), 3);
 
     // Inside the backoff window nothing is attempted.
     alice.tick(NOW + 5, &mut rng).await.unwrap();
     assert_eq!(
         attempts.load(Ordering::SeqCst),
-        2,
+        3,
         "backoff suppresses retry"
     );
 
     // Link recovers; after the backoff expires the send succeeds.
     healthy.store(true, Ordering::SeqCst);
     alice.tick(NOW + 31, &mut rng).await.unwrap();
-    assert_eq!(attempts.load(Ordering::SeqCst), 4);
+    assert_eq!(attempts.load(Ordering::SeqCst), 6);
     assert_eq!(alice.queued().unwrap(), 0);
     let record = alice
         .messages_with(&peer)
@@ -742,7 +789,7 @@ async fn retry_with_backoff_until_link_recovers() {
         .find(|r| r.id == msg)
         .unwrap();
     assert_eq!(record.state, DeliveryState::Sent);
-    assert_eq!(net.lock().unwrap().get(&9).unwrap().len(), 2);
+    assert_eq!(net.lock().unwrap().get(&9).unwrap().len(), 3);
 }
 
 #[tokio::test]
@@ -931,13 +978,13 @@ async fn out_of_order_arrival_survives_restart() {
     alice.tick(NOW + 1, &mut rng).await.unwrap();
 
     // Intercept the two message envelopes and deliver the session message
-    // first. The terminal capability control is irrelevant to this test.
+    // first. The terminal capability controls are irrelevant to this test.
     // (Picked by kind: priority flushing sends the text-class envelope
     // before the handshake, so wire order is not handshake-first.)
     let (handshake, session_msg) = {
         let mut locked = net.lock().unwrap();
         let queue = locked.get_mut(&2).unwrap();
-        assert_eq!(queue.len(), 3);
+        assert_eq!(queue.len(), 4);
         let hs_at = queue
             .iter()
             .position(|e| e.kind == EnvelopeKind::Handshake)
@@ -948,8 +995,10 @@ async fn out_of_order_arrival_survives_restart() {
             .position(|e| e.kind == EnvelopeKind::Message)
             .unwrap();
         let sm = queue.remove(msg_at);
-        assert_eq!(queue.len(), 1);
-        assert_eq!(queue.pop().unwrap().kind, EnvelopeKind::Receipt);
+        assert_eq!(queue.len(), 2);
+        assert!(queue
+            .drain(..)
+            .all(|envelope| envelope.kind == EnvelopeKind::Receipt));
         (hs, sm)
     };
 
@@ -969,17 +1018,30 @@ async fn out_of_order_arrival_survives_restart() {
     let mut bob = Node::open(&bob_db, b"b").unwrap();
     bob.add_transport(Arc::new(mesh(2)));
 
-    // Handshake arrives: the same tick consumes it AND the stashed message.
+    // Handshake arrives: the first message becomes one sealed request while
+    // the out-of-order session message stays under its original pending row.
     net.lock().unwrap().entry(2).or_default().push(handshake);
     let events = bob.tick(NOW + 20, &mut rng).await.unwrap();
-    assert_eq!(count_received(&events), 2, "stash replays after handshake");
-    let bodies: Vec<Vec<u8>> = events
+    assert_eq!(count_received(&events), 0);
+    assert!(events
         .iter()
-        .filter_map(|e| match e {
-            Event::MessageReceived { body, .. } => Some(body.clone()),
-            _ => None,
-        })
-        .collect();
+        .any(|event| matches!(event, Event::MessageRequestReceived { .. })));
+    let request = bob.message_requests().unwrap().remove(0);
+    assert_eq!(request.preview, "first (handshake)");
+    bob.accept_message_request(&request.id, "alice", NOW + 21, &mut rng)
+        .unwrap();
+    let events = bob.tick(NOW + 22, &mut rng).await.unwrap();
+    assert_eq!(
+        count_received(&events),
+        2,
+        "stash replays only after explicit promotion"
+    );
+    let bodies = bob
+        .messages_with(&request.account)
+        .unwrap()
+        .into_iter()
+        .map(|message| message.body)
+        .collect::<Vec<_>>();
     assert!(bodies.contains(&b"first (handshake)".to_vec()));
     assert!(bodies.contains(&b"second (session)".to_vec()));
     drop(bob);

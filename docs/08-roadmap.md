@@ -13,7 +13,7 @@ independently reviewed, or stable. Build order details per crate:
 | Milestone | Status | Principal remaining gate |
 |---|---|---|
 | M0–M2 | Implemented + automated evidence | Independent vectors/review and stabilization regressions |
-| M3 | Implemented + partial automated evidence | Clean-install distinct-NAT journey, first-contact abuse admission, durable mailbox qualification |
+| M3 | Implemented + partial automated evidence | Clean-install distinct-NAT journey, adversarial/field first-contact qualification, durable mailbox qualification |
 | M4 | Implemented + partial automated evidence | Physical two-radio field qualification |
 | M5 | Implemented Alpha surfaces | Hands-on mobile, lifecycle, accessibility, localization, and install qualification |
 | M6 | Partial | Signed/reproducible updates, external review, operator readiness; expansion work deferred |
@@ -66,12 +66,15 @@ plane is in: a Kademlia DHT (bootstrap from any user-supplied peer, nothing
 hardcoded) carrying whole-bundle-signed prekey records under the kult-address
 digest, so a node adds a contact from the address string alone and the delivery
 engine resolves missing return paths (sealed sender reveals none) from the
-peer's record. Mailbox relays are in: any node can volunteer bounded
-store-and-forward on `/komms/mailbox/1`; recipients register rotating
-delivery tokens as accept-filters and collect on reconnect, senders deposit
-sealed envelopes the scheduler ranks below direct paths, and the "relay stores
-only sealed envelopes" acceptance criterion is pinned by an inspection test
-(collection-deletes required making tokens recipient-scoped, ADR-0007).
+peer's record. Mailbox relays are in: any node can volunteer durable bounded
+store-and-forward on `/komms/mailbox/2`; recipients register rotating
+delivery tokens as accept-filters and collect leased pages on reconnect.
+Senders deposit sealed envelopes the scheduler ranks below direct paths.
+Accepted means the relay transaction committed. Exact rows remain until the
+endpoint durably stages them and acknowledges their random ids. Opaque
+indexes, row binding, restart persistence, exact partial acknowledgement,
+expiry, overload, failpoint, multi-operator deduplication, and aggregate-only
+status tests pin this content-blind custody contract (ADR-0007, ADR-0032).
 NAT traversal is in as the pinned trio: AutoNAT dial-back probes report each
 node's reachability (`nat_status`), a private node reserves a Circuit Relay v2
 slot at any public peer (`reserve_relay`, every node volunteers bounded relay
@@ -98,9 +101,13 @@ DHT, mailbox relays, transport scheduler, headless daemon with local RPC.
 
 The existing localhost, LAN, configured-peer, and automated NAT/relay evidence
 does not close the everyday clean-install claim. Fresh application defaults
-currently require deliberate bootstrap/mailbox configuration, mailbox
-persistence is not operator-qualified, and first-contact abuse admission remains
-a P0 gate.
+currently require deliberate bootstrap/mailbox configuration. Mailbox v2 has
+local crash-safe persistence evidence but no qualified public operator,
+upgrade/backup incident exercise, cost observation, or real-network matrix.
+ADR-0030 first-contact admission has
+local automated evidence but still lacks independent adversarial,
+physical-device battery/background, accessibility, and operator-path
+qualification. Those assurance rows remain P0 gates.
 
 **Stable acceptance (open)**:
 - Two nodes behind distinct NATs exchange messages with no manual configuration beyond
@@ -195,12 +202,14 @@ surface alone: pairing by bundle exchange, verified `delivered` states via
 listener events, history, safety numbers, restart persistence, honest
 errors, and `cargo run -p kult-ffi --features bindgen --bin uniffi-bindgen`
 generates the Kotlin/Swift sources. Backup/restore is in (ADR-0011/ADR-0012):
-the current encrypted `KKR7` file carries the stable account, contacts, ordinary
+the current encrypted `KKR10` file carries the public stable-account trust
+anchor, contacts, ordinary
 history, group state and signed authority, user-authored sealed local metadata,
-note-to-self history, linked-device manifests/endpoints/convergence winners, and
-session-reset markers, sealed via Argon2id under a 24-word BIP-39 mnemonic (wordlist and
-codec in-tree in `kult-crypto`, KAT-tested against the reference vectors);
-ratchet sessions, prekey secrets, and reusable physical-device credentials are
+note-to-self history, linked-device manifests/endpoints/convergence winners,
+ADR-0031 discovery capability/generation, and session-reset markers, sealed
+via Argon2id under a 24-word BIP-39 mnemonic (wordlist and codec in-tree in
+`kult-crypto`, KAT-tested against the reference vectors). Ratchet sessions, prekey secrets,
+and reusable physical-device credentials are
 deliberately excluded. Recovery revokes every device active in the backup,
 mints a fresh sole active device, and turns each reset marker
 into a proactive OPK-less re-handshake on its first tick, so messaging
@@ -208,7 +217,10 @@ resumes in both directions without the user sending first. Exposed at every
 front door: `kult backup` / `Op::Backup` (file written 0600, mnemonic shown
 exactly once), `kultd --restore` on first run, and `kult-ffi`'s
 `export_backup` + `restore` constructor, each pinned by its own layer's
-round-trip test (store, node, RPC, FFI). The desktop app is in
+round-trip test (store, node, RPC, FFI). The same constructor accepts
+`KKR1`–`KKR7` only after a separately reviewed fresh-authority ceremony and
+publishes a new-identity local archive; it never resumes the copied-root
+account. The desktop app is in
 (application A1, `apps/desktop`): a Tauri shell over `kult-ffi`'s embedded
 runtime (the exact surface the mobile shells consume, dogfooded on
 the desktop) with a dependency-free HTML/CSS/JS frontend (no bundler, no
@@ -347,18 +359,33 @@ currently authorized iOS Simulator build; a weekly workflow rechecks advisories
 for both Cargo workspaces, the core on macOS, and an informational coverage
 snapshot. All build surfaces identify as `0.3.0`. The Komms 0.3 Alpha candidate
 adds a required human visual gate for Android, iOS, macOS, and Linux alongside
-native desktop packages, the debug-signed Android APK, and checksums. No
-production signing key, updater, reproducible-artifact claim, or store release
-is claimed. See [24: Local Release Gate](24-local-release-gate.md) and
-[27: Alpha Testing](27-alpha-testing.md).
+native desktop packages, the debug-signed Android APK, and checksums.
 
-C2 multi-device is implemented with automated evidence: the stable account signs bounded device manifests,
-every physical endpoint keeps independent pairwise/group cryptographic state,
-and explicit authenticated bundles converge an allowlisted set of owned-device
-state without cloud infrastructure. The current Alpha copies the account root
-to linked devices, so revoking a known device id is not permanent against a
-compromised former device; ADR-0026's offline-root authority redesign is a P0
-stable-release requirement. See [22: Linked Devices](22-linked-devices.md).
+The next release-control slice is also implemented locally: immutable action,
+container, bootstrap, and packaging-tool pins; read-only tag builds; Android
+application dependency locks and artifact verification; exact-class
+builder/signing/qualification records; aggregate CycloneDX SBOM; deterministic
+safe evidence archives; controlled and independently administered reproduction
+records; hosted-attestation wiring; empty draft creation; exact completed-asset
+verification; and separately protected publication.
+Production keys, store roles, signed platform artifacts, independent
+reproduction, supported-system upgrade/rollback evidence, and publication
+remain open. No updater, bit-for-bit reproducibility, or stable distribution
+claim is made. See [24: Local Release Gate](24-local-release-gate.md),
+[39: Release Security and Recovery](39-release-security-and-recovery.md), and
+[40: Release Evidence Bundles](40-release-evidence-bundles.md).
+
+C2 multi-device and ADR-0026 authority are implemented with automated local
+evidence: the stable root is separately held offline, `KDA2` transitions
+require a strict majority of the prior active set, recovery creates a higher
+epoch and one fresh device, and every physical endpoint keeps independent
+pairwise/group cryptographic state. Explicit authenticated bundles converge an
+allowlisted set of owned-device state without cloud infrastructure. Forks and
+same-epoch recovery conflicts remain visible and fail closed; root-free `KKR10`
+contains no account, device, prekey, ratchet, sender-chain, link, or resumable
+delivery secret. Physical-device, sudden-power-loss, independent security, and
+independent interoperability qualification remain P0 gates. See
+[22: Linked Devices](22-linked-devices.md).
 
 The optional Hybrid Infrastructure Layer is proposed as an independent M6
 adoption track under ADR-0017 through ADR-0019: explicit Sovereign/Private/
@@ -434,8 +461,8 @@ timer until the ordinary encrypted receipt acknowledges it, so an envelope lost
 on a lossy carrier never leaves a member permanently deaf to a sender. Removal
 re-keys the group secret and rotates every remaining chain (the removed member
 gets a notice that deliberately carries nothing else); rotation also triggers
-on leave, on a message-count threshold (PCS), and on restore. Backups (`KKR7`;
-older `KKR1` through `KKR6` files still restore) carry group identities and history but
+on leave, on a message-count threshold (PCS), and on restore. Current `KKR10`
+backups carry group identities and history but
 never chains: a restored node announces a fresh chain, and co-members
 redistribute theirs on the re-handshake, both directions pinned by the
 `kult-node` e2e suite (`groups_e2e.rs`) alongside encrypt-once-on-the-wire,
@@ -547,7 +574,7 @@ The F5 sealed local-metadata foundation is implemented in `kult-store`: typed an
 bounded conversation, folder, pin, label, draft, preference, and custom-icon
 records use an isolated storage key and reveal no local organization keys in a
 copied database. User-authored metadata and sealed note-to-self history are
-included in current `KKR7` backups. Note-to-self text is implemented through
+included in current `KKR10` backups. Note-to-self text is implemented through
 every shell under one reserved identity; folders, conversation pins, labels,
 appearance, and bounded custom icons re-encoded without source metadata are
 implemented as separate local experiences.
@@ -559,7 +586,7 @@ NFC-normalized and bounded to 256 UTF-8 bytes; duplicate names are permitted.
 The shared assessment reports normalization plus duplicate,
 mixed-script/confusable, bidirectional-control, and invisible-character risks,
 and warned mutations require explicit acceptance. Rename emits one local event,
-survives restart and `KKR7`, and produces zero discovery, notification, queue,
+survives restart and `KKR10`, and produces zero discovery, notification, queue,
 envelope, capability, or transport work. Optional signed self-display
 suggestions remain a separate unimplemented bundle-format/compatibility program.
 
@@ -569,7 +596,7 @@ folder, and note-to-self targets render generated initials when absent or after 
 safe read failure. Eight bundled glyphs and selected local JPEG/PNG inputs become
 strict 256×256 RGBA PNGs after bounded orientation/crop/resize and re-encoding
 that omits source metadata. Per-record, count, and 64 MiB aggregate quotas are
-enforced at the sealed-store boundary; `KKR7` preserves canonical records. Icons
+enforced at the sealed-store boundary; `KKR10` preserves canonical records. Icons
 create no remote lookup, peer sync, envelope, capability, queue, notification,
 or transport work.
 
@@ -581,7 +608,7 @@ have at most one folder assignment; All and Unfiled are virtual views. Atomic
 create, rename, complete-set reorder, move/unfile, delete cascade, stale cleanup,
 and folder-first composition with independent B18 label filters create zero
 network or transport work. Limits are 128 folders, 8,192 assignments, and 256
-UTF-8 bytes per name. `KKR7` preserves exact identity, order, membership, and
+UTF-8 bytes per name. `KKR10` preserves exact identity, order, membership, and
 stale behavior. Folders never synchronize to contacts or services; C2 can
 converge them only between authorized devices of the same account.
 
@@ -594,14 +621,14 @@ stale cleanup, and same-identity reactivation preserve durable intent. Folder
 selection and B18 label filtering run before the leading pinned block; pinned
 and unpinned rows then use deterministic manual/activity/typed-ID ordering.
 Every operation creates zero network, transport, notification, or cryptographic
-work. Portability is limited to `KKR7` and authenticated own-device C2 sync;
+work. Portability is limited to `KKR10` and authenticated own-device C2 sync;
 message pins remain separate work.
 
 B12 private appearance is implemented end to end across the unchanged F5 UI
 preference record, `kult-node`, strict RPC/CLI, UniFFI, desktop, Android, and
 iOS. The exact `system`, `light`, and `dark` vocabulary defaults safely to System,
 persists at `appearance.theme`, emits one local change event only on mutation,
-and survives restart and `KKR7` restore with zero delivery or transport work.
+and survives restart and `KKR10` restore with zero delivery or transport work.
 All shells apply a non-sensitive pre-unlock cache and then treat the sealed value
 as authoritative; desktop uses semantic CSS roles, Android native DayNight
 resources, and iOS adaptive system colors. Native high-contrast/reduced-motion
@@ -618,7 +645,7 @@ live assignments, 32 labels per conversation, and 256 UTF-8 bytes per name.
 Duplicate names are disambiguated by color and deterministic local order.
 Atomic deletion, stale-record diagnostics, and deterministic match-any/match-all
 filters remain local presentation behavior and create zero network or transport
-work. `KKR7` preserves exact identity, ordering, and membership. There is no
+work. `KKR10` preserves exact identity, ordering, and membership. There is no
 shared taxonomy or contact/service synchronization; C2 can converge labels only
 between authorized devices of the same account.
 
@@ -635,7 +662,8 @@ queue/fragment retention, strict RPC/CLI, UniFFI, desktop, Android, and iOS.
 ADR-0021 binds an exact local deadline to an hour-aligned envelope-v2 relay
 deletion hint. Expiry and first reveal remove exact history/media and retain a
 sealed terminal tombstone; KKR6 excludes live ephemeral plaintext/manifests/
-media and includes those tombstones while KKR1–KKR6 remain restorable. The UI
+media and includes those tombstones. Current `KKR10` preserves terminal
+tombstones; legacy backup reset preserves no live ephemeral content. The UI
 promises removal only from this device, never remote erasure or screenshot
 prevention. Automated Android APK and iOS simulator builds cover compilation;
 real-device interaction on both platforms remains part of the hands-on M5 gate. See
@@ -644,10 +672,14 @@ real-device interaction on both platforms remains part of the hands-on M5 gate. 
 C5 fixed-electorate group polls are implemented across protocol, node, RPC/CLI,
 UniFFI, desktop, Android, and iOS. Group-AEAD-protected immutable creation,
 visible vote heads, and creator-claimed closure converge deterministically after
-delay, duplicates, reorder, membership change, restart, and KKR1–KKR7 restore.
-Current sender-key groups do not resist member-forged voter or creator origins;
-ADR-0029 is required before stable. Poll events render as cards rather than
-empty chat rows and never claim anonymity. See
+delay, duplicates, reorder, membership change, restart, and current `KKR10`
+restore. Legacy backup reset omits groups rather than re-authenticating their
+history under a fresh identity.
+Current sender-key groups wrap the one shared ciphertext with a distinct
+recipient origin tag, preventing one member from voting or closing as another
+to an honest recipient. Released legacy history keeps its weaker label. Poll
+events render as cards rather than empty chat rows and never claim anonymity.
+See
 [20: Group Polls](20-group-polls.md) and
 [ADR-0029](adr/0029-recipient-authenticated-groups.md).
 
@@ -657,8 +689,9 @@ serializes direct actions and generation-bound signed admin requests. Ownership
 certificates form a verified chain, conflicting same-generation states use the
 smallest authenticated event id, and a losing transfer fork cannot advance an
 accepted replica. Upgrade, rename, roles, transfer, membership, and signed poll
-moderation advance the generation and re-key. KKR6 carries the authority record
-and consumed request ids while KKR1-KKR5 restore as legacy groups. See
+moderation advance the generation and re-key. Current `KKR10` carries the
+authority record and consumed request ids. The new-identity legacy-backup
+boundary omits groups. See
 [21: Group Roles, Ownership, and Moderation](21-group-roles.md) and
 [ADR-0023](adr/0023-group-roles-and-owner-authority.md).
 

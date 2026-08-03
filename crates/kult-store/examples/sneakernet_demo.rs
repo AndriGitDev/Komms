@@ -50,13 +50,11 @@ fn main() {
     )
     .expect("create alice store");
     let alice = Identity::generate(&mut rng);
-    alice_store.put_identity(&alice, &mut rng).unwrap();
 
     println!("[bob]   creating encrypted store…");
     let bob_store = Store::create(&dir.join("bob.db"), b"bob-passphrase", DEMO_KDF, &mut rng)
         .expect("create bob store");
     let bob = Identity::generate(&mut rng);
-    bob_store.put_identity(&bob, &mut rng).unwrap();
 
     println!("\n[alice] address: {}", alice.public().address());
     println!("[bob]   address: {}", bob.public().address());

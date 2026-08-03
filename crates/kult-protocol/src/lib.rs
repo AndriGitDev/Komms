@@ -25,6 +25,7 @@
 
 extern crate alloc;
 
+mod admission;
 mod attachment;
 mod attachment_bulk;
 mod bundle;
@@ -32,6 +33,7 @@ mod call;
 mod capability;
 mod content;
 mod device_sync;
+mod discovery;
 mod edit;
 mod envelope;
 mod ephemeral;
@@ -43,8 +45,16 @@ mod mention;
 mod padding;
 mod poll;
 mod receipt;
+mod rendezvous;
 mod token;
+mod wake;
 
+pub use admission::{
+    admission_invitation_proof, solve_admission_puzzle, verify_admission_puzzle, AdmissionContext,
+    AdmissionEnvelope, AdmissionProofKind, ADMISSION_ENVELOPE_HEADER_LEN,
+    ADMISSION_ENVELOPE_VERSION, MAX_ADMISSION_ENVELOPE_BYTES, MAX_ADMISSION_PUZZLE_ATTEMPTS,
+    MAX_ADMISSION_SEALED_FLIGHT_BYTES, MAX_ADMISSION_TARGET_BUNDLE_BYTES,
+};
 pub use attachment::{
     attachment_chunk_count, decode_attachment_manifest, encode_attachment_manifest,
     AttachmentManifest, AttachmentObject, AttachmentRole, DecodedAttachmentManifest,
@@ -69,7 +79,8 @@ pub use call::{
 };
 pub use capability::{
     is_capability_control, CapabilityControl, FormatCapabilities, CAPABILITY_CONTROL_VERSION,
-    CAPABILITY_MAGIC, MAX_CAPABILITY_FORMATS, MAX_CAPABILITY_KINDS,
+    CAPABILITY_MAGIC, GROUP_ORIGIN_CAPABILITY_FORMAT, GROUP_ORIGIN_CAPABILITY_KIND,
+    MAX_CAPABILITY_FORMATS, MAX_CAPABILITY_KINDS,
 };
 pub use content::{
     decode_content, encode_attachment, encode_call_control, encode_edit, encode_ephemeral,
@@ -80,9 +91,14 @@ pub use content::{
     MAX_CONTENT_FRAME_LEN, MAX_CONTENT_PAYLOAD_LEN, MAX_NESTING_DEPTH,
 };
 pub use device_sync::{
-    resolve_device_sync_events, DeviceSyncBundle, DeviceSyncEvent, DeviceSyncNamespace,
-    OpenedDeviceSyncBundle, MAX_DEVICE_SYNC_BUNDLE_BYTES, MAX_DEVICE_SYNC_BUNDLE_EVENTS,
-    MAX_DEVICE_SYNC_KEY_BYTES, MAX_DEVICE_SYNC_VALUE_BYTES,
+    resolve_device_sync_events, AuthorityDeviceSyncBundle, DeviceSyncAuthority, DeviceSyncBundle,
+    DeviceSyncEvent, DeviceSyncNamespace, OpenedAuthorityDeviceSyncBundle, OpenedDeviceSyncBundle,
+    MAX_DEVICE_SYNC_BUNDLE_BYTES, MAX_DEVICE_SYNC_BUNDLE_EVENTS, MAX_DEVICE_SYNC_KEY_BYTES,
+    MAX_DEVICE_SYNC_VALUE_BYTES,
+};
+pub use discovery::{
+    is_discovery_upgrade_control, DiscoveryUpgradeControl, DISCOVERY_UPGRADE_MAGIC,
+    DISCOVERY_UPGRADE_VERSION, MAX_DISCOVERY_UPGRADE_ROUTES, MAX_DISCOVERY_UPGRADE_ROUTE_BYTES,
 };
 pub use edit::{
     decode_edit_payload, encode_edit_payload, DecodedEdit, Edit, EDIT_HEADER_LEN,
@@ -105,13 +121,15 @@ pub use fragmentation::{
 pub use group::{
     group_admin_request_signing_bytes, GroupAdminAction, GroupAdminRequest, GroupAdminResult,
     GroupAnnounce, GroupAuthorityAnnounce, GroupControlPayload, GroupMemberInfo,
-    MAX_GROUP_ADMIN_REQUESTS,
+    GroupOriginAnnounce, GroupOriginAuthorityAnnounce, MAX_GROUP_ADMIN_REQUESTS,
 };
 pub use group_authority::{
     decode_group_authority, encode_group_authority_state, group_authority_state_signing_bytes,
-    owner_transfer_signing_bytes, DecodedGroupAuthority, GroupAuthorityMember, GroupRole,
-    OwnerTransferCertificate, SignedGroupAuthorityState, GROUP_AUTHORITY_VERSION,
-    MAX_GROUP_AUTHORITY_MEMBERS, MAX_GROUP_MEMBER_IDENTITY_LEN, MAX_GROUP_NAME_LEN,
+    owner_transfer_device_signing_bytes, owner_transfer_signing_bytes, DecodedGroupAuthority,
+    GroupAuthorityMember, GroupRole, OwnerTransferCertificate, SignedGroupAuthorityState,
+    GROUP_AUTHORITY_VERSION, LEGACY_GROUP_AUTHORITY_VERSION, MAX_GROUP_AUTHORITY_MEMBERS,
+    MAX_GROUP_AUTHORITY_STATE_BYTES, MAX_GROUP_DEVICE_AUTHORITY_BYTES,
+    MAX_GROUP_MEMBER_IDENTITY_LEN, MAX_GROUP_NAME_LEN,
 };
 pub use mention::{
     decode_mention_payload, encode_mention_payload, DecodedMention, Mention, MentionSpan,
@@ -128,7 +146,30 @@ pub use poll::{
     MAX_POLL_QUESTION_LEN, MAX_POLL_VOTERS, MIN_POLL_OPTIONS, POLL_CLOSE_MANUAL, POLL_VERSION,
 };
 pub use receipt::ReceiptPayload;
+pub use rendezvous::{
+    is_rendezvous_provider_control, RendezvousLookupRequest, RendezvousProviderControl,
+    RendezvousProviderDescriptor, RendezvousRegisterRequest, RendezvousRoute, RendezvousRouteKind,
+    RendezvousRouteRecord, MAX_RENDEZVOUS_CONTROL_ORIGIN_BYTES, MAX_RENDEZVOUS_CONTROL_PROVIDERS,
+    MAX_RENDEZVOUS_PROVIDER_CONTROL_BYTES, MAX_RENDEZVOUS_ROUTES, MAX_RENDEZVOUS_ROUTE_BYTES,
+    RENDEZVOUS_CLOCK_SKEW_SECS, RENDEZVOUS_LOOKUP_PATH, RENDEZVOUS_LOOKUP_REQUEST_LEN,
+    RENDEZVOUS_LOOKUP_RESPONSE_LEN, RENDEZVOUS_MALFORMED_RESPONSE_LEN, RENDEZVOUS_MEDIA_TYPE,
+    RENDEZVOUS_PROVIDER_CONTROL_MAGIC, RENDEZVOUS_PROVIDER_CONTROL_VERSION,
+    RENDEZVOUS_REGISTER_ACK_LEN, RENDEZVOUS_REGISTER_PATH, RENDEZVOUS_REGISTER_REQUEST_LEN,
+    RENDEZVOUS_ROUTE_RECORD_VERSION,
+};
 pub use token::{delivery_token, epoch_day, intro_token, MailboxKey};
+pub use wake::{
+    canonical_wake_https_origin, is_wake_capability_control, verify_wake_generic_response,
+    wake_generic_response, wake_provider_id, WakeCapability, WakeCapabilityControl,
+    WakeCapabilityDescriptor, WakeCapabilityPayload, WakeEnvironment, WakePlatform, WakeProfile,
+    WakeRegisterRequest, WakeRegisterResponse, WakeTriggerRequest, MAX_WAKE_APP_TOPIC_BYTES,
+    MAX_WAKE_CAPABILITY_CONTROL_BYTES, MAX_WAKE_CONTROL_CAPABILITIES,
+    MAX_WAKE_CONTROL_ORIGIN_BYTES, MAX_WAKE_PROVIDER_TOKEN_BYTES, WAKE_CAPABILITY_ASSOCIATED_DATA,
+    WAKE_CAPABILITY_CONTROL_MAGIC, WAKE_CAPABILITY_CONTROL_VERSION, WAKE_CAPABILITY_LEN,
+    WAKE_CAPABILITY_MAX_LIFETIME_SECS, WAKE_CAPABILITY_PLAINTEXT_LEN, WAKE_GENERIC_RESPONSE_LEN,
+    WAKE_MEDIA_TYPE, WAKE_REGISTER_PATH, WAKE_REGISTER_REQUEST_LEN, WAKE_REGISTER_RESPONSE_LEN,
+    WAKE_REVOKE_PATH, WAKE_TRIGGER_PATH, WAKE_TRIGGER_REQUEST_LEN, WAKE_VERSION,
+};
 
 /// Convenience alias for fallible operations in this crate.
 pub type Result<T> = core::result::Result<T, ProtocolError>;

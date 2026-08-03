@@ -10,8 +10,8 @@ use std::time::Duration;
 
 use kult_protocol::{Envelope, EnvelopeKind};
 use kult_transport::{
-    DeliveryHint, Discovery, Libp2pTransport, Reachability, SendReceipt, Transport,
-    TransportOptions,
+    DeliveryHint, Discovery, DiscoveryNamespace, Libp2pTransport, Reachability, SendReceipt,
+    Transport, TransportOptions,
 };
 
 const LISTEN: &str = "/ip4/0.0.0.0/udp/0/quic-v1";
@@ -44,12 +44,18 @@ async fn discover_within(node: &Libp2pTransport, peer_id: &str) -> String {
     panic!("peer {peer_id} not discovered via mDNS within 20s");
 }
 
-/// Poll `recv` until envelopes arrive (or 10 s passes).
+/// Poll staged receive until envelopes arrive, then explicitly accept each
+/// exact direct response handle (or time out after 10 seconds).
 async fn recv_within(t: &Libp2pTransport) -> Vec<Envelope> {
     for _ in 0..1000 {
-        let got = t.recv().await.unwrap();
+        let got = t.recv_staged().await.unwrap();
         if !got.is_empty() {
-            return got;
+            let mut envelopes = Vec::with_capacity(got.len());
+            for item in got {
+                t.settle_recv(item.receipt.unwrap(), true).await.unwrap();
+                envelopes.push(item.envelope);
+            }
+            return envelopes;
         }
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
@@ -71,17 +77,15 @@ async fn lan_only_delivery_with_zero_configuration() {
     let to_b = DeliveryHint::Multiaddr(b_hint);
     assert_eq!(a.reachable(&to_b).await, Reachability::Now);
     let env = Envelope::new(EnvelopeKind::Message, [7; 32], vec![7; 300]);
-    assert_eq!(
-        a.send(&to_b, &env).await.unwrap(),
-        SendReceipt::AckedByNextHop
-    );
-    assert_eq!(recv_within(&b).await, vec![env]);
+    let (receipt, received) = tokio::join!(a.send(&to_b, &env), recv_within(&b));
+    assert_eq!(receipt.unwrap(), SendReceipt::AckedByNextHop);
+    assert_eq!(received, vec![env]);
 
     let reply = Envelope::new(EnvelopeKind::Message, [8; 32], vec![8; 300]);
-    b.send(&DeliveryHint::Multiaddr(a_hint), &reply)
-        .await
-        .unwrap();
-    assert_eq!(recv_within(&a).await, vec![reply]);
+    let to_a = DeliveryHint::Multiaddr(a_hint);
+    let (receipt, received) = tokio::join!(b.send(&to_a, &reply), recv_within(&a));
+    assert_eq!(receipt.unwrap(), SendReceipt::AckedByNextHop);
+    assert_eq!(received, vec![reply]);
 }
 
 /// mDNS seeds the Kademlia routing table, so the *discovery plane* — prekey
@@ -98,9 +102,20 @@ async fn lan_only_dht_records_with_zero_bootstrap() {
 
     let key = [42u8; 32];
     let value = b"signed prekey bundle bytes".to_vec();
-    publisher.publish(key, value.clone()).await.unwrap();
+    publisher
+        .publish(
+            DiscoveryNamespace::LegacyPrekeyV1,
+            key,
+            value.clone(),
+            4_000_000_000,
+        )
+        .await
+        .unwrap();
 
-    let found = reader.lookup(key).await.unwrap();
+    let found = reader
+        .lookup(DiscoveryNamespace::LegacyPrekeyV1, key)
+        .await
+        .unwrap();
     assert!(
         found.contains(&value),
         "reader must retrieve the record with no bootstrap configured"

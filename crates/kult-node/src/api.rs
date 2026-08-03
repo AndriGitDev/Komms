@@ -8,6 +8,56 @@ use kult_store::{
 };
 use kult_transport::DeliveryHint;
 
+/// Render-safe row in the bounded first-contact request inbox.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MessageRequestInfo {
+    /// Stable opaque request id used by Accept, Delete, and Block.
+    pub id: [u8; 16],
+    /// Verified stable sender account.
+    pub account: [u8; 32],
+    /// Verified sender physical device.
+    pub device: [u8; 32],
+    /// Bounded UTF-8 first-message preview.
+    pub preview: String,
+    /// Symmetric 30-digit safety number, grouped for display.
+    pub safety_number: String,
+    /// Local arrival time.
+    pub arrived_at: u64,
+    /// Absolute local expiry.
+    pub expires_at: u64,
+    /// Privacy-preserving coarse ingress class.
+    pub transport: kult_store::AdmissionTransportClass,
+}
+
+/// Render-safe row in the bounded group-invitation request inbox.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GroupInvitationInfo {
+    /// Exact authenticated control id used by Accept and Delete.
+    pub id: [u8; 16],
+    /// Random group id proposed by the inviter.
+    pub group: [u8; 32],
+    /// Pairwise-authenticated inviting account.
+    pub inviter: [u8; 32],
+    /// Pairwise-authenticated inviting physical device.
+    pub inviter_device: [u8; 32],
+    /// Bounded creator- or authority-authenticated display name.
+    pub name: String,
+    /// Account that currently manages the proposed group.
+    pub creator: [u8; 32],
+    /// Complete bounded roster size.
+    pub member_count: u32,
+    /// Proposed group generation.
+    pub generation: u64,
+    /// Whether the sender-chain capability is scoped to this recipient device.
+    pub recipient_scoped: bool,
+    /// Whether the proposal carries signed group authority.
+    pub signed_authority: bool,
+    /// Local arrival time.
+    pub arrived_at: u64,
+    /// Absolute local expiry.
+    pub expires_at: u64,
+}
+
 /// Optional exact crop in oriented source pixels for a custom icon.
 /// Absence requests the deterministic centered-square crop.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -422,6 +472,47 @@ pub struct LinkedDeviceInfo {
     pub current: bool,
 }
 
+/// Render-safe category for a fail-closed device-authority conflict.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DeviceAuthorityConflictType {
+    /// Concurrent valid ordinary transitions diverged from one accepted parent.
+    Fork,
+    /// Different root-authorized transitions claimed the same recovery epoch.
+    Recovery,
+}
+
+/// Durable device-authority conflict shown until the user resolves it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DeviceAuthorityConflictInfo {
+    /// Conflict category.
+    pub kind: DeviceAuthorityConflictType,
+    /// Locally retained branch tip.
+    pub accepted: [u8; 32],
+    /// Rejected conflicting branch tip.
+    pub conflicting: [u8; 32],
+    /// Recovery epoch shared by both claims.
+    pub recovery_epoch: u64,
+    /// Coarse local observation time, or zero when the transport supplied no clock.
+    pub observed_at: u64,
+}
+
+/// Durable conflict presented by one contact account's device-authority proof.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ContactAuthorityConflictInfo {
+    /// Stable contact account whose authority diverged.
+    pub account: [u8; 32],
+    /// Conflict category.
+    pub kind: DeviceAuthorityConflictType,
+    /// Locally retained branch tip.
+    pub accepted: [u8; 32],
+    /// Rejected conflicting branch tip.
+    pub conflicting: [u8; 32],
+    /// Recovery epoch shared by both claims.
+    pub recovery_epoch: u64,
+    /// Coarse local observation time.
+    pub observed_at: u64,
+}
+
 /// Honest delivery state for one exact recipient physical device.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MessageDeviceDeliveryInfo {
@@ -521,6 +612,33 @@ pub enum Command {
         bundle: Vec<u8>,
         /// How to reach them, per transport.
         hints: Vec<DeliveryHint>,
+    },
+    /// Atomically promote one sealed message request into a normal contact.
+    MessageRequestAccept {
+        /// Exact opaque request id.
+        request: [u8; 16],
+        /// Private local petname.
+        name: String,
+    },
+    /// Delete one request, retaining only a short replay tombstone.
+    MessageRequestDelete {
+        /// Exact opaque request id.
+        request: [u8; 16],
+    },
+    /// Block the exact verified sender account/device and delete its request.
+    MessageRequestBlock {
+        /// Exact opaque request id.
+        request: [u8; 16],
+    },
+    /// Explicitly join one authenticated group invitation.
+    GroupInvitationAccept {
+        /// Exact opaque invitation id.
+        invitation: [u8; 16],
+    },
+    /// Delete one group invitation without claiming remote deletion.
+    GroupInvitationDelete {
+        /// Exact opaque invitation id.
+        invitation: [u8; 16],
     },
     /// Rename a stored contact's private local petname by exact peer identity.
     RenameContact {
@@ -717,6 +835,37 @@ pub struct GroupInfo {
     pub creator: [u8; 32],
     /// Full roster, this node included.
     pub members: Vec<[u8; 32]>,
+    /// Current honest recipient-origin security state.
+    pub security: GroupSecurityLevel,
+}
+
+/// Visible ADR-0029 upgrade state for one sender-key group.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GroupSecurityLevel {
+    /// Legacy membership-authenticated history/current chain; author-sensitive
+    /// operations are disabled.
+    UpgradeRequired,
+    /// The local v2 chain exists but one or more exact member devices has not
+    /// acknowledged a fresh origin capability.
+    Upgrading,
+    /// Every current exact recipient device has acknowledged this sender
+    /// chain's distinct origin capability.
+    RecipientAuthenticated,
+}
+
+/// Render-safe details for the visible group security upgrade.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GroupSecurityInfo {
+    /// Exact group id.
+    pub group: [u8; 32],
+    /// Current local upgrade state.
+    pub level: GroupSecurityLevel,
+    /// Active exact devices that have missing/unsupported pairwise capability
+    /// or have not acknowledged this chain's origin key.
+    pub pending_devices: Vec<[u8; 32]>,
+    /// Retained rows accurately labelled as legacy membership-authenticated
+    /// history.
+    pub legacy_history_rows: usize,
 }
 
 /// One exact member role in signed C6 authority state.
@@ -999,12 +1148,52 @@ pub enum Event {
     StateResyncRequired,
     /// Account-authorized physical-device list, name, or revocation changed.
     DevicesChanged,
+    /// A concurrent valid ordinary device-authority branch was retained as a safety event.
+    DeviceAuthorityFork {
+        /// Locally retained authority tip.
+        accepted: [u8; 32],
+        /// Rejected conflicting authority tip.
+        conflicting: [u8; 32],
+        /// Recovery epoch shared by both branches.
+        recovery_epoch: u64,
+    },
+    /// Different account-root transitions claimed the same recovery epoch.
+    DeviceRecoveryConflict {
+        /// Locally retained recovery branch.
+        accepted: [u8; 32],
+        /// Rejected conflicting recovery branch.
+        conflicting: [u8; 32],
+        /// Conflicting recovery epoch.
+        recovery_epoch: u64,
+    },
     /// This installation completed a confirmed proximate account link.
     DeviceLinkCompleted {
         /// Stable account identity now active on this installation.
         account: [u8; 32],
         /// Exact new physical-device id.
         device: [u8; 32],
+    },
+    /// Two authenticated rendezvous records or provider controls claimed the
+    /// same generation with different complete contents. No route winner was
+    /// selected.
+    RendezvousConflict {
+        /// Stable contact account.
+        peer: [u8; 32],
+        /// Exact physical contact device.
+        device: [u8; 32],
+        /// Provider-separation id, or all zeroes for a provider-set conflict.
+        provider: [u8; 32],
+    },
+    /// Two authenticated controls claimed the same wake-capability generation
+    /// with different complete contents. Every capability at that generation
+    /// was disabled.
+    WakeConflict {
+        /// Stable contact account.
+        peer: [u8; 32],
+        /// Exact physical contact device.
+        device: [u8; 32],
+        /// Conflicting complete-set generation.
+        generation: u64,
     },
     /// One or more private local custom icons changed; shells re-read visible targets.
     /// This event never enters an envelope, capability, group state, or transport.
@@ -1076,6 +1265,59 @@ pub enum Event {
         timestamp: u64,
         /// UTF-8 note text.
         body: String,
+    },
+    /// A valid unknown sender entered the bounded request inbox.
+    MessageRequestReceived {
+        /// Stable opaque request id.
+        request: [u8; 16],
+    },
+    /// A request was explicitly accepted and promoted.
+    MessageRequestAccepted {
+        /// Stable opaque request id.
+        request: [u8; 16],
+        /// Verified stable account now present as a contact.
+        peer: [u8; 32],
+    },
+    /// A request was explicitly deleted, without a remote-deletion claim.
+    MessageRequestDeleted {
+        /// Stable opaque request id.
+        request: [u8; 16],
+    },
+    /// A request sender was blocked locally.
+    MessageRequestBlocked {
+        /// Stable opaque request id.
+        request: [u8; 16],
+    },
+    /// A provisional request and its isolated keys expired locally.
+    MessageRequestExpired {
+        /// Stable opaque request id.
+        request: [u8; 16],
+    },
+    /// An authenticated group proposal entered the bounded invitation inbox.
+    GroupInvitationReceived {
+        /// Exact opaque invitation id.
+        invitation: [u8; 16],
+        /// Proposed group id.
+        group: [u8; 32],
+        /// Pairwise-authenticated inviter.
+        inviter: [u8; 32],
+    },
+    /// A group invitation was explicitly accepted.
+    GroupInvitationAccepted {
+        /// Exact opaque invitation id.
+        invitation: [u8; 16],
+        /// Joined group id.
+        group: [u8; 32],
+    },
+    /// A group invitation was explicitly deleted.
+    GroupInvitationDeleted {
+        /// Exact opaque invitation id.
+        invitation: [u8; 16],
+    },
+    /// A group invitation expired without changing membership.
+    GroupInvitationExpired {
+        /// Exact opaque invitation id.
+        invitation: [u8; 16],
     },
     /// An unknown peer completed a handshake with us; a contact stub was
     /// created (unverified, no hints — the application fills those in).

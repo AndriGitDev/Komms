@@ -37,6 +37,7 @@ private class SemanticHighlightSpan(private val label: String) : ClickableSpan()
 fun renderFormattedText(
     formatted: FormattedText,
     highlightLabels: List<String> = emptyList(),
+    highlightFallback: String = "",
 ): CharSequence {
     val output = SpannableStringBuilder()
     var highlightIndex = 0
@@ -77,7 +78,7 @@ fun renderFormattedText(
                 } else {
                     highlightIndex
                 }
-                val label = highlightLabels.getOrNull(labelIndex) ?: "Highlighted mention"
+                val label = highlightLabels.getOrNull(labelIndex) ?: highlightFallback
                 output.setSpan(SemanticHighlightSpan(label), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
                 output.setSpan(UnderlineSpan(), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
                 if (!continuingHighlight) highlightIndex += 1
@@ -95,7 +96,11 @@ fun TextView.showFormattedText(
     formatted: FormattedText,
     highlightLabels: List<String> = emptyList(),
 ) {
-    text = renderFormattedText(formatted, highlightLabels)
+    text = renderFormattedText(
+        formatted,
+        highlightLabels,
+        context.getString(R.string.mention_highlighted),
+    )
     setTextIsSelectable(true)
     movementMethod = if (highlightLabels.isEmpty()) null else LinkMovementMethod.getInstance()
 }

@@ -80,6 +80,39 @@ pub struct GroupAuthorityAnnounce {
     pub iteration: u32,
 }
 
+/// ADR-0029 sender-chain distribution scoped to one recipient device.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
+pub struct GroupOriginAnnounce {
+    /// Existing bounded group state and frozen sender-chain snapshot.
+    pub announce: GroupAnnounce,
+    /// Monotonic sender-device origin generation. This advances for every
+    /// sender-chain or origin-capability rotation, including rotations that
+    /// do not change the group roster generation.
+    pub origin_generation: u64,
+    /// Exact stable recipient account.
+    pub recipient_account: [u8; 32],
+    /// Exact certified recipient device.
+    pub recipient_device: [u8; 32],
+    /// Random capability unique to this group, sender device/chain, and
+    /// recipient account/device.
+    pub origin_key: [u8; 32],
+}
+
+/// ADR-0029 signed-authority announce scoped to one recipient device.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
+pub struct GroupOriginAuthorityAnnounce {
+    /// Existing signed authority state and frozen sender-chain snapshot.
+    pub announce: GroupAuthorityAnnounce,
+    /// Monotonic sender-device origin generation.
+    pub origin_generation: u64,
+    /// Exact stable recipient account.
+    pub recipient_account: [u8; 32],
+    /// Exact certified recipient device.
+    pub recipient_device: [u8; 32],
+    /// Random recipient origin capability.
+    pub origin_key: [u8; 32],
+}
+
 /// Bounded operation an admin may request from the current owner.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Zeroize)]
 pub enum GroupAdminAction {
@@ -168,6 +201,10 @@ pub enum GroupControlPayload {
         /// Canonical signed authority payload proving exclusion.
         state_payload: Vec<u8>,
     },
+    /// Recipient-device-scoped ADR-0029 sender-chain distribution.
+    OriginAnnounce(GroupOriginAnnounce),
+    /// Recipient-device-scoped ADR-0029 signed-authority distribution.
+    OriginAuthorityAnnounce(GroupOriginAuthorityAnnounce),
 }
 
 impl GroupControlPayload {
@@ -198,6 +235,27 @@ impl GroupControlPayload {
             }
             Self::AuthorityRemove { state_payload, .. }
                 if state_payload.len() > crate::MAX_CONTENT_PAYLOAD_LEN =>
+            {
+                return Err(ProtocolError::TooLarge);
+            }
+            Self::OriginAnnounce(value)
+                if value.origin_generation == 0
+                    || value.recipient_account == [0u8; 32]
+                    || value.recipient_device == [0u8; 32]
+                    || value.origin_key == [0u8; 32] =>
+            {
+                return Err(ProtocolError::Malformed);
+            }
+            Self::OriginAuthorityAnnounce(value)
+                if value.origin_generation == 0
+                    || value.recipient_account == [0u8; 32]
+                    || value.recipient_device == [0u8; 32]
+                    || value.origin_key == [0u8; 32] =>
+            {
+                return Err(ProtocolError::Malformed);
+            }
+            Self::OriginAuthorityAnnounce(value)
+                if value.announce.state_payload.len() > crate::MAX_CONTENT_PAYLOAD_LEN =>
             {
                 return Err(ProtocolError::TooLarge);
             }
@@ -250,4 +308,51 @@ pub fn group_admin_request_signing_bytes(request: &GroupAdminRequest) -> Result<
         }
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn origin_announce() -> GroupControlPayload {
+        GroupControlPayload::OriginAnnounce(GroupOriginAnnounce {
+            announce: GroupAnnounce {
+                group: [1; 32],
+                name: "g".into(),
+                creator: [2; 32],
+                members: Vec::new(),
+                secret: [3; 32],
+                generation: 1,
+                key_id: [4; 16],
+                chain_key: [5; 32],
+                iteration: 6,
+            },
+            origin_generation: 7,
+            recipient_account: [8; 32],
+            recipient_device: [9; 32],
+            origin_key: [10; 32],
+        })
+    }
+
+    #[test]
+    fn origin_announce_codec_fingerprint_and_generation_validation() {
+        let control = origin_announce();
+        let encoded = control.encode();
+        assert_eq!(encoded.len(), 247);
+        assert_eq!(
+            blake3::hash(&encoded).to_hex().as_str(),
+            "632346b53adbbed9ffae8703f15c6f3a0b9963ce3c91a834828a92399ccd3ea1"
+        );
+        assert_eq!(GroupControlPayload::decode(&encoded).unwrap(), control);
+
+        let mut invalid = origin_announce();
+        let GroupControlPayload::OriginAnnounce(value) = &mut invalid else {
+            unreachable!();
+        };
+        value.origin_generation = 0;
+        assert_eq!(
+            GroupControlPayload::decode(&postcard::to_allocvec(&invalid).unwrap()),
+            Err(ProtocolError::Malformed)
+        );
+    }
 }

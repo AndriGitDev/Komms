@@ -1,6 +1,5 @@
 //! M3 acceptance: recipient offline → message deposited at a mailbox relay
-//! → delivered on reconnect — and the relay observably stores only sealed
-//! envelopes (inspection test). Also pins the ADR-0007 property end-to-end:
+//! → delivered on reconnect. Also pins the ADR-0007 property end-to-end:
 //! on a relay shared by both parties, a sender's check-in cannot drain mail
 //! it deposited for its peer.
 
@@ -11,9 +10,10 @@ use rand::SeedableRng;
 
 use kult_crypto::KdfProfile;
 use kult_node::{Event, Node};
-use kult_protocol::{epoch_day, intro_token, Envelope, EnvelopeKind};
 use kult_store::DeliveryState;
-use kult_transport::{DeliveryHint, Libp2pTransport, MailboxConfig, Transport};
+use kult_transport::{
+    DeliveryHint, Libp2pTransport, MailboxConfig, MailboxServiceConfig, Transport,
+};
 
 const NOW: u64 = 1_800_000_000;
 const LISTEN: &[&str] = &["/ip4/127.0.0.1/udp/0/quic-v1"];
@@ -31,14 +31,16 @@ async fn offline_recipient_via_relay_mailbox() {
 
     // The relay: an ordinary node volunteering storage — no kult identity,
     // no special role, could be anyone.
-    let relay = Libp2pTransport::with_mailbox(LISTEN, MailboxConfig::default())
-        .await
-        .unwrap();
+    let relay = Libp2pTransport::with_mailbox(
+        LISTEN,
+        MailboxServiceConfig::in_directory(dir.path().join("relay"), MailboxConfig::default()),
+    )
+    .await
+    .unwrap();
     let relay_addr = relay.wait_listen_addr().await.unwrap();
 
     let mut alice = Node::create(&dir.path().join("a.db"), b"a", TEST_KDF, &mut rng).unwrap();
     let mut bob = Node::create(&dir.path().join("b.db"), b"b", TEST_KDF, &mut rng).unwrap();
-
     let a_net = Arc::new(Libp2pTransport::new(LISTEN).await.unwrap());
     alice.add_transport(Arc::clone(&a_net) as Arc<dyn Transport>);
 
@@ -71,8 +73,8 @@ async fn offline_recipient_via_relay_mailbox() {
     alice.tick(NOW + 1, &mut rng).await.unwrap();
     assert_eq!(
         alice.queued().unwrap(),
-        1,
-        "handshake deposited; capability waits for the session token"
+        2,
+        "handshake deposited; format-capability and discovery controls wait for the session token"
     );
 
     // ADR-0007, end-to-end: alice and bob share this relay, yet alice's own
@@ -84,27 +86,13 @@ async fn offline_recipient_via_relay_mailbox() {
         .unwrap();
     assert_eq!(echoes, 0, "a sender must never collect its peer's mail");
 
-    // Inspection (M3 acceptance): the relay holds exactly one blob, and it
-    // is a sealed envelope — a kind byte, a rotating introduction token,
-    // ciphertext. No identities, and no trace of the plaintext.
-    let stored: Vec<Vec<u8>> = relay
-        .mailbox_contents()
-        .unwrap()
-        .into_iter()
-        .flat_map(|(_, queue)| queue)
-        .collect();
-    assert_eq!(stored.len(), 1);
-    let env = Envelope::decode(&stored[0]).unwrap();
-    assert_eq!(env.kind, EnvelopeKind::Handshake);
-    assert_eq!(env.token, intro_token(&bob_id, epoch_day(NOW)));
-    assert!(
-        !stored[0]
-            .windows(plaintext.len())
-            .any(|w| w == plaintext.as_slice()),
-        "plaintext must not appear in what the relay stores"
-    );
+    // Operator inspection exposes only content-free aggregate health. The
+    // store tests separately verify that raw relay files contain neither
+    // delivery tokens nor end-to-end envelope bytes.
+    assert_eq!(relay.mailbox_metrics().unwrap().stored_items, 1);
 
-    // Bob reconnects, checks in, and the message is delivered.
+    // Bob reconnects and checks in. An unknown sender remains in the sealed
+    // request domain until Bob explicitly accepts it.
     let b_net = Arc::new(Libp2pTransport::new(LISTEN).await.unwrap());
     let collected = b_net
         .mailbox_checkin(&relay_addr, &bob.mailbox_tokens(NOW + 2))
@@ -115,14 +103,21 @@ async fn offline_recipient_via_relay_mailbox() {
     let events = bob.tick(NOW + 3, &mut rng).await.unwrap();
     assert!(events
         .iter()
-        .any(|e| matches!(e, Event::MessageReceived { body, .. } if body == plaintext)));
-    let alice_id = events
+        .any(|event| matches!(event, Event::MessageRequestReceived { .. })));
+    assert!(!events
         .iter()
-        .find_map(|e| match e {
-            Event::SessionEstablished { peer } => Some(*peer),
-            _ => None,
-        })
+        .any(|event| matches!(event, Event::MessageReceived { .. })));
+    assert!(bob.contacts().unwrap().is_empty());
+    let request = bob.message_requests().unwrap().remove(0);
+    assert_eq!(request.preview.as_bytes(), plaintext);
+    assert_eq!(
+        request.transport,
+        kult_store::AdmissionTransportClass::Mailbox
+    );
+    let alice_id = request.account;
+    bob.accept_message_request(&request.id, "alice", NOW + 4, &mut rng)
         .unwrap();
+    assert_eq!(bob.messages_with(&alice_id).unwrap()[0].body, plaintext);
 
     // Bob's encrypted receipt and terminal capability control take the same
     // path back: sealed sender gave
@@ -142,7 +137,10 @@ async fn offline_recipient_via_relay_mailbox() {
         .mailbox_checkin(&relay_addr, &alice.mailbox_tokens(NOW + 61))
         .await
         .unwrap();
-    assert_eq!(collected, 2, "receipt plus terminal capability control");
+    assert_eq!(
+        collected, 3,
+        "receipt plus terminal format-capability and discovery controls"
+    );
     let events = alice.tick(NOW + 62, &mut rng).await.unwrap();
     assert!(
         events.iter().any(|e| matches!(

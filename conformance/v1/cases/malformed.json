@@ -1,0 +1,426 @@
+{
+  "cases": [
+    {
+      "arguments": {
+        "alice_secret_hex": "0",
+        "bob_secret_hex": {
+          "$repeat_hex": {
+            "byte_hex": "00",
+            "bytes": 32
+          }
+        }
+      },
+      "expected": {
+        "error": {
+          "code": "invalid_hex",
+          "message": "hex values must contain an even number of ASCII hexadecimal digits"
+        },
+        "ok": false
+      },
+      "id": "reject-odd-hex",
+      "operation": "primitive.x25519",
+      "purpose": "Odd-length hexadecimal input is rejected before primitive work."
+    },
+    {
+      "arguments": {
+        "alice_secret_hex": "00",
+        "bob_secret_hex": {
+          "$repeat_hex": {
+            "byte_hex": "00",
+            "bytes": 32
+          }
+        }
+      },
+      "expected": {
+        "error": {
+          "code": "invalid_length",
+          "message": "hex value must decode to exactly 32 bytes"
+        },
+        "ok": false
+      },
+      "id": "reject-wrong-fixed-width",
+      "operation": "primitive.x25519",
+      "purpose": "A fixed-width field with the wrong byte length is rejected."
+    },
+    {
+      "arguments": {
+        "ikm_hex": "",
+        "info_hex": "",
+        "output_len": 0,
+        "salt_hex": ""
+      },
+      "expected": {
+        "error": {
+          "code": "invalid_length",
+          "message": "HKDF output length must be between 1 and 8160 bytes"
+        },
+        "ok": false
+      },
+      "id": "reject-hkdf-zero-output",
+      "operation": "primitive.hkdf_sha256",
+      "purpose": "The adapter refuses a zero-length HKDF expansion."
+    },
+    {
+      "arguments": {
+        "encoded_hex": "ff4b4d43"
+      },
+      "expected": {
+        "ok": true,
+        "result": {
+          "classification": "malformed"
+        }
+      },
+      "id": "reject-truncated-content-magic",
+      "operation": "content.decode",
+      "purpose": "A truncated typed-content prefix is malformed and never falls back to text."
+    },
+    {
+      "arguments": {
+        "encoded_hex": {
+          "$concat_hex": [
+            "ff4b4d4301010000",
+            {
+              "$repeat_hex": {
+                "byte_hex": "00",
+                "bytes": 16
+              }
+            },
+            "01000000"
+          ]
+        }
+      },
+      "expected": {
+        "ok": true,
+        "result": {
+          "classification": "malformed"
+        }
+      },
+      "id": "reject-content-length-mismatch",
+      "operation": "content.decode",
+      "purpose": "Declared content length must equal the exact remaining bytes."
+    },
+    {
+      "arguments": {
+        "encoded_hex": "0101"
+      },
+      "expected": {
+        "error": {
+          "code": "malformed",
+          "message": "envelope is not canonical"
+        },
+        "ok": false
+      },
+      "id": "reject-truncated-envelope",
+      "operation": "envelope.decode",
+      "purpose": "An envelope shorter than the minimum fixed header is rejected."
+    },
+    {
+      "arguments": {
+        "encoded_hex": {
+          "$concat_hex": [
+            "03",
+            "01",
+            {
+              "$repeat_hex": {
+                "byte_hex": "00",
+                "bytes": 32
+              }
+            }
+          ]
+        }
+      },
+      "expected": {
+        "error": {
+          "code": "malformed",
+          "message": "envelope is not canonical"
+        },
+        "ok": false
+      },
+      "id": "reject-unknown-envelope-version",
+      "operation": "envelope.decode",
+      "purpose": "Envelope versions are explicit; an unknown version is not guessed."
+    },
+    {
+      "arguments": {
+        "encoded_hex": {
+          "$concat_hex": [
+            "01",
+            "ff",
+            {
+              "$repeat_hex": {
+                "byte_hex": "00",
+                "bytes": 32
+              }
+            }
+          ]
+        }
+      },
+      "expected": {
+        "error": {
+          "code": "malformed",
+          "message": "envelope is not canonical"
+        },
+        "ok": false
+      },
+      "id": "reject-unknown-envelope-kind",
+      "operation": "envelope.decode",
+      "purpose": "Unknown envelope kind bytes fail closed."
+    },
+    {
+      "arguments": {
+        "encoded_hex": {
+          "$concat_hex": [
+            "02",
+            "01",
+            {
+              "$repeat_hex": {
+                "byte_hex": "00",
+                "bytes": 32
+              }
+            },
+            "0100000000000000"
+          ]
+        }
+      },
+      "expected": {
+        "error": {
+          "code": "malformed",
+          "message": "envelope is not canonical"
+        },
+        "ok": false
+      },
+      "id": "reject-noncanonical-retention",
+      "operation": "envelope.decode",
+      "purpose": "Retained-envelope hints must be non-zero canonical hour buckets."
+    },
+    {
+      "arguments": {
+        "encoded_hex": {
+          "$repeat_hex": {
+            "byte_hex": "00",
+            "bytes": 131073
+          }
+        }
+      },
+      "expected": {
+        "error": {
+          "code": "malformed",
+          "message": "envelope is not canonical"
+        },
+        "ok": false
+      },
+      "id": "reject-oversize-envelope",
+      "operation": "envelope.decode",
+      "purpose": "Envelope allocation is rejected beyond the fixed 128 KiB wire ceiling."
+    },
+    {
+      "arguments": {
+        "encoded_hex": "a1",
+        "message": "request"
+      },
+      "expected": {
+        "error": {
+          "code": "malformed",
+          "message": "mailbox-v2 request is not canonical"
+        },
+        "ok": false
+      },
+      "id": "reject-truncated-mailbox-cbor",
+      "operation": "mailbox.v2.canonicalize",
+      "purpose": "A truncated mailbox-v2 CBOR map is rejected without semantic processing."
+    },
+    {
+      "arguments": {
+        "capability_hex": {
+          "$repeat_hex": {
+            "byte_hex": "00",
+            "bytes": 32
+          }
+        },
+        "identity_secret_hex": {
+          "$repeat_hex": {
+            "byte_hex": "11",
+            "bytes": 64
+          }
+        }
+      },
+      "expected": {
+        "error": {
+          "code": "invalid_identity",
+          "message": "identity cannot form a Connect code"
+        },
+        "ok": false
+      },
+      "id": "reject-zero-connect-capability",
+      "operation": "discovery.connect_code",
+      "purpose": "The all-zero Connect discovery capability is invalid."
+    },
+    {
+      "arguments": {
+        "canonical_provider_origin": "",
+        "epoch": 1,
+        "hybrid_service_exporter_hex": {
+          "$repeat_hex": {
+            "byte_hex": "22",
+            "bytes": 32
+          }
+        },
+        "provider_static_key_hex": {
+          "$repeat_hex": {
+            "byte_hex": "23",
+            "bytes": 32
+          }
+        },
+        "recipient_identity_secret_hex": {
+          "$repeat_hex": {
+            "byte_hex": "24",
+            "bytes": 64
+          }
+        }
+      },
+      "expected": {
+        "error": {
+          "code": "invalid_provider",
+          "message": "provider origin is not canonical"
+        },
+        "ok": false
+      },
+      "id": "reject-empty-rendezvous-provider",
+      "operation": "rendezvous.derive",
+      "purpose": "An empty provider origin cannot enter rendezvous derivation."
+    },
+    {
+      "arguments": {
+        "encoded_hex": {
+          "$xor_hex": {
+            "byte_hex": "01",
+            "offset": 64,
+            "value": {
+              "$case": {
+                "id": "device-authority-link-recover-kda2",
+                "pointer": "/result/linked_hex"
+              }
+            }
+          }
+        }
+      },
+      "expected": {
+        "error": {
+          "code": "invalid_authority",
+          "message": "authority proof failed verification"
+        },
+        "ok": false
+      },
+      "id": "reject-tampered-device-authority",
+      "operation": "device_authority.verify",
+      "purpose": "A one-bit manifest mutation fails complete authority verification."
+    },
+    {
+      "arguments": {
+        "alice_identity_secret_hex": {
+          "$repeat_hex": {
+            "byte_hex": "01",
+            "bytes": 64
+          }
+        },
+        "alice_post_ratchet_hex": "",
+        "alice_receiver_rng_seed_hex": {
+          "$repeat_hex": {
+            "byte_hex": "02",
+            "bytes": 32
+          }
+        },
+        "bob_identity_secret_hex": {
+          "$repeat_hex": {
+            "byte_hex": "03",
+            "bytes": 64
+          }
+        },
+        "bob_reply_hex": "",
+        "bob_sender_rng_seed_hex": {
+          "$repeat_hex": {
+            "byte_hex": "04",
+            "bytes": 32
+          }
+        },
+        "delivery_order": [
+          0,
+          0
+        ],
+        "expires_at": 2,
+        "first_payload_hex": "",
+        "followup_payloads_hex": [
+          "",
+          ""
+        ],
+        "initiate_rng_seed_hex": {
+          "$repeat_hex": {
+            "byte_hex": "05",
+            "bytes": 32
+          }
+        },
+        "now": 1,
+        "one_time_prekey_secret_hex": {
+          "$repeat_hex": {
+            "byte_hex": "06",
+            "bytes": 32
+          }
+        },
+        "post_ratchet_receiver_rng_seed_hex": {
+          "$repeat_hex": {
+            "byte_hex": "07",
+            "bytes": 32
+          }
+        },
+        "post_ratchet_sender_rng_seed_hex": {
+          "$repeat_hex": {
+            "byte_hex": "08",
+            "bytes": 32
+          }
+        },
+        "pq_prekey_rng_seed_hex": {
+          "$repeat_hex": {
+            "byte_hex": "09",
+            "bytes": 32
+          }
+        },
+        "receiver_rng_seed_hex": {
+          "$repeat_hex": {
+            "byte_hex": "0a",
+            "bytes": 32
+          }
+        },
+        "responder_rng_seed_hex": {
+          "$repeat_hex": {
+            "byte_hex": "0b",
+            "bytes": 32
+          }
+        },
+        "sender_rng_seed_hex": {
+          "$repeat_hex": {
+            "byte_hex": "0c",
+            "bytes": 32
+          }
+        },
+        "signed_prekey_secret_hex": {
+          "$repeat_hex": {
+            "byte_hex": "0d",
+            "bytes": 32
+          }
+        }
+      },
+      "expected": {
+        "error": {
+          "code": "invalid_arguments",
+          "message": "delivery order must name every follow-up exactly once"
+        },
+        "ok": false
+      },
+      "id": "reject-invalid-ratchet-delivery-order",
+      "operation": "pqxdh.trace",
+      "purpose": "A trace must name every follow-up exactly once before any cryptographic state advances."
+    }
+  ],
+  "format_version": 1,
+  "profile": "komms-stable-v1"
+}

@@ -9,6 +9,7 @@ import java.io.File
 class KommsApp : Application() {
     override fun onCreate() {
         super.onCreate()
+        LocaleController.initialize(this)
         ThemeController.initialize(this)
         val manager = getSystemService(NotificationManager::class.java)
         manager.createNotificationChannel(
@@ -18,6 +19,7 @@ class KommsApp : Application() {
                 NotificationManager.IMPORTANCE_LOW,
             ),
         )
+        NativeWakeManager.onApplicationStart(this)
     }
 
     companion object {

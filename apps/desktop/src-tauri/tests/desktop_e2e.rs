@@ -168,6 +168,125 @@ fn open(dir: &Path, name: &str, events: &Events) -> Session {
     .expect("session opens")
 }
 
+fn complete_group_security(session: &Session, group: &str) {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let mut upgrade_requested = false;
+    loop {
+        let security = session.group_security(group.to_owned()).unwrap();
+        match security.level {
+            "recipient_authenticated" => {
+                assert!(security.pending_devices.is_empty());
+                return;
+            }
+            "upgrade_required" if !upgrade_requested => {
+                session.upgrade_group_security(group.to_owned()).unwrap();
+                upgrade_requested = true;
+            }
+            "upgrade_required" | "upgrading" => {}
+            level => panic!("unexpected group security level: {level}"),
+        }
+        assert!(
+            Instant::now() < deadline,
+            "group origin exchange did not complete: {security:?}"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+fn accept_group_invitation(session: &Session, events: &Events, group: &str, what: &str) {
+    events.wait(
+        what,
+        |event| matches!(event, UiEvent::GroupInvitationReceived { group: id, .. } if id == group),
+    );
+    let invitation = session
+        .group_invitations()
+        .unwrap()
+        .into_iter()
+        .find(|invitation| invitation.group == group)
+        .expect("group invitation is listed");
+    assert_eq!(
+        session.accept_group_invitation(invitation.id).unwrap(),
+        group
+    );
+    events.wait(
+        "group invitation acceptance",
+        |event| matches!(event, UiEvent::GroupInvitationAccepted { group: id, .. } if id == group),
+    );
+}
+
+#[test]
+fn desktop_message_request_inbox_keeps_unknown_senders_separate() {
+    let directory = tempfile::tempdir().unwrap();
+    let bob_events = Events::default();
+    let bob = open(directory.path(), "request-bob", &bob_events);
+    let accept = open(directory.path(), "request-accept", &Events::default());
+    let delete = open(directory.path(), "request-delete", &Events::default());
+    let block = open(directory.path(), "request-block", &Events::default());
+    let bob_addr = listen_addr(&bob);
+    for (sender, preview) in [
+        (&accept, "please accept"),
+        (&delete, "please delete"),
+        (&block, "please block"),
+    ] {
+        let _ = listen_addr(sender);
+        let _ = sender.my_bundle().unwrap();
+        let bundle = bob.my_bundle().unwrap();
+        let peer = sender
+            .add_contact(
+                "Bob".to_owned(),
+                &bundle.hex,
+                &multiaddr_hint(bob_addr.clone()),
+            )
+            .unwrap();
+        sender.send(peer, preview.to_owned()).unwrap();
+    }
+    bob_events.wait("message request", |event| {
+        matches!(event, UiEvent::MessageRequestReceived { .. })
+    });
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let requests = loop {
+        let requests = bob.message_requests().unwrap();
+        if requests.len() == 3 {
+            break requests;
+        }
+        assert!(Instant::now() < deadline, "three requests were not listed");
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    assert!(bob.contacts().unwrap().is_empty());
+    let request_id = |preview: &str| {
+        requests
+            .iter()
+            .find(|request| request.preview == preview)
+            .unwrap()
+            .id
+            .clone()
+    };
+    let peer = bob
+        .accept_message_request(request_id("please accept"), "Accepted sender".to_owned())
+        .unwrap();
+    bob.delete_message_request(request_id("please delete"))
+        .unwrap();
+    bob.block_message_request(request_id("please block"))
+        .unwrap();
+    assert!(bob.message_requests().unwrap().is_empty());
+    assert_eq!(bob.contacts().unwrap()[0].name, "Accepted sender");
+    assert_eq!(bob.messages(peer).unwrap()[0].body, "please accept");
+    bob_events.wait("request accepted", |event| {
+        matches!(event, UiEvent::MessageRequestAccepted { .. })
+    });
+    bob_events.wait("request deleted", |event| {
+        matches!(event, UiEvent::MessageRequestDeleted { .. })
+    });
+    bob_events.wait("request blocked", |event| {
+        matches!(event, UiEvent::MessageRequestBlocked { .. })
+    });
+
+    accept.stop();
+    delete.stop();
+    block.stop();
+    bob.stop();
+}
+
 #[test]
 fn desktop_linked_device_ceremony_and_sync_use_only_session_surface() {
     let directory = tempfile::tempdir().unwrap();
@@ -213,9 +332,40 @@ fn desktop_linked_device_ceremony_and_sync_use_only_session_surface() {
         matches!(event, UiEvent::DeviceLinkCompleted { device, .. } if device == &target_device)
     });
 
-    source
-        .rename_linked_device(target_device.clone(), "Travel laptop".to_owned())
+    let tablet = open(directory.path(), "device-tablet", &Events::default());
+    let offer = source.begin_device_link().unwrap();
+    let accepted = tablet
+        .accept_device_link(offer.hex, "Tablet".to_owned())
         .unwrap();
+    let quorum = source
+        .approve_device_link(
+            accepted.response_hex,
+            UiDeviceLinkSelection {
+                contacts: false,
+                organization: false,
+                history: false,
+            },
+            true,
+        )
+        .unwrap_err();
+    assert!(quorum.contains("additional active-device approval"));
+    let request = source.device_link_approval_request().unwrap();
+    let approval = target.approve_device_link_request(request).unwrap();
+    let package = source
+        .accept_device_link_approval(approval)
+        .unwrap()
+        .expect("quorum finalizes link");
+    tablet.complete_device_link(package, true).unwrap();
+    let authority_sync = source.export_device_sync(target_device.clone()).unwrap();
+    target.import_device_sync(authority_sync).unwrap();
+
+    let quorum = source
+        .rename_linked_device(target_device.clone(), "Travel laptop".to_owned())
+        .unwrap_err();
+    assert!(quorum.contains("additional active-device approval"));
+    let request = source.device_authority_approval_request().unwrap();
+    let approval = target.approve_device_authority_request(request).unwrap();
+    assert!(source.accept_device_authority_approval(approval).unwrap());
     let sync = source.export_device_sync(target_device.clone()).unwrap();
     target.import_device_sync(sync).unwrap();
     assert!(target
@@ -223,9 +373,12 @@ fn desktop_linked_device_ceremony_and_sync_use_only_session_surface() {
         .unwrap()
         .iter()
         .any(|device| device.id == target_device && device.name == "Travel laptop"));
+    assert!(source.device_authority_conflicts().unwrap().is_empty());
+    assert!(source.contact_authority_conflicts().unwrap().is_empty());
 
     source.stop();
     target.stop();
+    tablet.stop();
 }
 
 fn wait_authority_generation(
@@ -328,9 +481,79 @@ fn desktop_status_poll_is_bounded_and_never_leaves_loading_placeholders() {
     let frontend = include_str!("../../ui/main.js");
     assert!(ffi.contains("rt.block_on(async {"));
     assert!(ffi.contains("tokio::time::timeout(Duration::from_secs(1), rt.net.nat_status()).await"));
-    assert!(frontend.contains("Discovery: unavailable"));
-    assert!(frontend.contains("NAT: unavailable"));
-    assert!(frontend.contains("Node status unavailable:"));
+    assert!(frontend.contains("l10n(\"status_discovery_unavailable\")"));
+    assert!(frontend.contains("l10n(\"status_nat_unavailable\")"));
+    assert!(frontend.contains("l10n(\"status_unavailable\")"));
+}
+
+#[test]
+fn operating_mode_contract_and_familiar_status_are_present_in_every_shell() {
+    let fixture: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../fixtures/operating-mode-settings-v1.json"
+    ))
+    .unwrap();
+    assert_eq!(fixture["mode"], "private");
+    assert_eq!(fixture["rendezvous"][0]["private_via_tor"], true);
+    assert_eq!(fixture["wake"][0]["private_via_tor"], true);
+
+    let html = include_str!("../../ui/index.html");
+    let frontend = include_str!("../../ui/main.js");
+    for value in ["standard", "private", "sovereign"] {
+        assert!(html.contains(&format!("name=\"set-mode\" value=\"{value}\"")));
+    }
+    for field in [
+        "set-provider-directory",
+        "set-provider-roots",
+        "set-rendezvous",
+        "set-wake",
+        "set-tor-proxy",
+        "set-standard-disclosure",
+        "set-sovereign-direct",
+    ] {
+        assert!(html.contains(&format!("id=\"{field}\"")));
+    }
+    for status in [
+        "connection_connected",
+        "connection_fallback_ready",
+        "connection_waiting",
+    ] {
+        assert!(frontend.contains(status));
+    }
+    assert!(frontend.contains("set_mode_private_disclosure"));
+    assert!(frontend.contains("sovereign-direct-row"));
+
+    let android_layout =
+        include_str!("../../../android/app/src/main/res/layout/activity_settings.xml");
+    let android_strings = include_str!("../../../android/app/src/main/res/values/strings.xml");
+    for field in [
+        "set_mode_standard",
+        "set_mode_private",
+        "set_mode_sovereign",
+        "set_provider_directory",
+        "set_provider_roots",
+        "set_rendezvous",
+        "set_tor_proxy",
+    ] {
+        assert!(android_layout.contains(&format!("@+id/{field}")));
+    }
+    for status in ["Connected", "Fallback ready", "Waiting for a route"] {
+        assert!(android_strings.contains(status));
+    }
+    assert!(android_strings.contains("does not claim non-collusion"));
+
+    let ios_settings = include_str!("../../../ios/KommsApp/Sources/SettingsView.swift");
+    let ios_status = include_str!("../../../ios/KommsApp/Sources/MainView.swift");
+    for mode in ["mode_standard", "mode_private", "mode_sovereign"] {
+        assert!(ios_settings.contains(mode));
+    }
+    for status in [
+        "connection_connected",
+        "connection_fallback_ready",
+        "connection_waiting",
+    ] {
+        assert!(ios_status.contains(status));
+    }
+    assert!(ios_settings.contains("set_mode_private_disclosure"));
 }
 
 #[test]
@@ -338,8 +561,13 @@ fn desktop_share_dialog_surfaces_generation_errors_and_scopes_its_listener() {
     let html = include_str!("../../ui/index.html");
     let frontend = include_str!("../../ui/main.js");
     assert!(html.contains("data-f=\"share-status\" role=\"status\""));
-    assert!(frontend.contains("Could not prepare sharing details"));
-    assert!(frontend.contains("Promise.all([invoke(\"my_bundle\"), invoke(\"address_qr\")]"));
+    assert!(frontend.contains("l10n(\"share_unavailable\")"));
+    assert!(frontend.contains("[bundle, addrSvg, nodeStatus] = await Promise.all(["));
+    assert!(frontend.contains("invoke(\"my_bundle\")"));
+    assert!(frontend.contains("invoke(\"address_qr\")"));
+    assert!(frontend.contains("invoke(\"status\")"));
+    assert!(frontend.contains("nodeStatus.connect_code"));
+    assert!(frontend.contains("nodeStatus.address"));
     assert!(frontend.contains("view.addEventListener(\"click\""));
 }
 
@@ -641,15 +869,21 @@ fn desktop_incognito_keyboard_covers_every_editable_text_field_before_unlock() {
     let editable_text_fields = html.matches("type=\"text\"").count()
         + html.matches("type=\"password\"").count()
         + html.matches("<textarea").count()
+        - html.matches("type=\"text\" readonly").count()
         - html
             .matches("<textarea class=\"share-hex\" rows=\"4\" readonly")
             .count();
-    assert_eq!(36, editable_text_fields);
+    assert_eq!(51, editable_text_fields);
     assert_eq!(
         editable_text_fields,
         html.matches("data-incognito-input=").count()
     );
     assert!(html.contains("type=\"password\" id=\"gate-mnemonic\""));
+    assert!(html
+        .contains("type=\"text\" id=\"gate-recovery-package\" data-incognito-input=\"technical\""));
+    assert!(html.contains(
+        "type=\"password\" id=\"gate-recovery-mnemonic\" data-incognito-input=\"mnemonic\""
+    ));
     for attribute in [
         "autocomplete",
         "autocorrect",
@@ -1100,7 +1334,11 @@ fn desktop_attachment_ux_pairwise_and_group_lifecycle() {
     let alice_bundle = alice.my_bundle().unwrap();
     let bob_bundle = bob.my_bundle().unwrap();
     let bob_peer = alice
-        .add_contact("Bob".to_owned(), &bob_bundle.hex, &multiaddr_hint(bob_addr))
+        .add_contact(
+            "Bob".to_owned(),
+            &bob_bundle.hex,
+            &multiaddr_hint(bob_addr.clone()),
+        )
         .unwrap();
     let alice_peer = bob
         .add_contact(
@@ -1122,6 +1360,20 @@ fn desktop_attachment_ux_pairwise_and_group_lifecycle() {
         "attachment setup delivered",
         |event| matches!(event, UiEvent::DeliveryUpdated { id, state: "delivered" } if *id == hello),
     );
+    let capability_reply = bob
+        .send(
+            alice_peer.clone(),
+            "attachment capability confirmation".to_owned(),
+        )
+        .unwrap();
+    a_ev.wait("attachment capability confirmation", |event| {
+        matches!(event, UiEvent::MessageReceived { body, .. }
+            if body == "attachment capability confirmation")
+    });
+    b_ev.wait("attachment capability confirmation delivered", |event| {
+        matches!(event, UiEvent::DeliveryUpdated { id, state: "delivered" }
+            if id == &capability_reply)
+    });
 
     // The path chosen by the desktop dialog stays a path across the shell
     // boundary. The render model carries only honest object metadata and
@@ -1386,10 +1638,9 @@ fn desktop_attachment_ux_pairwise_and_group_lifecycle() {
     let group = alice
         .create_group("Attachment crew".to_owned(), vec![outbound[0].peer.clone()])
         .unwrap();
-    b_ev.wait(
-        "group invite",
-        |event| matches!(event, UiEvent::GroupUpdated { group: id } if *id == group),
-    );
+    accept_group_invitation(&bob, &b_ev, &group, "group invite");
+    complete_group_security(&alice, &group);
+    complete_group_security(&bob, &group);
     let group_review = alice
         .begin_image_edit(source.display().to_string())
         .unwrap();
@@ -1465,10 +1716,7 @@ fn desktop_group_mentions_preserve_exact_utf8_spans_and_notify_only_the_target()
     let group = alice
         .create_group("Unicode crew".to_owned(), vec![bob_peer.clone()])
         .unwrap();
-    b_ev.wait(
-        "mention group invite",
-        |event| matches!(event, UiEvent::GroupUpdated { group: updated } if updated == &group),
-    );
+    accept_group_invitation(&bob, &b_ev, &group, "mention group invite");
 
     let handshake = alice
         .send(bob_peer.clone(), "mention capability handshake".to_owned())
@@ -1481,6 +1729,7 @@ fn desktop_group_mentions_preserve_exact_utf8_spans_and_notify_only_the_target()
         matches!(event, UiEvent::DeliveryUpdated { id, state: "delivered" }
             if id == &handshake)
     });
+    complete_group_security(&alice, &group);
 
     let deadline = Instant::now() + Duration::from_secs(5);
     let capability = loop {
@@ -1576,27 +1825,21 @@ fn desktop_group_ux_create_roster_message_and_partial_delivery() {
     let dir = tempfile::tempdir().unwrap();
     let a_ev = Events::default();
     let b_ev = Events::default();
-    // The embedded FFI runtime admits two live nodes per process. Capture a
-    // real third identity first, then keep Carol offline so delivery can be
-    // proven independently per member.
-    let carol = open(dir.path(), "group-carol", &Events::default());
-    let carol_bundle = carol.my_bundle().unwrap();
-    carol.stop();
+    let c_ev = Events::default();
+    // Keep the full three-member roster online through the recipient-origin
+    // exchange, then stop Carol to verify independent delivery state.
     let alice = open(dir.path(), "group-alice", &a_ev);
-    let bob = open(dir.path(), "group-bob", &b_ev);
-
     let alice_addr = listen_addr(&alice);
+
+    let bob = open(dir.path(), "group-bob", &b_ev);
     let bob_addr = listen_addr(&bob);
     let alice_bundle = alice.my_bundle().unwrap();
     let bob_bundle = bob.my_bundle().unwrap();
     let bob_peer = alice
-        .add_contact("Bob".to_owned(), &bob_bundle.hex, &multiaddr_hint(bob_addr))
-        .unwrap();
-    let carol_peer = alice
         .add_contact(
-            "Carol".to_owned(),
-            &carol_bundle.hex,
-            &multiaddr_hint("/ip4/127.0.0.1/udp/9/quic-v1".to_owned()),
+            "Bob".to_owned(),
+            &bob_bundle.hex,
+            &multiaddr_hint(bob_addr.clone()),
         )
         .unwrap();
     let alice_at_bob = bob
@@ -1606,25 +1849,115 @@ fn desktop_group_ux_create_roster_message_and_partial_delivery() {
             &multiaddr_hint(alice_addr.clone()),
         )
         .unwrap();
-    // The new-group dialog starts with one selected stored contact; the
-    // creator then adds another from the members screen.
-    let group = alice
-        .create_group("Trail crew".to_owned(), vec![bob_peer.clone()])
+    let bob_handshake = alice
+        .send(bob_peer.clone(), "group origin setup for Bob".to_owned())
         .unwrap();
-    b_ev.wait(
-        "Bob's group invite",
-        |event| matches!(event, UiEvent::GroupUpdated { group: id } if *id == group),
+    b_ev.wait("Bob's capability handshake", |event| {
+        matches!(event, UiEvent::MessageReceived { body, .. }
+            if body == "group origin setup for Bob")
+    });
+    a_ev.wait("Bob's capability receipt", |event| {
+        matches!(event, UiEvent::DeliveryUpdated { id, state: "delivered" }
+            if id == &bob_handshake)
+    });
+    let carol = open(dir.path(), "group-carol", &c_ev);
+    let carol_addr = listen_addr(&carol);
+    let alice_bundle = alice.my_bundle().unwrap();
+    let carol_bundle = carol.my_bundle().unwrap();
+    let carol_peer = alice
+        .add_contact(
+            "Carol".to_owned(),
+            &carol_bundle.hex,
+            &multiaddr_hint(carol_addr.clone()),
+        )
+        .unwrap();
+    let alice_at_carol = carol
+        .add_contact(
+            "Alice".to_owned(),
+            &alice_bundle.hex,
+            &multiaddr_hint(alice_addr.clone()),
+        )
+        .unwrap();
+    assert_eq!(alice_at_carol, alice_at_bob);
+    let carol_handshake = alice
+        .send(
+            carol_peer.clone(),
+            "group origin setup for Carol".to_owned(),
+        )
+        .unwrap();
+    c_ev.wait("Carol's capability handshake", |event| {
+        matches!(event, UiEvent::MessageReceived { body, .. }
+            if body == "group origin setup for Carol")
+    });
+    a_ev.wait("Carol's capability receipt", |event| {
+        matches!(event, UiEvent::DeliveryUpdated { id, state: "delivered" }
+            if id == &carol_handshake)
+    });
+    let bob_bundle = bob.my_bundle().unwrap();
+    let carol_bundle = carol.my_bundle().unwrap();
+    let carol_at_bob = bob
+        .add_contact(
+            "Carol".to_owned(),
+            &carol_bundle.hex,
+            &multiaddr_hint(carol_addr),
+        )
+        .unwrap();
+    let bob_at_carol = carol
+        .add_contact("Bob".to_owned(), &bob_bundle.hex, &multiaddr_hint(bob_addr))
+        .unwrap();
+    assert_eq!(carol_at_bob, carol_peer);
+    assert_eq!(bob_at_carol, bob_peer);
+    let member_mesh_handshake = bob
+        .send(
+            carol_at_bob,
+            "Bob and Carol establish the group mesh".to_owned(),
+        )
+        .unwrap();
+    c_ev.wait("Bob and Carol's capability handshake", |event| {
+        matches!(event, UiEvent::MessageReceived { body, .. }
+            if body == "Bob and Carol establish the group mesh")
+    });
+    b_ev.wait("Bob and Carol's capability receipt", |event| {
+        matches!(event, UiEvent::DeliveryUpdated { id, state: "delivered" }
+            if id == &member_mesh_handshake)
+    });
+    let group = alice
+        .create_group(
+            "Trail crew".to_owned(),
+            vec![bob_peer.clone(), carol_peer.clone()],
+        )
+        .unwrap();
+    accept_group_invitation(&carol, &c_ev, &group, "Carol's group invite");
+    accept_group_invitation(&bob, &b_ev, &group, "Bob's group invite");
+    alice.upgrade_group_security(group.clone()).unwrap();
+    let bob_origin_nudge = bob
+        .send(
+            alice_at_bob.clone(),
+            "Bob confirms the group upgrade".to_owned(),
+        )
+        .unwrap();
+    let carol_origin_nudge = carol
+        .send(
+            alice_at_carol,
+            "Carol confirms the group upgrade".to_owned(),
+        )
+        .unwrap();
+    a_ev.wait(
+        "Bob's group-upgrade nudge",
+        |event| matches!(event, UiEvent::MessageReceived { id, .. } if id == &bob_origin_nudge),
+    );
+    a_ev.wait(
+        "Carol's group-upgrade nudge",
+        |event| matches!(event, UiEvent::MessageReceived { id, .. } if id == &carol_origin_nudge),
     );
     let listed = alice.groups().unwrap();
     assert_eq!(listed.len(), 1);
     assert_eq!(listed[0].name, "Trail crew");
-    assert_eq!(listed[0].members.len(), 2);
-
-    alice
-        .add_group_member(group.clone(), carol_peer.clone())
-        .unwrap();
-    let listed = alice.groups().unwrap();
     assert_eq!(listed[0].members.len(), 3);
+    complete_group_security(&alice, &group);
+    complete_group_security(&bob, &group);
+    complete_group_security(&carol, &group);
+    carol.stop();
 
     // Only the creator gets roster controls; the shell surfaces the core's
     // explicit error to a non-creator instead of pretending it succeeded.
@@ -1682,7 +2015,8 @@ fn desktop_group_ux_create_roster_message_and_partial_delivery() {
         .remove_group_member(group.clone(), carol_peer)
         .unwrap();
     assert_eq!(alice.groups().unwrap()[0].members.len(), 2);
-    std::thread::sleep(Duration::from_millis(300));
+    complete_group_security(&alice, &group);
+    complete_group_security(&bob, &group);
 
     // Polls use the same authenticated encrypted group path, but render as
     // dedicated visible-vote cards rather than misleading chat bubbles.
@@ -1762,6 +2096,8 @@ fn desktop_group_ux_create_roster_message_and_partial_delivery() {
     assert_eq!(upgraded.owner, alice_at_bob);
     assert_eq!(upgraded.my_role, Some("member"));
     assert_eq!(upgraded.members.len(), 2);
+    complete_group_security(&alice, &group);
+    complete_group_security(&bob, &group);
 
     alice
         .set_group_role(group.clone(), bob_peer.clone(), "admin".to_owned())
@@ -1771,6 +2107,8 @@ fn desktop_group_ux_create_roster_message_and_partial_delivery() {
         wait_authority_generation(&bob, &group, admin_generation).my_role,
         Some("admin")
     );
+    complete_group_security(&alice, &group);
+    complete_group_security(&bob, &group);
     let err = bob
         .set_group_role(group.clone(), alice_at_bob.clone(), "member".to_owned())
         .unwrap_err();
@@ -1807,6 +2145,8 @@ fn desktop_group_ux_create_roster_message_and_partial_delivery() {
         );
         std::thread::sleep(Duration::from_millis(50));
     }
+    complete_group_security(&alice, &group);
+    complete_group_security(&bob, &group);
 
     let moderated_poll = alice
         .create_group_poll(
@@ -1835,6 +2175,8 @@ fn desktop_group_ux_create_roster_message_and_partial_delivery() {
     let moderated = wait_closed_poll(&bob, &group, &moderated_poll);
     assert_eq!(moderated.moderated_by, Some(alice_at_bob.clone()));
     assert_eq!(moderated.close_policy, "signed_owner_snapshot");
+    complete_group_security(&alice, &group);
+    complete_group_security(&bob, &group);
 
     alice
         .transfer_group_owner(group.clone(), bob_peer.clone())
@@ -1844,6 +2186,8 @@ fn desktop_group_ux_create_roster_message_and_partial_delivery() {
     assert_eq!(bob_owner.owner, bob_peer);
     assert_eq!(bob_owner.owner_epoch, 1);
     assert_eq!(bob_owner.my_role, Some("owner"));
+    complete_group_security(&alice, &group);
+    complete_group_security(&bob, &group);
     let err = bob.leave_group(group.clone()).unwrap_err();
     assert!(err.contains("owner"), "got: {err}");
 
@@ -1853,10 +2197,14 @@ fn desktop_group_ux_create_roster_message_and_partial_delivery() {
     let alice_owner = wait_authority_generation(&alice, &group, alice_owner_generation);
     assert_eq!(alice_owner.owner, alice_at_bob);
     assert_eq!(alice_owner.owner_epoch, 2);
+    complete_group_security(&alice, &group);
+    complete_group_security(&bob, &group);
     alice
         .set_group_role(group.clone(), bob_peer.clone(), "member".to_owned())
         .unwrap();
     wait_authority_generation(&bob, &group, alice_owner_generation + 1);
+    complete_group_security(&alice, &group);
+    complete_group_security(&bob, &group);
 
     // A member can leave; their live group disappears locally and the
     // creator converges too.
@@ -1976,12 +2324,36 @@ fn note_to_self_is_local_sealed_and_durable() {
 }
 
 #[test]
+fn legacy_backup_reset_preparation_exposes_fresh_reviewed_authority() {
+    let directory = tempfile::tempdir().unwrap();
+    let authority = directory
+        .path()
+        .join("legacy-archive-authority.kra")
+        .display()
+        .to_string();
+    let prepared = Session::prepare_legacy_backup_authority_reset(authority.clone()).unwrap();
+    assert!(std::path::Path::new(&authority).is_file());
+    assert!(!prepared.new_address.is_empty());
+    assert_eq!(prepared.recovery_mnemonic.split_whitespace().count(), 24);
+    assert!(Session::prepare_legacy_backup_authority_reset(authority).is_err());
+}
+
+#[test]
 fn backup_mnemonic_restore_flow() {
     let dir = tempfile::tempdir().unwrap();
     let a_ev = Events::default();
     let b_ev = Events::default();
     let alice = open(dir.path(), "alice", &a_ev);
     let bob = open(dir.path(), "bob", &b_ev);
+    let recovery = dir
+        .path()
+        .join("komms-account-authority.kra")
+        .display()
+        .to_string();
+    let recovery_mnemonic = alice
+        .export_account_recovery_authority(recovery.clone())
+        .unwrap();
+    assert_eq!(recovery_mnemonic.split_whitespace().count(), 24);
 
     let a_addr = listen_addr(&alice);
     let b_addr = listen_addr(&bob);
@@ -2026,6 +2398,8 @@ fn backup_mnemonic_restore_flow() {
         "new-pass".to_owned(),
         backup.clone(),
         "abandon ".repeat(23) + "art",
+        recovery.clone(),
+        recovery_mnemonic.clone(),
         &test_settings(),
         KdfChoice::Mobile,
         Events::default().sink(),
@@ -2039,6 +2413,8 @@ fn backup_mnemonic_restore_flow() {
         "new-pass".to_owned(),
         backup,
         mnemonic,
+        recovery,
+        recovery_mnemonic,
         &test_settings(),
         KdfChoice::Mobile,
         a_ev.sink(),

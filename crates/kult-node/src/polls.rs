@@ -10,7 +10,8 @@ use kult_protocol::{
     decode_content, decode_group_authority, encode_poll, encode_poll_close_payload,
     encode_poll_create_payload, encode_poll_moderated_close_payload, encode_poll_vote_payload,
     poll_moderation_signing_bytes, DecodedContent, DecodedGroupAuthority, GroupAdminAction,
-    GroupRole, Poll, PollOption, PollVote, PollVoteHead, CONTENT_KIND_POLL, MAX_POLL_OPTIONS,
+    GroupRole, Poll, PollOption, PollVote, PollVoteHead, CONTENT_KIND_POLL,
+    GROUP_AUTHORITY_VERSION, LEGACY_GROUP_AUTHORITY_VERSION, MAX_POLL_OPTIONS,
 };
 use kult_store::GroupMessageRecord;
 
@@ -41,7 +42,7 @@ impl Node {
             .ok_or(NodeError::UnknownGroup)?;
         Ok(resolve_polls(
             *group,
-            self.identity.public().ed,
+            self.account.ed,
             self.store.group_messages(group)?,
         ))
     }
@@ -59,7 +60,7 @@ impl Node {
             .store
             .get_group(group)?
             .ok_or(NodeError::UnknownGroup)?;
-        let me = self.identity.public().ed;
+        let me = self.account.ed;
         if !rec.members.iter().any(|member| member.peer == me)
             || !(2..=MAX_POLL_OPTIONS).contains(&option_texts.len())
         {
@@ -126,7 +127,7 @@ impl Node {
                 .map(|member| member.peer)
                 .collect::<Vec<_>>(),
         )?;
-        let me = self.identity.public().ed;
+        let me = self.account.ed;
         let poll = self
             .group_polls(group)?
             .into_iter()
@@ -198,7 +199,7 @@ impl Node {
                 .map(|member| member.peer)
                 .collect::<Vec<_>>(),
         )?;
-        let me = self.identity.public().ed;
+        let me = self.account.ed;
         if me != poll_author {
             return Err(NodeError::NotPollCreator);
         }
@@ -242,7 +243,7 @@ impl Node {
     ) -> Result<[u8; 16]> {
         self.ensure_signed_authority(group, now, rng)?;
         let authority = self.group_authority(group)?;
-        let me = self.identity.public().ed;
+        let me = self.account.ed;
         match authority.my_role {
             Some(GroupRole::Admin) => {
                 return self.queue_admin_action(
@@ -296,7 +297,7 @@ impl Node {
         let signing =
             poll_moderation_signing_bytes(*group, poll_author, poll_id, generation, &heads)
                 .map_err(|_| NodeError::InvalidPoll)?;
-        let signature = self.identity.sign_group_poll_moderation(&signing);
+        let signature = self.device_identity.sign_group_poll_moderation(&signing);
         let payload = encode_poll_moderated_close_payload(
             *group,
             poll_author,
@@ -307,11 +308,11 @@ impl Node {
         )
         .map_err(|_| NodeError::InvalidPoll)?;
         let wire = encode_poll(id, &payload).map_err(|_| NodeError::InvalidPoll)?;
-        self.group_send_content_with_id(group, wire, id, now, now, rng)
+        self.group_send_moderated_content_with_id(group, wire, id, now, now, rng)
     }
 
     fn ensure_group_poll_support(&self, members: &[[u8; 32]]) -> Result<()> {
-        let me = self.identity.public().ed;
+        let me = self.account.ed;
         for peer in members.iter().filter(|peer| **peer != me) {
             if !self.peer_supports_kind(peer, CONTENT_KIND_POLL)? {
                 return Err(NodeError::PollUnsupported);
@@ -340,8 +341,11 @@ fn resolve_polls(
     local_peer: [u8; 32],
     records: Vec<GroupMessageRecord>,
 ) -> Vec<PollInfo> {
-    let mut authority_owners = HashMap::<u64, ([u8; 16], [u8; 32])>::new();
+    let mut authority_owners = HashMap::<u64, ([u8; 16], [u8; 32], [u8; 32], u8)>::new();
     for record in &records {
+        if !record.origin.is_recipient_authenticated() {
+            continue;
+        }
         let DecodedContent::GroupAuthority { id, payload } = decode_content(&record.body) else {
             continue;
         };
@@ -356,15 +360,18 @@ fn resolve_polls(
                 .entry(state.generation)
                 .and_modify(|winner| {
                     if id < winner.0 {
-                        *winner = (id, state.owner);
+                        *winner = (id, state.owner, state.signer_device, state.version);
                     }
                 })
-                .or_insert((id, state.owner));
+                .or_insert((id, state.owner, state.signer_device, state.version));
         }
     }
     let mut polls = Vec::<WorkingPoll>::new();
     let mut indexes = HashMap::<([u8; 32], [u8; 16]), usize>::new();
     for record in &records {
+        if !record.origin.is_recipient_authenticated() {
+            continue;
+        }
         let DecodedContent::Poll {
             id,
             poll: Poll::Create(create),
@@ -394,6 +401,9 @@ fn resolve_polls(
     }
 
     for record in &records {
+        if !record.origin.is_recipient_authenticated() {
+            continue;
+        }
         let DecodedContent::Poll { id, poll } = decode_content(&record.body) else {
             continue;
         };
@@ -456,14 +466,19 @@ fn resolve_polls(
                 }
             }
             Poll::ModeratedClose(close) => {
-                if close.group != group
-                    || authority_owners
-                        .get(&close.authority_generation)
-                        .map(|(_, owner)| *owner)
-                        != Some(record.sender)
-                {
+                let Some((_, owner, signer_device, version)) =
+                    authority_owners.get(&close.authority_generation)
+                else {
+                    continue;
+                };
+                if close.group != group || *owner != record.sender {
                     continue;
                 }
+                let verification_key = match *version {
+                    GROUP_AUTHORITY_VERSION if *signer_device != [0; 32] => signer_device,
+                    LEGACY_GROUP_AUTHORITY_VERSION => &record.sender,
+                    _ => continue,
+                };
                 let signed_heads = close.heads().collect::<Vec<_>>();
                 let Ok(signing) = poll_moderation_signing_bytes(
                     close.group,
@@ -475,7 +490,7 @@ fn resolve_polls(
                     continue;
                 };
                 if verify_group_poll_moderation_signature(
-                    &record.sender,
+                    verification_key,
                     &signing,
                     &close.signature,
                 )
@@ -583,6 +598,11 @@ mod tests {
             body: encode_poll(id, &payload).unwrap(),
             deliveries: Vec::<GroupDelivery>::new(),
             wire_body: None,
+            origin: kult_store::GroupOriginAuthentication::RecipientV1 {
+                sender_device: sender,
+                recipient_device: [0x80; 32],
+                chain_key_id: [0x90; 16],
+            },
         }
     }
 

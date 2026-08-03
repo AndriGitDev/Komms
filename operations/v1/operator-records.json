@@ -1,0 +1,51 @@
+{
+  "schema": "komms-operator-record-set/v1",
+  "as_of": "2026-07-31",
+  "qualification_status": "no-qualified-external-operators",
+  "records": [
+    {
+      "slot": "external-operator-a",
+      "status": "unassigned",
+      "operator_name": null,
+      "administrative_domain": null,
+      "hosting_provider": null,
+      "source_revision": null,
+      "image_digests": [],
+      "enabled_roles": [],
+      "service_key_fingerprints": [],
+      "capacity_observations": [],
+      "upgrade_rollback_runs": [],
+      "abuse_incident_runs": [],
+      "conformance_results": [],
+      "independence_attestation": null,
+      "qualified": false
+    },
+    {
+      "slot": "external-operator-b",
+      "status": "unassigned",
+      "operator_name": null,
+      "administrative_domain": null,
+      "hosting_provider": null,
+      "source_revision": null,
+      "image_digests": [],
+      "enabled_roles": [],
+      "service_key_fingerprints": [],
+      "capacity_observations": [],
+      "upgrade_rollback_runs": [],
+      "abuse_incident_runs": [],
+      "conformance_results": [],
+      "independence_attestation": null,
+      "qualified": false
+    }
+  ],
+  "minimum_external_completion": {
+    "required_records": 2,
+    "distinct_operator_names": true,
+    "distinct_administrative_domains": true,
+    "revision_bound_artifacts": true,
+    "independent_conformance_execution": true,
+    "observed_capacity_and_cost": true,
+    "upgrade_and_rollback_exercised": true,
+    "abuse_and_incident_path_exercised": true
+  }
+}

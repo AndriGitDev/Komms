@@ -1,0 +1,240 @@
+{
+  "fixtures": [
+    {
+      "case": "content-text-v1",
+      "path": "fixtures/valid/content-text-v1.bin",
+      "pointer": "/expected/result/encoded_hex"
+    },
+    {
+      "case": "content-v1-canonical-suite",
+      "path": "fixtures/valid/content-attachment-v1.bin",
+      "pointer": "/expected/result/attachment_hex"
+    },
+    {
+      "case": "content-v1-canonical-suite",
+      "path": "fixtures/valid/content-mention-v1.bin",
+      "pointer": "/expected/result/mention_hex"
+    },
+    {
+      "case": "content-v1-canonical-suite",
+      "path": "fixtures/valid/content-edit-v1.bin",
+      "pointer": "/expected/result/edit_hex"
+    },
+    {
+      "case": "content-v1-canonical-suite",
+      "path": "fixtures/valid/content-ephemeral-v1.bin",
+      "pointer": "/expected/result/ephemeral_hex"
+    },
+    {
+      "case": "content-v1-canonical-suite",
+      "path": "fixtures/valid/content-poll-create-v1.bin",
+      "pointer": "/expected/result/poll_create_hex"
+    },
+    {
+      "case": "content-v1-canonical-suite",
+      "path": "fixtures/valid/content-poll-vote-v1.bin",
+      "pointer": "/expected/result/poll_vote_hex"
+    },
+    {
+      "case": "content-v1-canonical-suite",
+      "path": "fixtures/valid/content-call-offer-v1.bin",
+      "pointer": "/expected/result/call_offer_hex"
+    },
+    {
+      "case": "envelope-v1-message",
+      "path": "fixtures/compat/envelope-v1.bin",
+      "pointer": "/arguments/encoded_hex"
+    },
+    {
+      "case": "envelope-v2-retained",
+      "path": "fixtures/valid/envelope-v2.bin",
+      "pointer": "/arguments/encoded_hex"
+    },
+    {
+      "case": "offline-recovery-authority-kra1",
+      "path": "fixtures/valid/recovery-authority-kra1.bin",
+      "pointer": "/expected/result/package_hex"
+    },
+    {
+      "case": "root-free-backup-kkr10",
+      "path": "fixtures/valid/root-free-backup-kkr10.bin",
+      "pointer": "/expected/result/backup_hex"
+    },
+    {
+      "case": "device-authority-link-recover-kda2",
+      "path": "fixtures/valid/device-authority-genesis-kda2.bin",
+      "pointer": "/expected/result/genesis_hex"
+    },
+    {
+      "case": "device-authority-link-recover-kda2",
+      "path": "fixtures/valid/device-authority-linked-kda2.bin",
+      "pointer": "/expected/result/linked_hex"
+    },
+    {
+      "case": "device-authority-link-recover-kda2",
+      "path": "fixtures/valid/device-authority-recovered-kda2.bin",
+      "pointer": "/expected/result/recovered_hex"
+    },
+    {
+      "case": "pqxdh-double-ratchet-trace-v1",
+      "path": "fixtures/valid/prekey-bundle-v2.bin",
+      "pointer": "/expected/result/bundle_hex"
+    },
+    {
+      "case": "pqxdh-double-ratchet-trace-v1",
+      "path": "fixtures/valid/pqxdh-initial-message-v2.bin",
+      "pointer": "/expected/result/initial_message_hex"
+    },
+    {
+      "case": "group-origin-shared-ciphertext-trace-v2",
+      "path": "fixtures/valid/group-origin-wrapper-v2.bin",
+      "pointer": "/expected/result/wrapper_hex"
+    },
+    {
+      "case": "group-authority-device-bound-v2",
+      "path": "fixtures/valid/group-authority-v2.bin",
+      "pointer": "/expected/result/payload_hex"
+    },
+    {
+      "case": "first-contact-descriptor-and-wrapper-v1",
+      "path": "fixtures/valid/admission-public-prekey-bundle-v1.bin",
+      "pointer": "/expected/result/public_bundle_hex"
+    },
+    {
+      "case": "first-contact-descriptor-and-wrapper-v1",
+      "path": "fixtures/valid/admission-invitation-kfa1.bin",
+      "pointer": "/expected/result/invitation_envelope_hex"
+    },
+    {
+      "case": "first-contact-descriptor-and-wrapper-v1",
+      "path": "fixtures/valid/admission-puzzle-kfa1.bin",
+      "pointer": "/expected/result/puzzle_envelope_hex"
+    },
+    {
+      "case": "rendezvous-fixed-record-v1",
+      "path": "fixtures/valid/rendezvous-record-v1.bin",
+      "pointer": "/expected/result/sealed_hex"
+    },
+    {
+      "case": "discovery-fixed-record-v2",
+      "path": "fixtures/valid/discovery-record-v2.bin",
+      "pointer": "/expected/result/record_hex"
+    },
+    {
+      "case": "mailbox-v2-canonical-cbor",
+      "path": "fixtures/valid/mailbox-v2-deposit.cbor",
+      "pointer": "/expected/result/deposit_request_hex"
+    },
+    {
+      "case": "mailbox-v2-canonical-cbor",
+      "path": "fixtures/valid/mailbox-v2-lease-page.cbor",
+      "pointer": "/expected/result/lease_page_response_hex"
+    },
+    {
+      "case": "mailbox-v2-canonical-cbor",
+      "path": "fixtures/valid/mailbox-v2-lease-miss.cbor",
+      "pointer": "/expected/result/lease_miss_response_hex"
+    },
+    {
+      "case": "wake-fixed-capability-and-bodies-v1",
+      "path": "fixtures/valid/wake-capability-v1.bin",
+      "pointer": "/expected/result/capability_hex"
+    },
+    {
+      "case": "wake-fixed-capability-and-bodies-v1",
+      "path": "fixtures/valid/wake-register-request-v1.bin",
+      "pointer": "/expected/result/register_request_hex"
+    },
+    {
+      "case": "wake-fixed-capability-and-bodies-v1",
+      "path": "fixtures/valid/wake-trigger-request-v1.bin",
+      "pointer": "/expected/result/trigger_request_hex"
+    },
+    {
+      "case": "wake-fixed-capability-and-bodies-v1",
+      "path": "fixtures/valid/wake-capability-control-v1.bin",
+      "pointer": "/expected/result/capability_control_hex"
+    },
+    {
+      "case": "reject-truncated-content-magic",
+      "path": "fixtures/malformed/content-truncated-magic.bin",
+      "pointer": "/arguments/encoded_hex"
+    },
+    {
+      "case": "reject-content-length-mismatch",
+      "path": "fixtures/malformed/content-length-mismatch.bin",
+      "pointer": "/arguments/encoded_hex"
+    },
+    {
+      "case": "reject-noncanonical-retention",
+      "path": "fixtures/malformed/envelope-retention-noncanonical.bin",
+      "pointer": "/arguments/encoded_hex"
+    },
+    {
+      "case": "reject-tampered-device-authority",
+      "path": "fixtures/malformed/device-authority-tampered.bin",
+      "pointer": "/arguments/encoded_hex"
+    },
+    {
+      "case": "reject-truncated-mailbox-cbor",
+      "path": "fixtures/malformed/mailbox-v2-truncated.cbor",
+      "pointer": "/arguments/encoded_hex"
+    }
+  ],
+  "packets": [
+    {
+      "case": "pqxdh-double-ratchet-trace-v1",
+      "description": "Synthetic hybrid first flight; contains only published vector material.",
+      "name": "pqxdh-initial-message",
+      "pointer": "/expected/result/initial_message_hex"
+    },
+    {
+      "case": "pqxdh-double-ratchet-trace-v1",
+      "description": "Synthetic sender-chain message before a DH ratchet.",
+      "name": "double-ratchet-follow-up",
+      "pointer": "/expected/result/followup_messages_hex/0"
+    },
+    {
+      "case": "pqxdh-double-ratchet-trace-v1",
+      "description": "Synthetic responder message that advances the opposite DH ratchet.",
+      "name": "double-ratchet-reply",
+      "pointer": "/expected/result/bob_reply_message_hex"
+    },
+    {
+      "case": "rendezvous-fixed-record-v1",
+      "description": "Synthetic fixed-shape encrypted rendezvous record.",
+      "name": "rendezvous-record",
+      "pointer": "/expected/result/sealed_hex"
+    },
+    {
+      "case": "mailbox-v2-canonical-cbor",
+      "description": "Synthetic canonical mailbox-v2 durable-deposit request.",
+      "name": "mailbox-v2-deposit",
+      "pointer": "/expected/result/deposit_request_hex"
+    },
+    {
+      "case": "discovery-fixed-record-v2",
+      "description": "Synthetic exact-size encrypted capability-scoped DHT record.",
+      "name": "discovery-record-v2",
+      "pointer": "/expected/result/record_hex"
+    },
+    {
+      "case": "group-origin-shared-ciphertext-trace-v2",
+      "description": "Synthetic recipient-authenticated wrapper around one shared sender-key ciphertext.",
+      "name": "group-origin-wrapper",
+      "pointer": "/expected/result/wrapper_hex"
+    },
+    {
+      "case": "first-contact-descriptor-and-wrapper-v1",
+      "description": "Synthetic bounded first-contact invitation wrapper with a public descriptor-bound bundle.",
+      "name": "first-contact-admission",
+      "pointer": "/expected/result/invitation_envelope_hex"
+    },
+    {
+      "case": "wake-fixed-capability-and-bodies-v1",
+      "description": "Synthetic fixed-shape opaque native-wake trigger.",
+      "name": "native-wake-trigger",
+      "pointer": "/expected/result/trigger_request_hex"
+    }
+  ]
+}

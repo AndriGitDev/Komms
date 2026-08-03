@@ -155,6 +155,6 @@ private class NoteMessagesAdapter : RecyclerView.Adapter<NoteMessagesAdapter.Hol
         val time = DateFormat.getTimeInstance(DateFormat.SHORT)
             .format(Date(message.timestamp.toLong() * 1000))
         holder.itemView.findViewById<TextView>(R.id.message_meta).text =
-            "$time · ${context.getString(R.string.note_local_only)}"
+            context.getString(R.string.note_time_local_only, time)
     }
 }

@@ -45,10 +45,10 @@ session and advertised support.
 Content format v1 kind `0x0005` contains a random content id, mode, exact UTC
 `expires_at`, canonical coarse `retention_until`, and either UTF-8 text or an
 attachment manifest. `retention_until` is the one-hour ceiling of `expires_at`.
-Both values are inside Double Ratchet authenticated plaintext or sender-key
-membership-authenticated plaintext. The latter excludes outsiders but does not
-prove an individual group origin against another member; ADR-0029 is required
-for that stronger property.
+Both values are inside Double Ratchet authenticated plaintext or the shared
+sender-key ciphertext. Current group recipients additionally verify the
+ADR-0029 account/device/recipient origin tag before chain advance and lifecycle
+creation. Released legacy rows retain their membership-authenticated marker.
 
 Envelope v2 adds the same hour-aligned `retention_until` in cleartext. Mailboxes,
 bridges, queues, and fragments treat it only as a bounded deletion hint: they
@@ -74,12 +74,14 @@ terminal `expired` or `consumed` tombstone. Duplicate, delayed, reordered, and
 expiry-before-original delivery therefore cannot resurrect plaintext after a
 restart.
 
-`KKR7` is the current backup format. It preserves KKR5's exclusion of active ephemeral history,
+`KKR10` is the current backup format and root-free `KKR8`/`KKR9` remain
+directly restorable. All preserve KKR5's exclusion of active ephemeral history,
 attachment manifests, and media, while including terminal tombstones. Restore
 cannot move a live disappearing/view-once copy to another device and cannot
-revive a copy already removed on the source. `KKR1` through `KKR6` remain
-restorable. Ordinary history, edits, note-to-self, and private local metadata
-keep their previous backup behavior.
+revive a copy already removed on the source. Legacy `KKR1` through `KKR7`
+remain readable only through the fresh-identity archive reset, which carries
+no active ephemeral content. Ordinary history, edits, note-to-self, and private
+local metadata keep their documented archive behavior.
 
 C2 linked-device sync carries terminal expiry/consumption tombstones but never
 active ephemeral plaintext, manifests, or media. Every installation enforces
@@ -121,7 +123,8 @@ Automated acceptance covers bounded/malformed decoding and fuzzing; envelope
 hint mismatch; capability and anonymous-first-flight refusal; pairwise/group
 delivery; expiry before original; duplicate/reordered delivery; restart;
 tombstone non-resurrection; first-output and output-failure consumption;
-ordinary export refusal; KKR1–KKR7 restore; active-content exclusion and
+ordinary export refusal; current `KKR10` restore and legacy archive reset;
+active-content exclusion and
 tombstones; C2 tombstone convergence; relay,
 bridge, fragment, and queue deletion; strict RPC/CLI; UniFFI; shared parity
 fixtures; and desktop/Android/iOS source behavior.

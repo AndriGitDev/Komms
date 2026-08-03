@@ -159,9 +159,9 @@ Every future content event that refers to another event (edit, reply context,
 poll vote, attachment relation) carries
 `target_author(32) || target_content_id(16)` inside its own encrypted payload.
 Resolution is restricted to the same conversation and exact author. Including
-the author disambiguates independent honest authors, but current sender-key
-groups do not stop a malicious member from claiming that same author and id;
-ADR-0029 is required for that property. A reference never uses an envelope
+the author disambiguates independent honest authors; ADR-0029 now requires the
+group runtime to derive that author from the verified sender device and
+recipient-specific origin tag before resolution. A reference never uses an envelope
 `content_id`, ciphertext hash, store row id, timestamp, or plaintext hash.
 
 Legacy messages have local store ids but no interoperable content id and cannot

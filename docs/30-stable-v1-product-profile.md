@@ -27,6 +27,11 @@ public statement must use one of the claim identifiers below and must satisfy
 the corresponding entry in the
 [release evidence ledger](31-release-evidence-ledger.md).
 
+The language-neutral wire/state contract and compatibility rules are the
+[stable-v1 protocol and conformance kit](41-protocol-conformance.md). Freezing
+that candidate contract does not close the independent interoperability,
+external security review, distribution, operator, or field gates.
+
 ## 1. Installation and supported systems
 
 **Claims:** `SV1-C01`, `SV1-C11`
@@ -54,7 +59,13 @@ image is a separate Linux amd64/arm64 support profile and does not turn a client
 platform into a supported server platform.
 
 The current unsigned or debug-signed 0.3 packages remain Alpha artifacts and do
-not satisfy this section.
+not satisfy this section. The implemented validation, signing-role, evidence,
+reproduction-measurement, and qualification contracts are documented in
+[release security and recovery](39-release-security-and-recovery.md) and
+[release evidence bundles](40-release-evidence-bundles.md). The canonical
+[field matrix](43-field-qualification.md) names physical candidate cells and
+keeps simulator observations separate; its credential, physical,
+supported-system, real-network, and independent rows remain open.
 
 ## 2. Identity and contact establishment
 
@@ -83,8 +94,11 @@ The stable implementation must accept the authority, admission, and discovery
 decisions in [ADR-0026](adr/0026-revocable-device-authority.md),
 [ADR-0030](adr/0030-first-contact-admission.md), and
 [ADR-0031](adr/0031-capability-scoped-dht-discovery.md), or superseding ADRs
-that close the same threats. The current automatic-contact Alpha path is
-outside stable-v1.
+that close the same threats. All three are implemented for Alpha.
+Revision-bound CI retention, hostile-network multi-bootstrap evidence,
+independent adversarial/protocol review, and named physical-platform
+qualification remain open, so the combined reachability/consent claim is not
+yet stable-v1.
 
 ## 3. Pairwise text
 
@@ -129,10 +143,11 @@ uses the declared versioned content and atomic transition contract.
 - Joining a group is an explicit consent action. Receipt of an invitation does
   not expose membership, download media, or create mesh airtime.
 
-[ADR-0029](adr/0029-recipient-authenticated-groups.md), or a superseding
-recipient-verifiable origin design, is required before current sender-key
-groups enter stable-v1. Groups larger than 64 accounts and any future MLS
-profile are excluded.
+[ADR-0029](adr/0029-recipient-authenticated-groups.md) is the accepted Alpha
+implementation of this contract. Stable-v1 still requires revision-bound CI,
+independent protocol/security and interoperability evidence, and named
+physical-platform qualification. Groups larger than 64 accounts and any future
+MLS profile are excluded.
 
 ## 5. Bounded attachments
 
@@ -172,8 +187,10 @@ are not stable-v1 claims.
 
 **Claims:** `SV1-C08`
 
-- A user can export one encrypted, versioned backup and a newly generated
-  24-word recovery mnemonic. Restore refuses to overwrite an existing profile.
+- A user can export one root-free encrypted, versioned backup and its newly
+  generated 24-word backup mnemonic. First-run setup separately exports the
+  offline account-recovery authority and its own 24-word opening phrase.
+  Restore requires both pairs and refuses to overwrite an existing profile.
 - The stable backup carries the account identity, contacts, ordinary retained
   history, eligible local organization, group authority, and the accepted
   device-authority chain.
@@ -191,9 +208,14 @@ are not stable-v1 claims.
   old-backup, stolen-device, manifest-fork, recovery-conflict, and failed-restore
   evidence on supported platforms.
 
-Current `KKR7` round trips are Alpha implementation evidence. They are not the
-frozen stable backup format because the copied-root authority flaw in
-[ADR-0026](adr/0026-revocable-device-authority.md) remains open.
+Current root-free `KKR10` round trips, secret-exclusion checks, recovery epochs,
+fork/conflict cases, crash failpoints, cross-shell host tests, and Android/iOS
+simulator builds are Alpha implementation evidence for accepted
+[ADR-0026](adr/0026-revocable-device-authority.md). They do not freeze
+wire/state semantics beyond the
+[published candidate kit](41-protocol-conformance.md), or close
+physical-device, sudden-power-loss, independent-review, or
+independent-interoperability gates.
 
 ## 7. Blocking and deletion
 

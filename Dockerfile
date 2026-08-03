@@ -1,6 +1,8 @@
-# syntax=docker/dockerfile:1.7
+# syntax=docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e
 
-FROM rust:1.88-bookworm AS builder
+ARG RUST_IMAGE=rust:1.88-bookworm@sha256:af306cfa71d987911a781c37b59d7d67d934f49684058f96cf72079c3626bfe0
+ARG DEBIAN_IMAGE=debian:bookworm-slim@sha256:7b140f374b289a7c2befc338f42ebe6441b7ea838a042bbd5acbfca6ec875818
+FROM ${RUST_IMAGE} AS builder
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends libudev-dev pkg-config \
@@ -15,7 +17,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     && install -m 0755 target/release/kultd /tmp/kultd \
     && install -m 0755 target/release/kult /tmp/kult
 
-FROM debian:bookworm-slim AS runtime
+FROM ${DEBIAN_IMAGE} AS runtime
 
 ARG KOMMS_UID=10001
 ARG KOMMS_GID=10001

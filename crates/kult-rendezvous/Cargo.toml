@@ -1,0 +1,17 @@
+[package]
+name = "kult-rendezvous"
+description = "Least-authority fixed-shape in-memory Komms rendezvous service component"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+kult-crypto = { version = "0.3.0", path = "../kult-crypto" }
+kult-protocol = { version = "0.3.0", path = "../kult-protocol" }
+rand_core = { version = "0.6", features = ["getrandom"] }
+zeroize = "1"
+
+[dev-dependencies]
+rand = "0.8"

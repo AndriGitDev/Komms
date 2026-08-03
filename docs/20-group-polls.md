@@ -5,10 +5,11 @@ the poll travels only inside the sender-key group conversation; it does **not**
 mean an anonymous ballot. Every member who has the poll can see who voted and
 which choice their current vote selects.
 
-> **Alpha integrity limit:** the replicated poll state converges, but the current
-> shared sender-key construction cannot prove which member originated an event.
-> A malicious member can forge another member's apparent vote until
-> [ADR-0029](adr/0029-recipient-authenticated-groups.md) is implemented.
+> **Alpha assurance boundary:** current groups authenticate each voter and
+> creator separately to every recipient device under
+> [ADR-0029](adr/0029-recipient-authenticated-groups.md). This remains
+> recipient-deniable rather than publicly verifiable, and legacy group history
+> retains its membership-authenticated label.
 
 ## Product promise
 
@@ -24,7 +25,7 @@ which choice their current vote selects.
 - Duplicate, delayed, and reordered events converge without trusting clocks.
 - Poll events are encrypted and padded through the ordinary group path. Relays
   and transports do not learn the question, choices, voters, or tally.
-- Polls survive restart and encrypted `KKR7` backup/restore as ordinary sealed
+- Polls survive restart and encrypted `KKR10` backup/restore as ordinary sealed
   group history. They do not appear as chat-message bubbles.
 
 This is not a secret ballot, proof of universal participation, or proof that a
@@ -42,9 +43,9 @@ current owner's `Komms-group-poll-moderation-v1` signature, binding the group id
 poll author/id, generation, and heads. It is accepted only
 against a valid signed authority state. If conflicting valid closures arrive,
 the smallest close event ID wins. The tally is always derived locally from
-these group-AEAD-protected immutable events, never from a server or mutable
-counter. That protection excludes outsiders but does not authenticate the
-apparent voter against another malicious group member.
+these immutable events, never from a server or mutable counter. The unchanged
+shared group ciphertext excludes outsiders; its per-recipient origin wrapper
+authenticates the exact voter account/device before the event enters poll state.
 
 Limits are deliberately fixed: 1,024 UTF-8 bytes for the question, 2–12
 choices, 256 UTF-8 bytes per choice, 64 voters, and 64 locally authored vote
@@ -75,13 +76,17 @@ The local acceptance matrix covers canonical and arbitrary-input decoding,
 malformed lengths and bounds, duplicate/reordered/changed votes, outsiders,
 fixed electorates, removal/addition, conflicting closure, partitions,
 cross-node convergence, raw-send refusal, RPC/CLI/UniFFI parity, desktop and
-host-mobile bindings, signed owner moderation, exact KKR1–KKR7 restore, and C2
+host-mobile bindings, signed owner moderation, exact current `KKR10` restore,
+legacy archive omission of groups, and C2
 owned-device convergence. Android debug-APK assembly is automated; real-device
 poll interaction remains part of the platform release gate.
 
-This evidence establishes deterministic convergence, not resistance to
-member-forged origins. ADR-0029 and adversarial member-forgery coverage must land
-before Komms claims authenticated group voters.
+This evidence establishes deterministic convergence and local
+recipient-authenticated voter/creator origins, including malicious-member
+wrong-recipient wrapper reuse, wrong device/context, replay, reorder, rotation,
+restore, and delayed-announce races. It is not independent review,
+interoperability, physical-device qualification, proof of fair counting, or an
+anonymous-voting protocol.
 
 The normative replicated-state and wire decision is
 [ADR-0022](adr/0022-convergent-group-polls.md).

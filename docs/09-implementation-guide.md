@@ -241,10 +241,11 @@ resolver hides edit events, retains ordered versions, and selects maximum
 `edit_message` and `group_edit_message`; CLI commands are `edit` and
 `group-edit`; UniFFI mirrors them and the typed refresh events. The complete
 wire, storage, shell, and qualification contract is
-[18: Authenticated Message Editing](18-message-editing.md). Do not describe the
-current group sender field as individual-origin authentication: a member can
-forge another member's apparent edit until
-[ADR-0029](adr/0029-recipient-authenticated-groups.md) is implemented.
+[18: Authenticated Message Editing](18-message-editing.md). Never infer a group
+author from the sender-chain id, content field, roster position, petname, or
+delivery token alone. ADR-0029 requires a verified pairwise device certificate,
+accepted device-authority chain, and recipient origin tag before applying an
+edit. Legacy membership-authenticated rows remain visibly distinct.
 
 C4 is a replicated lifecycle feature, not a timer implemented by each shell.
 Only the dedicated pair/group disappearing and view-once APIs may create
@@ -269,8 +270,9 @@ list and votes are visible, not anonymous. RPC uses `group_poll_create`,
 hyphenated commands; UniFFI exposes `GroupPoll` and `PollUpdated`. Shells render
 the node snapshot and never resolve raw events. The complete contract is
 [20: Group Polls](20-group-polls.md) and
-[ADR-0022](adr/0022-convergent-group-polls.md). These rules prove convergence,
-not malicious-member origin; ADR-0029 is required for that property.
+[ADR-0022](adr/0022-convergent-group-polls.md). ADR-0029 supplies the separate
+recipient-authenticated voter and creator origin; deterministic resolution
+still does not prove fairness, completeness, or anonymity.
 
 C6 authority is a signed control plane over the existing sender-key group, not
 mutable role flags in a shell. Use only content-v1 kind `0x0007` for canonical
@@ -299,7 +301,9 @@ buffers. The complete contract is [23: Live Audio Calls](23-live-audio-calls.md)
 
 ## 4. Testing strategy (beyond per-milestone acceptance)
 
-- **KATs**: primitive test vectors vendored under `crates/kult-crypto/tests/vectors/`.
+- **KATs and conformance**: primitive tests consume the published cases under
+  `conformance/v1/cases/`; the stand-alone specification, fixtures, transition
+  traces, adapter contract, and runner live under `conformance/v1/`.
 - **Property tests** (`proptest`): ratchet loss/reorder/dup within bounds ⇒ decrypts;
   outside bounds ⇒ typed failure. Padding round-trips. Fragment/reassemble = identity.
 - **Fuzz targets** (`cargo-fuzz`): crypto envelope, handshake, bundle, mnemonic,
@@ -329,20 +333,31 @@ level.** Concretely:
 - **Never logged, at any level:** message plaintext or per-contact content
   sizes; keys, prekeys, passphrases, mnemonics; attachment names or
   manifests; identity-layer contact addresses; group names; anything read
-  from the store.
+  from the store. Mailbox operation additionally forbids tokens, configured
+  mailbox locators, ciphertext, row/lease ids, transport-client identities,
+  and social labels.
 - **INFO** — the operator's own configuration and state: own address, socket
   path, bound listen multiaddrs, attached transports, bridge mode, relay
-  circuit, check-in results for operator-configured mailboxes,
-  startup/shutdown.
+  circuit, startup/shutdown.
 - **WARN/ERROR** — recoverable or fatal failures, carrying only the typed
   error's `Display` (`error = %e`), never payload context.
 - **DEBUG/TRACE** — transport-layer churn only: libp2p `PeerId`s and
   multiaddrs (already visible on the wire), connection open/close, DHT and
-  mDNS events, mailbox accept/reject decisions.
+  mDNS events. Mailbox operation emits only a collected-page aggregate count
+  and a context-free failure event; it does not inherit the generic
+  peer-id/multiaddr exception.
 
 Every new log line is reviewed against this table; a line that needs data
 from the "never" list to be useful is evidence of a design problem, not an
-exception.
+exception. Mailbox capacity is inspected through the aggregate status fields
+`stored_items`, `stored_bytes`, `registrations`, `live_leases`,
+configured item/byte/lease/retention/request capacities, filesystem reserve,
+`oldest_lease_age_secs`, rejection/expiry counters, and `schema_version`.
+
+An embedding that uses internet delivery directly must drain `recv_staged`,
+durably stage or completely consume each exact envelope, and settle its
+response handle. The convenience `recv` path deliberately refuses interactive
+custody even though it returns the received copy.
 
 ## 4c. Daemon secret input
 

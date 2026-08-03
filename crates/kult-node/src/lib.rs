@@ -36,43 +36,73 @@
 #[cfg(feature = "test-failpoints")]
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
-use std::sync::Arc;
-use std::time::Instant;
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
-use futures::future::{select, Either};
-use rand_core::CryptoRngCore;
+use futures::future::{join_all, select, Either};
+use rand_core::{CryptoRngCore, OsRng};
+use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 
 use kult_crypto::{
-    initiate, open_anonymous, respond, safety_number, seal_anonymous, DevicePrekeyBundle, Identity,
-    IdentityPublic, InitialMessage, KdfProfile, PendingDeviceLinkSource, PendingDeviceLinkTarget,
-    PrekeyBundle, RatchetMessage, SafetyNumber, Session,
+    derive_rendezvous_epoch_keys, initiate, open_account_recovery_authority, open_anonymous,
+    open_rendezvous_record, rendezvous_epoch, respond, safety_number,
+    seal_account_recovery_authority, seal_anonymous, seal_rendezvous_record, AdmissionPolicy,
+    AuthorityDevicePrekeyBundle as DevicePrekeyBundle, AuthorityPairingBundle, ConnectCode,
+    DeviceAuthorityCertificate, DiscoveryIngressBundle, DiscoveryRecord, DiscoveryRoute,
+    DiscoveryRouteKind, Identity, IdentityPublic, InitialMessage, KdfProfile,
+    PendingAuthorityDeviceLinkSource, PendingAuthorityDeviceLinkTarget, PrekeyBundle,
+    PreparedAuthorityDeviceLink, RatchetMessage, SafetyNumber, Session,
+    DISCOVERY_LOOKUP_EPOCH_ADJACENCY, DISCOVERY_PUBLISH_EPOCH_AHEAD,
+    DISCOVERY_PUBLISH_EPOCH_BEHIND, DISCOVERY_RECORD_SIZE, MAX_DISCOVERY_CANDIDATES,
+    MAX_DISCOVERY_ROUTES, RENDEZVOUS_MAX_TTL_SECS,
 };
 use kult_protocol::{
-    decode_content, delivery_token, encode_disappearing_text_payload, encode_edit,
-    encode_ephemeral, encode_text, epoch_day, fragment, intro_token, is_capability_control, pad,
-    retention_bucket, unpad, CapabilityControl, DecodedContent, Edit, Envelope, EnvelopeKind,
-    Ephemeral, FormatCapabilities, MailboxKey, Reassembler, ReceiptPayload, CONTENT_FORMAT_V1,
-    CONTENT_KIND_ATTACHMENT, CONTENT_KIND_CALL_CONTROL, CONTENT_KIND_EDIT, CONTENT_KIND_EPHEMERAL,
-    CONTENT_KIND_GROUP_AUTHORITY, CONTENT_KIND_MENTION, CONTENT_KIND_POLL, CONTENT_KIND_TEXT,
-    ENVELOPE_HEADER_LEN, MAX_EDIT_TEXT_LEN, MAX_EPHEMERAL_LIFETIME_SECS,
-    MIN_EPHEMERAL_LIFETIME_SECS, REASSEMBLY_WINDOW_SECS,
+    admission_invitation_proof, decode_content, delivery_token, encode_disappearing_text_payload,
+    encode_edit, encode_ephemeral, encode_text, epoch_day, fragment, intro_token,
+    is_capability_control, is_discovery_upgrade_control, is_rendezvous_provider_control,
+    is_wake_capability_control, pad, retention_bucket, solve_admission_puzzle, unpad,
+    verify_admission_puzzle, AdmissionContext, AdmissionEnvelope, AdmissionProofKind,
+    CapabilityControl, DecodedContent, DiscoveryUpgradeControl, Edit, Envelope, EnvelopeKind,
+    Ephemeral, FormatCapabilities, MailboxKey, Reassembler, ReceiptPayload,
+    RendezvousLookupRequest, RendezvousProviderControl, RendezvousProviderDescriptor,
+    RendezvousRegisterRequest, RendezvousRoute, RendezvousRouteRecord, WakeCapabilityControl,
+    WakeCapabilityDescriptor, WakeEnvironment, WakePlatform, WakeProfile, WakeRegisterRequest,
+    WakeTriggerRequest, CONTENT_FORMAT_V1, CONTENT_KIND_ATTACHMENT, CONTENT_KIND_CALL_CONTROL,
+    CONTENT_KIND_EDIT, CONTENT_KIND_EPHEMERAL, CONTENT_KIND_GROUP_AUTHORITY, CONTENT_KIND_MENTION,
+    CONTENT_KIND_POLL, CONTENT_KIND_TEXT, ENVELOPE_HEADER_LEN, MAX_ADMISSION_PUZZLE_ATTEMPTS,
+    MAX_EDIT_TEXT_LEN, MAX_EPHEMERAL_LIFETIME_SECS, MIN_EPHEMERAL_LIFETIME_SECS,
+    REASSEMBLY_WINDOW_SECS, WAKE_CAPABILITY_MAX_LIFETIME_SECS,
 };
 use kult_store::{
-    AttachmentStatePlan, CommitPlan, CommitReceipt, ContactDeviceDelete, ContactDeviceRecord,
-    ContactRecord, ConversationId, ConversationMetadata, DeferredControlKind,
-    DeferredControlRecord, DeliveryState, DeliveryTransition, DeviceStateRecord, Direction,
-    EphemeralConversation, EphemeralMode, EphemeralRecord, EphemeralState, EphemeralTransition,
-    GroupMessageDelete, GroupMessageRecord, GroupMessageTransition, GroupRecord, GroupTransition,
-    HandshakeReceivePlan, LocalMetadataKey, LocalMetadataRecord, MaintenancePlan, MediaDelete,
-    MediaObjectRecord, MediaObjectTransition, MediaTransferRecord, MediaTransferTransition,
-    MessageDelete, MessageDeviceDeliveryRecord, MessageRecord, MessageTransition,
-    NoteMessageRecord, PairwiseReceivePlan, PairwiseSendPlan, PendingDelete, PrekeyPublishPlan,
-    PrekeyTransition, QueueClass, QueueDelete, QueueItem, QueueTransition, ReceiptReceivePlan,
+    AdmissionAcceptPlan, AdmissionDiscardPlan, AdmissionReplayTombstone, AdmissionStagePlan,
+    AdmissionSweepPlan, AdmissionTransportClass, AttachmentStatePlan, AuthorityDeviceControlPlan,
+    AuthorityMigrationPlan, BlockedIdentityRecord, CommitPlan, CommitReceipt, ContactDeviceDelete,
+    ContactDeviceRecord, ContactDeviceTransition, ContactRecord, ConversationId,
+    ConversationMetadata, DeferredControlKind, DeferredControlRecord, DeliveryState,
+    DeliveryTransition, DeviceAuthorityStateRecord, DeviceAuthorityStateTransition, Direction,
+    DiscoveryCapabilityState, EphemeralConversation, EphemeralMode, EphemeralRecord,
+    EphemeralState, EphemeralTransition, GroupMessageDelete, GroupMessageRecord,
+    GroupMessageTransition, GroupRecord, GroupTransition, HandshakeReceivePlan, LocalMetadataKey,
+    LocalMetadataRecord, MaintenancePlan, MediaDelete, MediaObjectRecord, MediaObjectTransition,
+    MediaTransferRecord, MediaTransferTransition, MessageDelete, MessageDeviceDeliveryRecord,
+    MessageRecord, MessageTransition, NoteMessageRecord, PairwiseReceivePlan, PairwiseSendPlan,
+    PendingDelete, PendingStagePlan, PrekeyPublishPlan, PrekeyTransition, ProvisionalRequestRecord,
+    QueueClass, QueueDelete, QueueItem, QueueTransition, ReceiptReceivePlan, RendezvousLocalConfig,
+    RendezvousProviderState, RendezvousServiceTransition, RendezvousStoredRoute,
     ScheduledConversation as StoreScheduledConversation, ScheduledMessageRecord, SessionTransition,
-    Store, MAX_MAINTENANCE_TRANSITIONS,
+    Store, WakeCapabilityDirection, WakeRevocationPlan, WakeRevocationRecord,
+    WakeRevocationTransition, WakeServiceState, WakeServiceTransition, WakeStoredCapability,
+    MAX_ADMISSION_REPLAY_LIFETIME_SECS, MAX_ADMISSION_REPLAY_TOMBSTONES,
+    MAX_MAINTENANCE_TRANSITIONS, MAX_PROVISIONAL_CONTENT_BYTES, MAX_PROVISIONAL_LIFETIME_SECS,
+    MAX_PROVISIONAL_PREVIEW_BYTES, MAX_WAKE_REVOCATION_ROWS, PROVISIONAL_REQUEST_VERSION,
 };
-use kult_transport::{CostClass, DeliveryHint, Discovery, Reachability, Transport};
+use kult_transport::{
+    rendezvous_record_route, rendezvous_route_hint, CostClass, DeliveryHint, Discovery,
+    DiscoveryNamespace, IngressClass, Reachability, ReceivedEnvelope, RendezvousClient,
+    RendezvousProvider, SendReceipt, Transport, WakeClient, WakeProvider, MAX_RENDEZVOUS_PROVIDERS,
+    MAX_WAKE_PROVIDERS,
+};
 
 mod api;
 #[cfg(all(test, feature = "test-failpoints"))]
@@ -102,11 +132,13 @@ pub use api::{
     AttachmentConversation, AttachmentDirection, AttachmentInfo, AttachmentMetadata,
     AttachmentObjectInfo, CallAudioFrame, CallAvailability, CallDirection, CallEndReason, CallInfo,
     CallPhase, CallUnavailableReason, CarrierCapability, CarrierCapabilitySnapshot, Command,
-    ContentStatus, CustomIconCrop, CustomIconInfo, CustomIconUsage, DeviceLinkSelection,
-    EditVersionInfo, Event, FolderConversationInfo, FolderConversationList, FolderInfo,
-    FolderSelection, GroupAuthorityInfo, GroupInfo, GroupMemberRoleInfo, GroupMentionCapability,
-    LabelConversationInfo, LabelFilterInfo, LabelInfo, LabelMatchMode, LinkedDeviceInfo,
-    MentionCapabilityIssue, MentionCapabilityIssueReason, MentionSpan, MessageDeviceDeliveryInfo,
+    ContactAuthorityConflictInfo, ContentStatus, CustomIconCrop, CustomIconInfo, CustomIconUsage,
+    DeviceAuthorityConflictInfo, DeviceAuthorityConflictType, DeviceLinkSelection, EditVersionInfo,
+    Event, FolderConversationInfo, FolderConversationList, FolderInfo, FolderSelection,
+    GroupAuthorityInfo, GroupInfo, GroupInvitationInfo, GroupMemberRoleInfo,
+    GroupMentionCapability, GroupSecurityInfo, GroupSecurityLevel, LabelConversationInfo,
+    LabelFilterInfo, LabelInfo, LabelMatchMode, LinkedDeviceInfo, MentionCapabilityIssue,
+    MentionCapabilityIssueReason, MentionSpan, MessageDeviceDeliveryInfo, MessageRequestInfo,
     PinConversationInfo, PinConversationList, PinInfo, PollInfo, PollOptionInfo, PollVoteInfo,
     ResolvedGroupMessage, ResolvedMessage, ScheduledConversation, ScheduledMessageInfo,
     StaleFolderInfo, StaleFolderReason as NodeStaleFolderReason, StaleLabelInfo,
@@ -120,22 +152,25 @@ pub use file_presentation::{
     classify_attachment_file, AttachmentFileKind, AttachmentFilePresentation,
     AttachmentFileWarning, AttachmentOpenPolicy,
 };
+pub use groups::{
+    MAX_GROUP_INVITATION_BYTES, MAX_GROUP_INVITATION_LIFETIME_SECS, MAX_GROUP_INVITATION_REQUESTS,
+};
 pub use incognito_keyboard::{
     incognito_keyboard_policy, IncognitoKeyboardLevel, IncognitoKeyboardPlatform,
     IncognitoKeyboardPolicy, INCOGNITO_KEYBOARD_PROTECTED_FIELDS,
 };
 pub use kult_protocol::GroupRole;
-#[cfg(feature = "test-failpoints")]
-#[doc(hidden)]
-pub use kult_store::{CommitFailpoint, CommitFailure};
 pub use kult_store::{
-    ConversationId as LabelConversationId, CustomIconTarget, ThemePreference,
-    CUSTOM_ICON_BUNDLED_GLYPHS, CUSTOM_ICON_DIMENSION, CUSTOM_ICON_MEDIA_TYPE,
+    AuthorityResetHistoryRecord, ConversationId as LabelConversationId, CustomIconTarget,
+    ThemePreference, CUSTOM_ICON_BUNDLED_GLYPHS, CUSTOM_ICON_DIMENSION, CUSTOM_ICON_MEDIA_TYPE,
     FOLDER_ID_RETRY_LIMIT, LABEL_COLORS, MAX_CUSTOM_ICONS, MAX_CUSTOM_ICON_BYTES,
     MAX_CUSTOM_ICON_TOTAL_BYTES, MAX_FOLDERS, MAX_FOLDER_ASSIGNMENTS, MAX_LABELS,
     MAX_LABELS_PER_CONVERSATION, MAX_LABEL_ASSIGNMENTS, MAX_LOCAL_METADATA_STRING_BYTES, MAX_PINS,
     NOTE_TO_SELF_CONVERSATION_ID, THEME_PREFERENCES, THEME_PREFERENCE_KEY, THEME_SEMANTIC_ROLES,
 };
+#[cfg(feature = "test-failpoints")]
+#[doc(hidden)]
+pub use kult_store::{CommitFailpoint, CommitFailure};
 pub use polls::MAX_POLL_VOTE_REVISIONS;
 pub use screen_security::{
     screen_security_policy, ScreenSecurityLevel, ScreenSecurityPlatform, ScreenSecurityPolicy,
@@ -172,14 +207,160 @@ pub enum TransitionFailpoint {
 /// Associated data for anonymous-boxed handshake flights (fixed across the
 /// protocol; also used by the M2 acceptance tests).
 const HS_AD: &[u8] = b"KK-handshake-v1";
-const DEVICE_INITIAL_MAGIC: &[u8; 4] = b"KDI1";
+const LEGACY_DEVICE_INITIAL_MAGIC: &[u8; 4] = b"KDI1";
+const DEVICE_INITIAL_MAGIC: &[u8; 4] = b"KDI2";
 const ACCOUNT_INITIAL_MAGIC: &[u8; 4] = b"KAI1";
 
 /// Prekey bundles expire after 30 days (docs/06-identity-trust.md).
 const BUNDLE_TTL_SECS: u64 = 30 * 86_400;
+/// Maximum separately configured DHT paths queried for one bounded lookup.
+const MAX_DISCOVERY_PLANES: usize = 8;
+/// Maximum fixed rendezvous HTTP operations started by one heartbeat.
+const MAX_RENDEZVOUS_OPERATIONS_PER_TICK: usize = 16;
+/// First registration attempts are staggered across five minutes.
+const RENDEZVOUS_INITIAL_JITTER_SECS: u64 = 300;
+/// Confirmed registrations refresh once per hour.
+const RENDEZVOUS_REGISTER_REFRESH_SECS: u64 = 3_600;
+/// Active routes refresh when fewer than fifteen minutes remain.
+const RENDEZVOUS_NEAR_EXPIRY_SECS: u64 = 900;
+/// Minimum transport backoff.
+const RENDEZVOUS_BACKOFF_MIN_SECS: u64 = 5;
+/// Maximum transport backoff before the circuit breaker.
+const RENDEZVOUS_BACKOFF_MAX_SECS: u64 = 900;
+/// Consecutive failures that open the provider circuit.
+const RENDEZVOUS_CIRCUIT_FAILURES: u8 = 5;
+/// Open-circuit interval.
+const RENDEZVOUS_CIRCUIT_OPEN_SECS: u64 = 1_800;
+/// Maximum authenticated legacy re-handshakes started per heartbeat.
+const MAX_RENDEZVOUS_REHANDSHAKES_PER_TICK: usize = 4;
+/// One heartbeat never waits longer than this for the optional provider
+/// plane, regardless of the number of configured providers.
+const RENDEZVOUS_MAINTENANCE_BUDGET: Duration = Duration::from_secs(5);
+/// Maximum gateway trigger or revoke operations started by one heartbeat.
+const MAX_WAKE_GATEWAY_OPERATIONS_PER_TICK: usize = 8;
+/// Revoke work cannot consume every gateway slot and starve ordinary wakes.
+const MAX_WAKE_REVOCATIONS_PER_TICK: usize = 4;
+/// Maximum durable revocation retry rows changed by one heartbeat.
+const MAX_WAKE_REVOCATION_CHANGES_PER_TICK: usize = 32;
+/// All gateway trigger and revoke work shares one bounded heartbeat deadline.
+const WAKE_MAINTENANCE_BUDGET: Duration = Duration::from_secs(5);
+/// Maximum contact-device capability sets minted by one platform callback.
+const MAX_WAKE_REGISTRATION_RELATIONSHIPS_PER_CALL: usize = 8;
+/// All registration work owned by one platform callback shares this deadline.
+const WAKE_REGISTRATION_BUDGET: Duration = Duration::from_secs(20);
+/// Maximum platform-owned background collection duration accepted by core.
+pub const MAX_WAKE_COLLECTION_DURATION: Duration = Duration::from_secs(25);
+/// Smaller receive domain used for a native-wake collection pass.
+const MAX_WAKE_PENDING_WORK_PER_TICK: usize = 32;
+/// Maximum encoded envelope bytes admitted to one native-wake collection pass.
+const MAX_WAKE_COLLECTION_BYTES: usize = 512 * 1024;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum RendezvousOperationKind {
+    Register,
+    Lookup,
+}
+
+/// Public-route policy applied while creating ADR-0031 records.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum DiscoveryMode {
+    /// Disclosed replaceable defaults; public records contain mailboxes only.
+    #[default]
+    Standard,
+    /// Metadata-hiding ingress; public records contain mailboxes only.
+    Private,
+    /// User-operated mode, with a separately confirmed direct-route switch.
+    Sovereign,
+}
+
+/// Explicit publication policy for one discovery maintenance pass.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DiscoveryPublicationPolicy {
+    /// Current operating mode.
+    pub mode: DiscoveryMode,
+    /// Advanced Sovereign-only acknowledgement that Connect-code holders can
+    /// poll any included direct route.
+    pub publish_direct_routes: bool,
+}
+
+/// Bounded result of one native-token capability registration pass.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct NativeWakeRegistrationResult {
+    /// Contact-device capability sets replaced atomically in this pass.
+    pub updated: usize,
+    /// More relationships remain for a later platform-scheduled pass.
+    pub remaining: bool,
+}
+
+/// Borrowed platform destination and provider set for one bounded registration
+/// pass.
+pub struct NativeWakeDestinationRegistration<'a> {
+    /// Native notification provider family.
+    pub platform: WakePlatform,
+    /// Provider sandbox or production environment.
+    pub environment: WakeEnvironment,
+    /// Fixed generic payload profile requested for this destination.
+    pub profile: WakeProfile,
+    /// Opaque APNs or FCM destination token kept only for this call.
+    pub provider_token: &'a [u8],
+    /// Exact application topic or package identifier.
+    pub app_topic: &'a [u8],
+    /// Complete eligible gateway set for the current operating mode.
+    pub providers: &'a [WakeProvider],
+    /// Current Unix time in seconds.
+    pub now: u64,
+}
+
+impl DiscoveryPublicationPolicy {
+    fn permits_direct_routes(self) -> bool {
+        self.mode == DiscoveryMode::Sovereign && self.publish_direct_routes
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+enum DeviceHandshakeIntent {
+    Establish,
+    Replace { prior_session_id: [u8; 32] },
+    Reset,
+    Legacy,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HandshakeSessionDecision {
+    KeepPrior,
+    AcceptInbound,
+    Reject,
+}
+
+fn decide_inbound_session(
+    local_device: [u8; 32],
+    peer_device: [u8; 32],
+    prior_session_id: Option<&[u8; 32]>,
+    intent: DeviceHandshakeIntent,
+) -> HandshakeSessionDecision {
+    match (prior_session_id, intent) {
+        (None, DeviceHandshakeIntent::Replace { .. }) => HandshakeSessionDecision::Reject,
+        (Some(prior), DeviceHandshakeIntent::Replace { prior_session_id })
+            if prior != &prior_session_id =>
+        {
+            HandshakeSessionDecision::Reject
+        }
+        (Some(_), DeviceHandshakeIntent::Establish) if local_device < peer_device => {
+            HandshakeSessionDecision::KeepPrior
+        }
+        _ => HandshakeSessionDecision::AcceptInbound,
+    }
+}
 
 #[derive(serde::Serialize, serde::Deserialize)]
 struct DeviceInitialFlight {
+    initial: Vec<u8>,
+    return_bundle: Vec<u8>,
+    intent: DeviceHandshakeIntent,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct LegacyDeviceInitialFlight {
     initial: Vec<u8>,
     return_bundle: Vec<u8>,
 }
@@ -193,23 +374,25 @@ fn encode_device_initial(flight: &DeviceInitialFlight) -> Result<Vec<u8>> {
 }
 
 fn decode_device_initial(bytes: &[u8]) -> Option<DeviceInitialFlight> {
-    let body = bytes.strip_prefix(DEVICE_INITIAL_MAGIC)?;
-    let (flight, remainder): (DeviceInitialFlight, &[u8]) = postcard::take_from_bytes(body).ok()?;
-    remainder.is_empty().then_some(flight)
+    if let Some(body) = bytes.strip_prefix(DEVICE_INITIAL_MAGIC) {
+        let (flight, remainder): (DeviceInitialFlight, &[u8]) =
+            postcard::take_from_bytes(body).ok()?;
+        return remainder.is_empty().then_some(flight);
+    }
+    let body = bytes.strip_prefix(LEGACY_DEVICE_INITIAL_MAGIC)?;
+    let (flight, remainder): (LegacyDeviceInitialFlight, &[u8]) =
+        postcard::take_from_bytes(body).ok()?;
+    remainder.is_empty().then_some(DeviceInitialFlight {
+        initial: flight.initial,
+        return_bundle: flight.return_bundle,
+        intent: DeviceHandshakeIntent::Legacy,
+    })
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
 struct AccountInitialFlight {
     initial: Vec<u8>,
     return_bundle: Vec<u8>,
-}
-
-fn encode_account_initial(flight: &AccountInitialFlight) -> Result<Vec<u8>> {
-    let body = postcard::to_allocvec(flight).map_err(|_| NodeError::CorruptState)?;
-    let mut out = Vec::with_capacity(ACCOUNT_INITIAL_MAGIC.len() + body.len());
-    out.extend_from_slice(ACCOUNT_INITIAL_MAGIC);
-    out.extend_from_slice(&body);
-    Ok(out)
 }
 
 fn decode_account_initial(bytes: &[u8]) -> Option<AccountInitialFlight> {
@@ -239,6 +422,11 @@ const PENDING_TTL_SECS: u64 = 30 * 86_400;
 /// Retry backoff: base delay, doubling per attempt, capped.
 const RETRY_BASE_SECS: u64 = 30;
 const RETRY_CAP_SECS: u64 = 3_600;
+/// A reached next hop can refuse transient local capacity. Retry that
+/// distinct condition soon enough to benefit from the receiver's next
+/// bounded drain, while exponentially capping a persistently refusing hop.
+const CAPACITY_RETRY_BASE_SECS: u64 = 1;
+const CAPACITY_RETRY_CAP_SECS: u64 = 30;
 /// After several foreground attempts, an unreachable delivery moves to a
 /// low-frequency lane so old work cannot make the unlocked app feel stuck.
 const PASSIVE_AFTER_ATTEMPTS: u32 = 3;
@@ -252,21 +440,22 @@ const DELIVERY_SWEEP_INTERVAL_SECS: u64 = 3_600;
 /// is idempotent and remains durably queued, so yielding is always safe.
 const FLUSH_BUDGET: std::time::Duration = std::time::Duration::from_secs(5);
 
-/// After this many failed delivery attempts for an item, its peer's stored
-/// hints are treated as possibly stale and the discovery planes are
-/// consulted again (a peer that rebound to fresh OS-assigned ports has a
-/// newer address in its republished bundle than in the pairing-time hint).
-const HINT_REFRESH_MIN_ATTEMPTS: u32 = 1;
-/// Discovery re-lookups for one account are spaced at least this far
-/// apart, so a long outage costs one bounded lookup per interval instead
-/// of one per queued item per tick.
-const HINT_REFRESH_INTERVAL_SECS: u64 = 60;
-
-/// Envelopes above this size never ride an airtime-budgeted (LoRa) link:
-/// they are held for a faster carrier, with honest feedback
-/// ([`Event::AwaitingFasterLink`]), instead of silently hogging the mesh
-/// (docs/05-transports.md §4.2 rule 3).
+/// Ordinary encrypted content above this size never rides an
+/// airtime-budgeted (LoRa) link: it is held for a faster carrier with honest
+/// feedback instead of silently hogging the mesh.
 const AIRTIME_CEILING_BYTES: usize = 4 * 1024;
+/// A PQ first flight is security control traffic rather than user media. Give
+/// the authority-wrapped handshake one still-small, explicit allowance so a
+/// QR-paired contact can establish over the mesh-only golden path.
+const AIRTIME_HANDSHAKE_CEILING_BYTES: usize = 8 * 1024;
+
+fn airtime_ceiling(envelope: &Envelope) -> usize {
+    if envelope.kind == EnvelopeKind::Handshake {
+        AIRTIME_HANDSHAKE_CEILING_BYTES
+    } else {
+        AIRTIME_CEILING_BYTES
+    }
+}
 
 /// How long a partial message may sit incomplete before the receiver NACKs
 /// its missing fragment indices (selective retransmission,
@@ -340,6 +529,21 @@ const MAX_EPHEMERAL_EXPIRIES_PER_TICK: usize = 4;
 const MAX_PENDING_WORK_PER_TICK: usize = 64;
 const MAX_PENDING_DEVICE_DELIVERIES_PER_TICK: usize = 8;
 const MAX_RESET_MARKERS_PER_TICK: usize = 8;
+/// Maximum signed admission descriptors/puzzles verified in one heartbeat.
+const MAX_ADMISSION_PUZZLES_PER_TICK: usize = 8;
+/// Maximum ML-KEM decapsulations spent on first-contact candidates per heartbeat.
+const MAX_ADMISSION_KEMS_PER_TICK: usize = 4;
+/// Maximum request-inbox presentation changes emitted per heartbeat.
+const MAX_ADMISSION_NOTIFICATIONS_PER_TICK: usize = 4;
+/// Maximum expired request/tombstone rows retired per heartbeat.
+const MAX_ADMISSION_EXPIRIES_PER_TICK: usize = 16;
+const ADMISSION_CARRIER_CLASS_COUNT: usize = 6;
+/// Per-carrier candidate ceilings in enum order: unknown, direct, mailbox,
+/// mesh, delayed, and bridge.
+const MAX_ADMISSION_CANDIDATES_PER_CARRIER: [usize; ADMISSION_CARRIER_CLASS_COUNT] =
+    [4, 4, 2, 2, 2, 2];
+/// Wall-clock slice for all first-contact proof and KEM work in one heartbeat.
+const MAX_ADMISSION_TIME_PER_TICK: Duration = Duration::from_millis(100);
 
 /// Receiver-side bookkeeping for one in-flight partial message: enough to
 /// address the NACK requesting its missing fragments (via the delivery
@@ -400,12 +604,21 @@ pub(crate) struct PreparedDeliveryUpdate {
     pub(crate) events: Vec<Event>,
 }
 
+struct PreparedWakeUpdate {
+    peer_device: [u8; 32],
+    before: WakeServiceState,
+    after: WakeServiceState,
+}
+
 enum Consumed {
     /// Fully handled (or permanently unprocessable) — never seen again.
     Done,
     /// Fully handled by a transaction that also acknowledged its named
     /// deferred-inbox source row, when one existed.
     DoneAtomic,
+    /// Permanently rejected and atomically retired. Interactive carriers
+    /// return the same bounded refusal for every such candidate.
+    RejectedAtomic,
     /// Cannot be processed *yet* (no matching session) — stash and retry.
     Later,
 }
@@ -414,6 +627,7 @@ enum Consumed {
 struct ConsumeOrigin {
     depth: u8,
     pending_sequence: Option<i64>,
+    transport: AdmissionTransportClass,
 }
 
 /// One third-party envelope in transit across the bridge (ADR-0009).
@@ -463,9 +677,9 @@ impl Bridge {
             return;
         }
         let encoded_len = envelope.header_len() + envelope.body.len();
-        // Anything over the airtime ceiling could neither ride the mesh nor
-        // have come off it whole — never transit (§4.2 rule 3).
-        if encoded_len > AIRTIME_CEILING_BYTES {
+        // Anything over its bounded airtime class could neither ride the
+        // mesh nor have come off it whole — never transit (§4.2 rule 3).
+        if encoded_len > airtime_ceiling(envelope) {
             return;
         }
         let id = envelope.content_id();
@@ -495,24 +709,137 @@ impl Bridge {
     }
 }
 
-/// The Komms runtime: one identity, one store, any number of transports.
+/// One-time account authority retained only until the explicit offline-file
+/// export completes.
+struct PendingAccountRecoveryMaterial {
+    package: Vec<u8>,
+    mnemonic: zeroize::Zeroizing<String>,
+}
+
+/// Prepared copied-root Alpha reset that the user must review and confirm
+/// before the live profile is replaced.
+pub struct AuthorityResetPreparation {
+    /// Fresh public account that will replace the irrevocable former account.
+    pub new_account: IdentityPublic,
+    /// Human-readable address derived from `new_account`.
+    pub new_address: String,
+    /// One-time 24-word phrase opening the separately written recovery file.
+    pub mnemonic: zeroize::Zeroizing<String>,
+}
+
+const RECOVERY_ATTEMPT_WINDOW: Duration = Duration::from_secs(60);
+const MAX_RECOVERY_ATTEMPTS_PER_WINDOW: usize = 5;
+const MAX_RECOVERY_ATTEMPT_KEYS: usize = 64;
+
+struct RecoveryAttemptState {
+    failures: VecDeque<Instant>,
+    last_seen: Instant,
+}
+
+static RECOVERY_ATTEMPTS: OnceLock<Mutex<HashMap<[u8; 32], RecoveryAttemptState>>> =
+    OnceLock::new();
+
+fn open_account_recovery_authority_throttled(package: &[u8], mnemonic: &str) -> Result<Identity> {
+    let key: [u8; 32] = Sha256::digest(package).into();
+    let now = Instant::now();
+    {
+        let attempts = RECOVERY_ATTEMPTS.get_or_init(|| Mutex::new(HashMap::new()));
+        let mut attempts = attempts.lock().map_err(|_| NodeError::CorruptState)?;
+        attempts.retain(|_, state| now.duration_since(state.last_seen) < RECOVERY_ATTEMPT_WINDOW);
+        if !attempts.contains_key(&key) && attempts.len() >= MAX_RECOVERY_ATTEMPT_KEYS {
+            if let Some(oldest) = attempts
+                .iter()
+                .min_by_key(|(_, state)| state.last_seen)
+                .map(|(key, _)| *key)
+            {
+                attempts.remove(&oldest);
+            }
+        }
+        let state = attempts.entry(key).or_insert_with(|| RecoveryAttemptState {
+            failures: VecDeque::new(),
+            last_seen: now,
+        });
+        while state
+            .failures
+            .front()
+            .is_some_and(|failure| now.duration_since(*failure) >= RECOVERY_ATTEMPT_WINDOW)
+        {
+            state.failures.pop_front();
+        }
+        if state.failures.len() >= MAX_RECOVERY_ATTEMPTS_PER_WINDOW {
+            return Err(NodeError::RecoveryAttemptLimited);
+        }
+        state.failures.push_back(now);
+        state.last_seen = now;
+    }
+
+    let opened = open_account_recovery_authority(package, mnemonic);
+    if opened.is_ok() {
+        RECOVERY_ATTEMPTS
+            .get()
+            .expect("attempt map initialized")
+            .lock()
+            .map_err(|_| NodeError::CorruptState)?
+            .remove(&key);
+    }
+    opened.map_err(Into::into)
+}
+
+fn write_new_private_file(path: &std::path::Path, bytes: &[u8]) -> Result<()> {
+    use std::io::Write;
+
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let io_error = |error| NodeError::Store(kult_store::StoreError::Io(error));
+    atomicwrites::AtomicFile::new(path, atomicwrites::DisallowOverwrite)
+        .write_with_options(|file| file.write_all(bytes), options)
+        .map_err(std::io::Error::from)
+        .map_err(io_error)
+}
+
+/// The Komms runtime: one public account, one device key, and one store.
 pub struct Node {
     store: Store,
-    /// Stable account identity used for conversation ids and existing wire compatibility.
-    identity: Identity,
+    /// Stable public account trust anchor used for conversations and safety numbers.
+    account: IdentityPublic,
     /// Separately authenticated key unique to this physical installation.
     device_identity: Identity,
-    device_state: DeviceStateRecord,
-    device_state_dirty: bool,
-    pending_device_link_source: Option<PendingDeviceLinkSource>,
-    pending_device_link_target: Option<PendingDeviceLinkTarget>,
+    device_state: DeviceAuthorityStateRecord,
+    pending_device_link_source: Option<PendingAuthorityDeviceLinkSource>,
+    pending_device_link_target: Option<PendingAuthorityDeviceLinkTarget>,
+    pending_device_link_prepared: Option<PreparedAuthorityDeviceLink>,
+    pending_device_link_selection: Option<DeviceLinkSelection>,
+    pending_device_link_response_hash: Option<[u8; 32]>,
+    pending_authority_transition: Option<kult_crypto::DeviceAuthorityTransition>,
+    pending_recovery_material: Option<PendingAccountRecoveryMaterial>,
     vault: PrekeyVault,
     /// Current signed return routes included in anonymous first flights.
     own_hints: Vec<DeliveryHint>,
+    /// Whether `own_hints` is a complete locally supplied route set rather
+    /// than the empty, unknown state immediately after construction/restart.
+    own_hints_authoritative: bool,
     transports: Vec<Arc<dyn Transport>>,
     discoveries: Vec<Arc<dyn Discovery>>,
     sessions: HashMap<[u8; 32], kult_crypto::Session>,
     capabilities_advertised: HashSet<[u8; 32]>,
+    discovery_advertised: HashSet<[u8; 32]>,
+    discovery_published_material: Option<[u8; 32]>,
+    rendezvous_client: Option<Arc<dyn RendezvousClient>>,
+    rendezvous_providers: Vec<RendezvousProvider>,
+    rendezvous_provider_generation: u64,
+    rendezvous_advertised: HashSet<[u8; 32]>,
+    rendezvous_refresh_requested: HashSet<[u8; 32]>,
+    rendezvous_active_conversations: HashSet<[u8; 32]>,
+    rendezvous_rehandshake_requested: HashSet<[u8; 32]>,
+    rendezvous_inflight: HashSet<([u8; 32], [u8; 32], RendezvousOperationKind)>,
+    wake_client: Option<Arc<dyn WakeClient>>,
+    wake_registration_cursor: usize,
+    wake_collection_deadline: Option<Instant>,
     media_reconciled: bool,
     attachment_request_at: HashMap<[u8; 16], u64>,
     attachment_request_target: HashMap<[u8; 16], usize>,
@@ -520,8 +847,6 @@ pub struct Node {
     calls: HashMap<[u8; 16], calls::ActiveCall>,
     call_queue_deadlines: HashMap<i64, u64>,
     reassembler: Reassembler,
-    /// Per-account floor on the next allowed stale-hint discovery re-lookup.
-    hint_refresh: HashMap<[u8; 32], u64>,
     frag_meta: HashMap<[u8; 4], PartialMeta>,
     frag_cache: HashMap<[u8; 4], SentFragments>,
     held_notified: HashSet<i64>,
@@ -530,6 +855,11 @@ pub struct Node {
     events: VecDeque<Event>,
     presentation_marker: Option<[u8; 16]>,
     delivered_presentation_marker: Option<[u8; 16]>,
+    admission_puzzles_remaining: usize,
+    admission_kems_remaining: usize,
+    admission_notifications_remaining: usize,
+    admission_carrier_remaining: [usize; ADMISSION_CARRIER_CLASS_COUNT],
+    admission_deadline: Option<Instant>,
     #[cfg(feature = "test-failpoints")]
     transition_failpoint: RefCell<Option<TransitionFailpoint>>,
     #[cfg(feature = "test-failpoints")]
@@ -650,36 +980,346 @@ impl Node {
         }
     }
 
-    /// Create a brand-new node: fresh store, fresh identity, fresh prekeys.
+    /// Create a brand-new node and retain its one-time recovery export.
     pub fn create(
         path: &std::path::Path,
         passphrase: &[u8],
         profile: KdfProfile,
         rng: &mut impl CryptoRngCore,
     ) -> Result<Self> {
-        let identity = Identity::generate(rng);
-        let device_state = devices::fresh_device_state(&identity, rng)?;
+        let root = Identity::generate(rng);
+        let account = root.public();
+        let (device_identity, device_state) = devices::fresh_authority_device_state(&root, rng)?;
+        let (package, mnemonic) = seal_account_recovery_authority(&root, rng)?;
         let vault = PrekeyVault::generate(rng);
         let encoded_vault = vault.encode();
-        let store = Store::create_profile(
+        let store = Store::create_authority_profile(
             path,
             passphrase,
             profile,
-            &identity,
+            &account,
             &device_state,
             &encoded_vault,
             rng,
         )?;
-        Self::assemble(store, identity, vault)
+        Self::assemble(
+            store,
+            account,
+            device_identity,
+            device_state,
+            vault,
+            Some(PendingAccountRecoveryMaterial { package, mnemonic }),
+        )
     }
 
     /// Open an existing node.
     pub fn open(path: &std::path::Path, passphrase: &[u8]) -> Result<Self> {
         let store = Store::open(path, passphrase)?;
-        let identity = store.get_identity()?.ok_or(NodeError::CorruptState)?;
+        if store.contains_legacy_account_root()? {
+            let copied = store.get_device_state()?.is_some_and(|state| {
+                state.manifest.devices.len() > 1 || !state.channels.is_empty()
+            });
+            return Err(if copied {
+                NodeError::AuthorityResetRequired
+            } else {
+                NodeError::AuthorityMigrationRequired
+            });
+        }
+        let account = store
+            .get_account_identity()?
+            .ok_or(NodeError::CorruptState)?;
+        let (device_identity, mut device_state) = devices::load_authority_device(&store)?;
+        if device_state.discovery.capability == [0u8; 32] {
+            let mut rng = OsRng;
+            let code = ConnectCode::generate(&account, &mut rng)?;
+            device_state.discovery = DiscoveryCapabilityState {
+                capability: code.capability(),
+                generation: 1,
+                legacy_v1_enabled: true,
+            };
+            store.put_device_authority_state(&device_state, &mut rng)?;
+        }
         let vault_blob = store.get_prekeys()?.ok_or(NodeError::CorruptState)?;
         let vault = PrekeyVault::decode(&vault_blob)?;
-        Self::assemble(store, identity, vault)
+        Self::assemble(store, account, device_identity, device_state, vault, None)
+    }
+
+    /// Prepare an honest single-device Alpha migration by writing a new
+    /// encrypted offline authority while leaving the live store untouched.
+    ///
+    /// The caller must show and confirm the returned phrase before invoking
+    /// [`Self::complete_authority_migration`]. A crash or cancellation before
+    /// completion therefore leaves the original profile openable by this
+    /// preparation flow and permits a fresh export to another new path.
+    pub fn prepare_authority_migration(
+        path: &std::path::Path,
+        passphrase: &[u8],
+        recovery_path: &std::path::Path,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<zeroize::Zeroizing<String>> {
+        let store = Store::open(path, passphrase)?;
+        let root = store.get_identity()?.ok_or(NodeError::CorruptState)?;
+        let legacy_state = store.get_device_state()?.ok_or(NodeError::CorruptState)?;
+        if legacy_state.manifest.devices.len() != 1 || !legacy_state.channels.is_empty() {
+            return Err(NodeError::AuthorityResetRequired);
+        }
+        let (package, mnemonic) = seal_account_recovery_authority(&root, rng)?;
+        write_new_private_file(recovery_path, &package)?;
+        Ok(mnemonic)
+    }
+
+    /// Finish a prepared single-device Alpha migration atomically.
+    ///
+    /// The separately exported authority and its confirmed phrase must open
+    /// the exact root still present in the legacy store. The transaction then
+    /// replaces that root with its public trust anchor and a root-authorized
+    /// generation-one manifest for the same physical-device key. Conversation
+    /// state, petnames, verification, ratchets, and prekeys remain local and
+    /// unchanged because no account root was ever distributed.
+    #[allow(clippy::too_many_arguments)]
+    pub fn complete_authority_migration(
+        path: &std::path::Path,
+        passphrase: &[u8],
+        recovery_package: &[u8],
+        recovery_mnemonic: &str,
+        migrated_at: u64,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<Self> {
+        let store = Store::open(path, passphrase)?;
+        let opened_root =
+            open_account_recovery_authority_throttled(recovery_package, recovery_mnemonic)?;
+        let Some(legacy_root) = store.get_identity()? else {
+            let account = store
+                .get_account_identity()?
+                .ok_or(NodeError::CorruptState)?;
+            if opened_root.public() != account {
+                return Err(NodeError::RecoveryAuthorityRequired);
+            }
+            let (device_identity, device_state) = devices::load_authority_device(&store)?;
+            let vault_blob = store.get_prekeys()?.ok_or(NodeError::CorruptState)?;
+            let vault = PrekeyVault::decode(&vault_blob)?;
+            drop(opened_root);
+            return Self::assemble(store, account, device_identity, device_state, vault, None);
+        };
+        let legacy_state = store.get_device_state()?.ok_or(NodeError::CorruptState)?;
+        if legacy_state.manifest.devices.len() != 1 || !legacy_state.channels.is_empty() {
+            return Err(NodeError::AuthorityResetRequired);
+        }
+        if opened_root.public() != legacy_root.public() {
+            return Err(NodeError::RecoveryAuthorityRequired);
+        }
+        let account = legacy_root.public();
+        let (device_identity, device_state) = devices::migrate_legacy_authority_device_state(
+            &opened_root,
+            &legacy_state,
+            migrated_at,
+            rng,
+        )?;
+        let vault_blob = store.get_prekeys()?.ok_or(NodeError::CorruptState)?;
+        let vault = PrekeyVault::decode(&vault_blob)?;
+        store.commit_plan(
+            CommitPlan::AuthorityMigration(AuthorityMigrationPlan {
+                legacy_identity: &legacy_root,
+                legacy_device_state: &legacy_state,
+                account: &account,
+                device_state: &device_state,
+            }),
+            rng,
+        )?;
+        if store.contains_legacy_account_root()?
+            || store.get_account_identity()?.as_ref() != Some(&account)
+            || store.get_device_authority_state()?.as_ref() != Some(&device_state)
+        {
+            return Err(NodeError::CorruptState);
+        }
+        drop(opened_root);
+        drop(legacy_root);
+        Self::assemble(store, account, device_identity, device_state, vault, None)
+    }
+
+    /// Prepare an explicit copied-root Alpha reset without mutating the live
+    /// database.
+    ///
+    /// A completely new account root is written to `recovery_path` with
+    /// owner-only permissions. The caller must show the new address, explain
+    /// that every safety number changes, and confirm the returned phrase
+    /// before invoking [`Self::complete_authority_reset`]. This conservative
+    /// path is also available for a single-device profile when the user knows
+    /// that a legacy KKR7 backup or another root copy exists even though the
+    /// live store contains no linked-device evidence.
+    pub fn prepare_authority_reset(
+        path: &std::path::Path,
+        passphrase: &[u8],
+        recovery_path: &std::path::Path,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<AuthorityResetPreparation> {
+        let store = Store::open(path, passphrase)?;
+        let former_root = store.get_identity()?.ok_or(NodeError::CorruptState)?;
+        store.get_device_state()?.ok_or(NodeError::CorruptState)?;
+        let new_root = Identity::generate(rng);
+        if new_root.public() == former_root.public() {
+            return Err(NodeError::CorruptState);
+        }
+        let new_account = new_root.public();
+        let new_address = new_account.address();
+        let (package, mnemonic) = seal_account_recovery_authority(&new_root, rng)?;
+        write_new_private_file(recovery_path, &package)?;
+        Ok(AuthorityResetPreparation {
+            new_account,
+            new_address,
+            mnemonic,
+        })
+    }
+
+    /// Prepare a fresh root-free identity for recovering only the safe local
+    /// archive projection from a copied-root `KKR1` through `KKR7` backup.
+    ///
+    /// There is no live store to inspect in this flow. The caller must show
+    /// the new address and explain that the backup's former identity and all
+    /// of its safety numbers are permanently abandoned before calling
+    /// [`Self::restore_legacy_backup_with_authority_reset`].
+    pub fn prepare_legacy_backup_authority_reset(
+        recovery_path: &std::path::Path,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<AuthorityResetPreparation> {
+        let new_root = Identity::generate(rng);
+        let new_account = new_root.public();
+        let new_address = new_account.address();
+        let (package, mnemonic) = seal_account_recovery_authority(&new_root, rng)?;
+        write_new_private_file(recovery_path, &package)?;
+        Ok(AuthorityResetPreparation {
+            new_account,
+            new_address,
+            mnemonic,
+        })
+    }
+
+    /// Complete a copied-root Alpha reset with one atomic database replacement.
+    ///
+    /// The confirmed recovery file becomes the offline authority for a fresh
+    /// account. Only local petnames, non-ephemeral pairwise history,
+    /// note-to-self history, and eligible local organization are copied.
+    /// Contacts lose all routes and verification; groups, sessions, delivery
+    /// work, device state, media, and service capabilities are not transferred.
+    #[allow(clippy::too_many_arguments)]
+    pub fn complete_authority_reset(
+        path: &std::path::Path,
+        passphrase: &[u8],
+        recovery_package: &[u8],
+        recovery_mnemonic: &str,
+        reset_at: u64,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<Self> {
+        let store = Store::open(path, passphrase)?;
+        let new_root =
+            open_account_recovery_authority_throttled(recovery_package, recovery_mnemonic)?;
+        let new_account = new_root.public();
+        if store.get_identity()?.is_none() {
+            let account = store
+                .get_account_identity()?
+                .ok_or(NodeError::CorruptState)?;
+            let reset = store
+                .authority_reset_history()?
+                .ok_or(NodeError::RecoveryAuthorityRequired)?;
+            if account != new_account || reset.new_account != account.ed {
+                return Err(NodeError::RecoveryAuthorityRequired);
+            }
+            let (device_identity, device_state) = devices::load_authority_device(&store)?;
+            let vault_blob = store.get_prekeys()?.ok_or(NodeError::CorruptState)?;
+            let vault = PrekeyVault::decode(&vault_blob)?;
+            drop(new_root);
+            return Self::assemble(store, account, device_identity, device_state, vault, None);
+        }
+        store.get_device_state()?.ok_or(NodeError::CorruptState)?;
+        let former_account = store
+            .get_identity()?
+            .ok_or(NodeError::CorruptState)?
+            .public();
+        if former_account == new_account {
+            return Err(NodeError::AuthorityResetRequired);
+        }
+
+        let (device_identity, device_state) =
+            devices::fresh_authority_device_state(&new_root, rng)?;
+        let vault = PrekeyVault::generate(rng);
+        let encoded_vault = vault.encode();
+        let (store, reset) = store.replace_copied_root_profile(
+            passphrase,
+            &new_account,
+            &device_state,
+            &encoded_vault,
+            reset_at,
+            rng,
+        )?;
+        if reset.former_account != former_account.ed
+            || reset.new_account != new_account.ed
+            || store.contains_legacy_account_root()?
+        {
+            return Err(NodeError::CorruptState);
+        }
+        drop(new_root);
+        Self::assemble(
+            store,
+            new_account,
+            device_identity,
+            device_state,
+            vault,
+            None,
+        )
+    }
+
+    /// Recover a legacy backup as a visible new-identity local archive.
+    ///
+    /// The copied account root is authenticated and decoded only in memory
+    /// by the store migration. The published database contains a fresh KDA2
+    /// account/device profile, cleared contact trust and routes, and only the
+    /// accurately labelled local history/petname projection.
+    #[allow(clippy::too_many_arguments)]
+    pub fn restore_legacy_backup_with_authority_reset(
+        path: &std::path::Path,
+        backup: &[u8],
+        backup_mnemonic: &str,
+        recovery_package: &[u8],
+        recovery_mnemonic: &str,
+        reset_at: u64,
+        passphrase: &[u8],
+        profile: KdfProfile,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<Self> {
+        let new_root =
+            open_account_recovery_authority_throttled(recovery_package, recovery_mnemonic)?;
+        let new_account = new_root.public();
+        let (device_identity, device_state) =
+            devices::fresh_authority_device_state(&new_root, rng)?;
+        let vault = PrekeyVault::generate(rng);
+        let encoded_vault = vault.encode();
+        let (store, reset) = Store::restore_legacy_backup_as_authority_reset(
+            path,
+            backup,
+            backup_mnemonic,
+            passphrase,
+            profile,
+            &new_account,
+            &device_state,
+            &encoded_vault,
+            reset_at,
+            rng,
+        )?;
+        if reset.new_account != new_account.ed
+            || store.contains_legacy_account_root()?
+            || store.get_account_identity()?.as_ref() != Some(&new_account)
+        {
+            return Err(NodeError::CorruptState);
+        }
+        drop(new_root);
+        Self::assemble(
+            store,
+            new_account,
+            device_identity,
+            device_state,
+            vault,
+            None,
+        )
     }
 
     /// Restore a node from an encrypted backup file onto a **new** store at
@@ -696,33 +1336,53 @@ impl Node {
         profile: KdfProfile,
         rng: &mut impl CryptoRngCore,
     ) -> Result<Self> {
-        let (store, vault) = Store::restore_backup_with_initializer(
-            path,
-            backup,
-            mnemonic,
-            passphrase,
-            profile,
-            rng,
-            |store, rng| {
-                if store.get_identity()?.is_none() || store.get_device_state()?.is_none() {
-                    return Err(kult_store::StoreError::NotAStore);
-                }
-                let vault = PrekeyVault::generate(rng);
-                let encoded = vault.encode();
-                store.commit_plan(
-                    CommitPlan::PrekeyPublish(PrekeyPublishPlan {
-                        prekeys: PrekeyTransition {
-                            before: None,
-                            after: &encoded,
-                        },
-                    }),
-                    rng,
-                )?;
-                Ok(vault)
-            },
-        )?;
-        let identity = store.get_identity()?.ok_or(NodeError::CorruptState)?;
-        Self::assemble(store, identity, vault)
+        let _ = (path, backup, mnemonic, passphrase, profile, rng);
+        Err(NodeError::RecoveryAuthorityRequired)
+    }
+
+    /// Restore a root-free backup by explicitly opening the separately held
+    /// offline account authority for one recovery-epoch transition.
+    #[allow(clippy::too_many_arguments)]
+    pub fn restore_with_recovery_authority(
+        path: &std::path::Path,
+        backup: &[u8],
+        backup_mnemonic: &str,
+        recovery_package: &[u8],
+        recovery_mnemonic: &str,
+        recovered_at: u64,
+        passphrase: &[u8],
+        profile: KdfProfile,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<Self> {
+        let root = open_account_recovery_authority_throttled(recovery_package, recovery_mnemonic)?;
+        let account = root.public();
+        let (store, device_identity, device_state, vault) =
+            Store::restore_authority_backup_with_initializer(
+                path,
+                backup,
+                backup_mnemonic,
+                &root,
+                recovered_at,
+                passphrase,
+                profile,
+                rng,
+                |store, rng| {
+                    let vault = PrekeyVault::generate(rng);
+                    let encoded = vault.encode();
+                    store.commit_plan(
+                        CommitPlan::PrekeyPublish(PrekeyPublishPlan {
+                            prekeys: PrekeyTransition {
+                                before: None,
+                                after: &encoded,
+                            },
+                        }),
+                        rng,
+                    )?;
+                    Ok(vault)
+                },
+            )?;
+        drop(root);
+        Self::assemble(store, account, device_identity, device_state, vault, None)
     }
 
     /// Export this node's encrypted backup (docs/07-storage.md §4):
@@ -736,15 +1396,20 @@ impl Node {
         now: u64,
         rng: &mut impl CryptoRngCore,
     ) -> Result<(Vec<u8>, zeroize::Zeroizing<String>)> {
-        Ok(self.store.export_backup(now, rng)?)
+        Ok(self.store.export_authority_backup(now, rng)?)
     }
 
-    fn assemble(store: Store, identity: Identity, vault: PrekeyVault) -> Result<Self> {
+    fn assemble(
+        store: Store,
+        account: IdentityPublic,
+        device_identity: Identity,
+        device_state: DeviceAuthorityStateRecord,
+        vault: PrekeyVault,
+        pending_recovery_material: Option<PendingAccountRecoveryMaterial>,
+    ) -> Result<Self> {
         // Call controls are transient and their in-memory state and secrets
         // deliberately do not survive a process restart. The first bounded
         // flush retires any sealed realtime rows through Maintenance.
-        let (device_identity, device_state, device_state_dirty) =
-            devices::load_or_migrate_device(&store, &identity)?;
         let mut sessions = HashMap::new();
         let contact_devices = store.contact_devices()?;
         for endpoint in &contact_devices {
@@ -765,25 +1430,106 @@ impl Node {
                 }
             }
         }
+        for (peer_device, session) in &sessions {
+            store.ensure_wake_service_state(peer_device, session, &mut OsRng)?;
+        }
+        let (rendezvous_providers, rendezvous_provider_generation) =
+            if let Some(config) = store.get_rendezvous_local_config()? {
+                let mut providers = Vec::with_capacity(config.providers.len());
+                for configured in &config.providers {
+                    let provider =
+                        RendezvousProvider::new(configured.origin.clone(), configured.static_key)
+                            .map_err(|_| NodeError::CorruptState)?;
+                    if provider.provider_id() != configured.provider_id {
+                        return Err(NodeError::CorruptState);
+                    }
+                    providers.push(provider);
+                }
+                (providers, config.generation)
+            } else {
+                (Vec::new(), 0)
+            };
         let presentation_marker = store.presentation_resync_marker()?;
         let mut events = VecDeque::new();
         if presentation_marker.is_some() {
             events.push_back(Event::StateResyncRequired);
         }
+        for peer_device in sessions.keys().copied() {
+            let Some(state) = store.get_rendezvous_service_state(&peer_device)? else {
+                continue;
+            };
+            let peer = contact_devices
+                .iter()
+                .find(|endpoint| endpoint.device == peer_device)
+                .map_or(peer_device, |endpoint| endpoint.account);
+            if state.remote_provider_conflict_generation.is_some() {
+                events.push_back(Event::RendezvousConflict {
+                    peer,
+                    device: peer_device,
+                    provider: [0u8; 32],
+                });
+            }
+            for provider in state
+                .providers
+                .iter()
+                .filter(|provider| provider.conflict_generation.is_some())
+            {
+                events.push_back(Event::RendezvousConflict {
+                    peer,
+                    device: peer_device,
+                    provider: provider.provider_id,
+                });
+            }
+        }
+        for peer_device in sessions.keys().copied() {
+            let Some(state) = store.get_wake_service_state(&peer_device)? else {
+                continue;
+            };
+            let Some(generation) = state.remote_conflict_generation else {
+                continue;
+            };
+            let peer = contact_devices
+                .iter()
+                .find(|endpoint| endpoint.device == peer_device)
+                .map_or(peer_device, |endpoint| endpoint.account);
+            events.push_back(Event::WakeConflict {
+                peer,
+                device: peer_device,
+                generation,
+            });
+        }
         Ok(Self {
             store,
-            identity,
+            account,
             device_identity,
             device_state,
-            device_state_dirty,
             pending_device_link_source: None,
             pending_device_link_target: None,
+            pending_device_link_prepared: None,
+            pending_device_link_selection: None,
+            pending_device_link_response_hash: None,
+            pending_authority_transition: None,
+            pending_recovery_material,
             vault,
             own_hints: Vec::new(),
+            own_hints_authoritative: false,
             transports: Vec::new(),
             discoveries: Vec::new(),
             sessions,
             capabilities_advertised: HashSet::new(),
+            discovery_advertised: HashSet::new(),
+            discovery_published_material: None,
+            rendezvous_client: None,
+            rendezvous_providers,
+            rendezvous_provider_generation,
+            rendezvous_advertised: HashSet::new(),
+            rendezvous_refresh_requested: HashSet::new(),
+            rendezvous_active_conversations: HashSet::new(),
+            rendezvous_rehandshake_requested: HashSet::new(),
+            rendezvous_inflight: HashSet::new(),
+            wake_client: None,
+            wake_registration_cursor: 0,
+            wake_collection_deadline: None,
             media_reconciled: false,
             attachment_request_at: HashMap::new(),
             attachment_request_target: HashMap::new(),
@@ -791,7 +1537,6 @@ impl Node {
             calls: HashMap::new(),
             call_queue_deadlines: HashMap::new(),
             reassembler: Reassembler::new(),
-            hint_refresh: HashMap::new(),
             frag_meta: HashMap::new(),
             frag_cache: HashMap::new(),
             held_notified: HashSet::new(),
@@ -800,6 +1545,11 @@ impl Node {
             events,
             presentation_marker,
             delivered_presentation_marker: None,
+            admission_puzzles_remaining: MAX_ADMISSION_PUZZLES_PER_TICK,
+            admission_kems_remaining: MAX_ADMISSION_KEMS_PER_TICK,
+            admission_notifications_remaining: MAX_ADMISSION_NOTIFICATIONS_PER_TICK,
+            admission_carrier_remaining: MAX_ADMISSION_CANDIDATES_PER_CARRIER,
+            admission_deadline: None,
             #[cfg(feature = "test-failpoints")]
             transition_failpoint: RefCell::new(None),
             #[cfg(feature = "test-failpoints")]
@@ -819,7 +1569,508 @@ impl Node {
     /// lookup. Registering none is fine — bundles then travel out-of-band
     /// only (QR, file), exactly as in M2.
     pub fn add_discovery(&mut self, discovery: Arc<dyn Discovery>) {
-        self.discoveries.push(discovery);
+        if self.discoveries.len() < MAX_DISCOVERY_PLANES {
+            self.discoveries.push(discovery);
+        }
+    }
+
+    /// Configure recipient-selected post-pairing rendezvous providers.
+    ///
+    /// `generation` is a caller-persisted monotonic provider-set generation.
+    /// An empty set is an authenticated disable. Sovereign mode always
+    /// disables this optional plane; Standard or Private select the concrete
+    /// direct/anonymized [`RendezvousClient`] supplied by the embedding shell.
+    pub fn configure_rendezvous(
+        &mut self,
+        mode: DiscoveryMode,
+        client: Option<Arc<dyn RendezvousClient>>,
+        mut providers: Vec<RendezvousProvider>,
+        generation: u64,
+    ) -> Result<()> {
+        providers.sort_by(|left, right| {
+            (left.origin(), left.static_key()).cmp(&(right.origin(), right.static_key()))
+        });
+        if generation == 0
+            || providers.len() > MAX_RENDEZVOUS_PROVIDERS
+            || providers
+                .windows(2)
+                .any(|pair| pair[0].provider_id() == pair[1].provider_id())
+            || (!providers.is_empty() && client.is_none())
+            || (mode == DiscoveryMode::Sovereign && (!providers.is_empty() || client.is_some()))
+            || generation < self.rendezvous_provider_generation
+        {
+            return Err(NodeError::RendezvousUnavailable);
+        }
+        if generation == self.rendezvous_provider_generation
+            && providers != self.rendezvous_providers
+        {
+            return Err(NodeError::RendezvousConflict);
+        }
+        let persisted = RendezvousLocalConfig::new(
+            generation,
+            providers
+                .iter()
+                .map(|provider| (provider.origin().to_owned(), provider.static_key()))
+                .collect(),
+        )?;
+        match self.store.get_rendezvous_local_config()? {
+            Some(current) if generation < current.generation => {
+                return Err(NodeError::RendezvousUnavailable);
+            }
+            Some(current) if generation == current.generation && current != persisted => {
+                return Err(NodeError::RendezvousConflict);
+            }
+            Some(current) if current == persisted => {}
+            _ => self
+                .store
+                .put_rendezvous_local_config(&persisted, &mut OsRng)?,
+        }
+        self.rendezvous_client = client;
+        self.rendezvous_providers = providers;
+        self.rendezvous_provider_generation = generation;
+        self.rendezvous_advertised.clear();
+        self.rendezvous_refresh_requested
+            .extend(self.sessions.keys().copied());
+        self.mark_rendezvous_publication_dirty(&mut OsRng)?;
+        Ok(())
+    }
+
+    /// Reconcile the complete local rendezvous set using an internal
+    /// monotonic generation.
+    ///
+    /// Shell settings do not own protocol generations. A provider-set change
+    /// advances the sealed generation exactly once; a restart or a
+    /// Standard↔Private ingress change over the same set reuses it. Sovereign
+    /// mode persists an authenticated empty set.
+    pub fn reconcile_rendezvous(
+        &mut self,
+        mode: DiscoveryMode,
+        client: Option<Arc<dyn RendezvousClient>>,
+        mut providers: Vec<RendezvousProvider>,
+    ) -> Result<()> {
+        providers.sort_by(|left, right| {
+            (left.origin(), left.static_key()).cmp(&(right.origin(), right.static_key()))
+        });
+        let generation = if providers == self.rendezvous_providers {
+            self.rendezvous_provider_generation.max(1)
+        } else {
+            self.rendezvous_provider_generation
+                .checked_add(1)
+                .ok_or(NodeError::CorruptState)?
+                .max(1)
+        };
+        self.configure_rendezvous(mode, client, providers, generation)
+    }
+
+    /// Configure the optional native-wake client for the current operating
+    /// mode. Sovereign mode has no wake provider and rejects a supplied
+    /// client; disabling the client leaves ordinary delivery untouched.
+    pub fn configure_wake(
+        &mut self,
+        mode: DiscoveryMode,
+        client: Option<Arc<dyn WakeClient>>,
+    ) -> Result<()> {
+        if mode == DiscoveryMode::Sovereign && client.is_some() {
+            return Err(NodeError::WakeUnavailable);
+        }
+        self.wake_client = client;
+        Ok(())
+    }
+
+    /// Remove issued capabilities for gateways that are no longer eligible.
+    ///
+    /// This runs when a node starts with a new mode or provider set. It never
+    /// removes remote capabilities supplied by contacts, and gateway failure
+    /// cannot disturb ordinary delivery.
+    pub fn reconcile_wake_providers(
+        &mut self,
+        providers: &[WakeProvider],
+        now: u64,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<usize> {
+        if now == 0 || providers.len() > MAX_WAKE_PROVIDERS {
+            return Err(NodeError::WakeUnavailable);
+        }
+        let allowed = providers
+            .iter()
+            .map(WakeProvider::provider_id)
+            .collect::<HashSet<_>>();
+        let mut devices = self.sessions.keys().copied().collect::<Vec<_>>();
+        devices.sort_unstable();
+        let mut updated = 0usize;
+        for peer_device in devices {
+            let state = self
+                .store
+                .get_wake_service_state(&peer_device)?
+                .ok_or(NodeError::CorruptState)?;
+            let issued_count = state.issued().count();
+            if issued_count == 0 {
+                continue;
+            }
+            let capabilities = state
+                .issued()
+                .filter(|capability| {
+                    allowed.contains(&capability.provider_id) && capability.expires_at > now
+                })
+                .map(|capability| {
+                    Ok(WakeCapabilityDescriptor {
+                        origin: capability.origin.clone(),
+                        static_key: capability.static_key,
+                        expires_at: capability.expires_at,
+                        capability: capability.decoded_capability()?,
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?;
+            if capabilities.len() == issued_count {
+                continue;
+            }
+            let generation = state
+                .issued_generation
+                .checked_add(1)
+                .ok_or(NodeError::CorruptState)?;
+            self.publish_wake_capabilities(peer_device, generation, capabilities, now, rng)?;
+            updated = updated.saturating_add(1);
+        }
+        Ok(updated)
+    }
+
+    /// Mint and publish fresh per-contact capabilities for one native token.
+    ///
+    /// Provider registration is bounded by relationship count and wall-clock
+    /// budget. A relationship changes only after every configured gateway
+    /// returned a valid fresh capability; refusal or outage preserves its
+    /// prior complete capability set. The cursor rotates across later calls
+    /// so a large contact set cannot monopolize one platform callback.
+    pub async fn register_native_wake_destination(
+        &mut self,
+        registration: NativeWakeDestinationRegistration<'_>,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<NativeWakeRegistrationResult> {
+        let NativeWakeDestinationRegistration {
+            platform,
+            environment,
+            profile,
+            provider_token,
+            app_topic,
+            providers,
+            now,
+        } = registration;
+        let Some(client) = self.wake_client.clone() else {
+            return Err(NodeError::WakeUnavailable);
+        };
+        if now == 0 || providers.is_empty() || providers.len() > MAX_WAKE_PROVIDERS {
+            return Err(NodeError::WakeUnavailable);
+        }
+        let mut provider_ids = providers
+            .iter()
+            .map(WakeProvider::provider_id)
+            .collect::<Vec<_>>();
+        provider_ids.sort_unstable();
+        if provider_ids.windows(2).any(|pair| pair[0] == pair[1]) {
+            return Err(NodeError::WakeUnavailable);
+        }
+        let mut validation = WakeRegisterRequest {
+            platform,
+            environment,
+            profile,
+            provider_token: provider_token.to_vec(),
+            app_topic: app_topic.to_vec(),
+            request_nonce: [1u8; 16],
+        };
+        let validated = validation.encode();
+        validation.provider_token.fill(0);
+        validated?;
+
+        let mut devices = self.sessions.keys().copied().collect::<Vec<_>>();
+        devices.sort_unstable();
+        if devices.is_empty() {
+            self.wake_registration_cursor = 0;
+            return Ok(NativeWakeRegistrationResult::default());
+        }
+        if self.wake_registration_cursor >= devices.len() {
+            self.wake_registration_cursor = 0;
+        }
+        let start = self.wake_registration_cursor;
+        let end = start
+            .saturating_add(MAX_WAKE_REGISTRATION_RELATIONSHIPS_PER_CALL)
+            .min(devices.len());
+        let deadline = Instant::now() + WAKE_REGISTRATION_BUDGET;
+        let mut attempted = 0usize;
+        let mut updated = 0usize;
+
+        for peer_device in devices[start..end].iter().copied() {
+            if Instant::now() >= deadline {
+                break;
+            }
+            attempted = attempted.saturating_add(1);
+            let mut descriptors = Vec::with_capacity(providers.len());
+            for provider in providers {
+                let mut request_nonce = [0u8; 16];
+                rng.fill_bytes(&mut request_nonce);
+                if request_nonce == [0u8; 16] {
+                    request_nonce[15] = 1;
+                }
+                let mut request = WakeRegisterRequest {
+                    platform,
+                    environment,
+                    profile,
+                    provider_token: provider_token.to_vec(),
+                    app_topic: app_topic.to_vec(),
+                    request_nonce,
+                };
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                let outcome = if remaining.is_zero() {
+                    None
+                } else {
+                    before_timeout(remaining, client.register(provider, &request)).await
+                };
+                request.provider_token.fill(0);
+                let Some(Ok(response)) = outcome else {
+                    descriptors.clear();
+                    break;
+                };
+                let Some(capability) = response.capability else {
+                    descriptors.clear();
+                    break;
+                };
+                if !response.accepted
+                    || response.expires_at <= now
+                    || response.expires_at > now.saturating_add(WAKE_CAPABILITY_MAX_LIFETIME_SECS)
+                {
+                    descriptors.clear();
+                    break;
+                }
+                descriptors.push(WakeCapabilityDescriptor {
+                    origin: provider.origin().to_owned(),
+                    static_key: provider.static_key(),
+                    expires_at: response.expires_at,
+                    capability,
+                });
+            }
+            if descriptors.len() != providers.len() {
+                continue;
+            }
+            let state = self
+                .store
+                .get_wake_service_state(&peer_device)?
+                .ok_or(NodeError::CorruptState)?;
+            let generation = state
+                .issued_generation
+                .checked_add(1)
+                .ok_or(NodeError::CorruptState)?;
+            self.publish_wake_capabilities(peer_device, generation, descriptors, now, rng)?;
+            updated = updated.saturating_add(1);
+        }
+
+        let next = start.saturating_add(attempted);
+        let remaining = next < devices.len();
+        self.wake_registration_cursor = if remaining { next } else { 0 };
+        Ok(NativeWakeRegistrationResult { updated, remaining })
+    }
+
+    /// Revoke every capability this installation issued to current contacts.
+    ///
+    /// Empty complete generations travel over the existing authenticated
+    /// pairwise sessions. Durable gateway revocations are queued by the same
+    /// atomic transition; remote capabilities and message delivery state are
+    /// untouched.
+    pub fn revoke_native_wake_capabilities(
+        &mut self,
+        now: u64,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<usize> {
+        if now == 0 {
+            return Err(NodeError::WakeUnavailable);
+        }
+        let mut devices = self.sessions.keys().copied().collect::<Vec<_>>();
+        devices.sort_unstable();
+        let mut updated = 0usize;
+        for peer_device in devices {
+            let Some(state) = self.store.get_wake_service_state(&peer_device)? else {
+                continue;
+            };
+            if state.issued().next().is_none() {
+                continue;
+            }
+            let generation = state
+                .issued_generation
+                .checked_add(1)
+                .ok_or(NodeError::CorruptState)?;
+            self.publish_wake_capabilities(peer_device, generation, Vec::new(), now, rng)?;
+            updated = updated.saturating_add(1);
+        }
+        self.wake_registration_cursor = 0;
+        Ok(updated)
+    }
+
+    /// Replace the complete capability generation this installation issued
+    /// to one authenticated remote physical device.
+    ///
+    /// Capabilities must already have been minted for this exact relationship
+    /// by the configured gateway. The resulting complete set (including an
+    /// empty revocation set) is encrypted through the pairwise ratchet and
+    /// committed atomically with the local issued-state generation.
+    pub fn publish_wake_capabilities(
+        &mut self,
+        peer_device: [u8; 32],
+        generation: u64,
+        mut capabilities: Vec<WakeCapabilityDescriptor>,
+        now: u64,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<()> {
+        if now == 0 || (!capabilities.is_empty() && self.wake_client.is_none()) {
+            return Err(NodeError::WakeUnavailable);
+        }
+        let recipient_account = self.account_for_device(&peer_device)?;
+        let endpoint = self
+            .store
+            .contact_devices_for(&recipient_account)?
+            .into_iter()
+            .find(|endpoint| endpoint.device == peer_device)
+            .ok_or(NodeError::UnknownPeer)?;
+        if endpoint.revoked_at.is_some() {
+            return Err(NodeError::UnknownPeer);
+        }
+        capabilities.sort_by(|left, right| {
+            (left.origin.as_bytes(), left.static_key)
+                .cmp(&(right.origin.as_bytes(), right.static_key))
+        });
+        let mut stored = Vec::with_capacity(capabilities.len());
+        for capability in &capabilities {
+            let provider = WakeProvider::new(capability.origin.clone(), capability.static_key)?;
+            if provider.provider_id()
+                != kult_protocol::wake_provider_id(
+                    capability.origin.as_bytes(),
+                    &capability.static_key,
+                )?
+                || capability.expires_at <= now
+                || capability.expires_at > now.saturating_add(WAKE_CAPABILITY_MAX_LIFETIME_SECS)
+            {
+                return Err(NodeError::WakeUnavailable);
+            }
+            stored.push(WakeStoredCapability::new(
+                WakeCapabilityDirection::Issued,
+                capability.origin.clone(),
+                capability.static_key,
+                capability.capability.as_bytes().to_vec(),
+                capability.expires_at,
+            )?);
+        }
+        let control = WakeCapabilityControl {
+            sender_account: self.account.ed,
+            sender_device: self.device_id(),
+            recipient_account,
+            recipient_device: peer_device,
+            authority_generation: self.device_state.manifest.generation(),
+            generation,
+            capabilities,
+        };
+        let payload = control.encode()?;
+        let before_state = self
+            .store
+            .get_wake_service_state(&peer_device)?
+            .ok_or(NodeError::CorruptState)?;
+        let mut after_state = before_state.clone();
+        after_state
+            .replace_direction(WakeCapabilityDirection::Issued, generation, stored)
+            .map_err(|error| {
+                if matches!(error, kult_store::StoreError::InvalidTransition) {
+                    NodeError::WakeConflict
+                } else {
+                    NodeError::Store(error)
+                }
+            })?;
+        if before_state == after_state {
+            return Ok(());
+        }
+        let before_session = self
+            .sessions
+            .get(&peer_device)
+            .cloned()
+            .ok_or(NodeError::NoSession)?;
+        if before_state.session_id != *before_session.session_id() {
+            return Err(NodeError::CorruptState);
+        }
+        let mut after_session = before_session.clone();
+        let queue =
+            self.prepare_control_queue(&mut after_session, peer_device, &payload, now, rng)?;
+        let receipt = self.store.commit_plan(
+            CommitPlan::PairwiseSend(PairwiseSendPlan {
+                sessions: &[SessionTransition {
+                    peer_device,
+                    before: Some(&before_session),
+                    after: &after_session,
+                }],
+                message: None,
+                message_update: None,
+                deliveries: &[],
+                delivery_updates: &[],
+                queue: &[queue],
+                groups: &[],
+                authorities: &[],
+                scheduled: None,
+                clear_capabilities: &[],
+                clear_reset_markers: &[],
+                ephemeral: None,
+                media_transfers: &[],
+                media_objects: &[],
+                delete_controls: &[],
+                wake: &[WakeServiceTransition {
+                    peer_device,
+                    before: &before_state,
+                    after: &after_state,
+                }],
+                presentation_changed: false,
+            }),
+            rng,
+        )?;
+        self.before_memory_replacement()?;
+        self.sessions.insert(peer_device, after_session);
+        self.after_memory_replacement()?;
+        self.accept_commit_receipt(receipt, []);
+        Ok(())
+    }
+
+    /// Coalesce an active-conversation or call-setup route refresh.
+    pub fn request_rendezvous_refresh(&mut self, peer: &[u8; 32]) -> Result<()> {
+        self.store
+            .get_contact(peer)?
+            .ok_or(NodeError::UnknownPeer)?;
+        let endpoints = self.store.contact_devices_for(peer)?;
+        if endpoints.is_empty() {
+            self.rendezvous_refresh_requested.insert(*peer);
+        } else {
+            self.rendezvous_refresh_requested.extend(
+                endpoints
+                    .into_iter()
+                    .filter(|endpoint| endpoint.revoked_at.is_none())
+                    .map(|endpoint| endpoint.device),
+            );
+        }
+        Ok(())
+    }
+
+    /// Mark or clear one foreground pairwise conversation.
+    ///
+    /// This is runtime-only presentation state. While active, the ordinary
+    /// rendezvous retry/expiry schedule may refresh the contact's physical
+    /// endpoints. Clearing it stops that trigger without deleting routes or
+    /// changing message state.
+    pub fn set_rendezvous_conversation_active(
+        &mut self,
+        peer: &[u8; 32],
+        active: bool,
+    ) -> Result<()> {
+        self.store
+            .get_contact(peer)?
+            .ok_or(NodeError::UnknownPeer)?;
+        if active {
+            self.request_rendezvous_refresh(peer)?;
+            self.rendezvous_active_conversations.insert(*peer);
+        } else {
+            self.rendezvous_active_conversations.remove(peer);
+        }
+        Ok(())
     }
 
     /// Enable, reconfigure, or (`None`) disable internet↔mesh bridging
@@ -853,17 +2104,121 @@ impl Node {
     /// This node's peer id (Ed25519 identity key bytes) — what contacts key
     /// conversations by.
     pub fn peer_id(&self) -> [u8; 32] {
-        self.identity.public().ed
+        self.account.ed
     }
 
     /// This node's public identity.
     pub fn public(&self) -> IdentityPublic {
-        self.identity.public()
+        self.account.clone()
     }
 
     /// This node's human-shareable kult address.
     pub fn address(&self) -> String {
-        self.identity.public().address()
+        self.account.address()
+    }
+
+    /// This account's ordinary share artifact: stable fingerprint plus a
+    /// sealed random reachability capability.
+    pub fn connect_code(&self) -> Result<String> {
+        Ok(ConnectCode::new(&self.account, self.device_state.discovery.capability)?.encode())
+    }
+
+    /// Whether the visible mailbox-only Alpha address bridge remains enabled.
+    pub fn legacy_discovery_enabled(&self) -> bool {
+        self.device_state.discovery.legacy_v1_enabled
+    }
+
+    /// Whether the public discovery material changed since the last complete
+    /// Standard-mode publication.
+    ///
+    /// The digest covers only public inputs: authority, ingress prekeys,
+    /// admission policy, capability state, and policy-filtered routes. It
+    /// deliberately excludes OPKs and every live/session secret.
+    pub fn discovery_publication_needed(&self, hints: &[DeliveryHint]) -> Result<bool> {
+        self.discovery_publication_needed_with_policy(hints, DiscoveryPublicationPolicy::default())
+    }
+
+    /// Whether public discovery material changed under an explicit operating
+    /// mode and Sovereign direct-route policy.
+    pub fn discovery_publication_needed_with_policy(
+        &self,
+        hints: &[DeliveryHint],
+        policy: DiscoveryPublicationPolicy,
+    ) -> Result<bool> {
+        Ok(self.discovery_published_material
+            != Some(self.discovery_material_digest(hints, policy)?))
+    }
+
+    /// Rotate reachability independently of account identity and safety
+    /// numbers. Existing sessions and local history remain unchanged.
+    pub fn rotate_connect_code(&mut self, rng: &mut impl CryptoRngCore) -> Result<String> {
+        let before = self.device_state.clone();
+        let code = ConnectCode::generate(&self.account, rng)?;
+        let mut after = before.clone();
+        after.discovery = DiscoveryCapabilityState {
+            capability: code.capability(),
+            generation: before
+                .discovery
+                .generation
+                .checked_add(1)
+                .ok_or(NodeError::CorruptState)?,
+            // A deliberate capability rotation must not leave stable-identity
+            // discovery as a bypass around that revocation.
+            legacy_v1_enabled: false,
+        };
+        self.store.commit_plan(
+            CommitPlan::AuthorityDeviceControl(AuthorityDeviceControlPlan {
+                state: Some(DeviceAuthorityStateTransition {
+                    before: Some(&before),
+                    after: &after,
+                }),
+                link_recovery: None,
+                groups: &[],
+                insert_events: &[],
+                delete_events: &[],
+                presentation_changed: true,
+            }),
+            rng,
+        )?;
+        self.before_memory_replacement()?;
+        self.device_state = after;
+        self.discovery_advertised.clear();
+        self.after_memory_replacement()?;
+        Ok(code.encode())
+    }
+
+    /// Permanently retire the time-bounded stable-address publication bridge
+    /// without changing the current Connect code.
+    pub fn retire_legacy_discovery(&mut self, rng: &mut impl CryptoRngCore) -> Result<()> {
+        if !self.device_state.discovery.legacy_v1_enabled {
+            return Ok(());
+        }
+        let before = self.device_state.clone();
+        let mut after = before.clone();
+        after.discovery.legacy_v1_enabled = false;
+        after.discovery.generation = after
+            .discovery
+            .generation
+            .checked_add(1)
+            .ok_or(NodeError::CorruptState)?;
+        self.store.commit_plan(
+            CommitPlan::AuthorityDeviceControl(AuthorityDeviceControlPlan {
+                state: Some(DeviceAuthorityStateTransition {
+                    before: Some(&before),
+                    after: &after,
+                }),
+                link_recovery: None,
+                groups: &[],
+                insert_events: &[],
+                delete_events: &[],
+                presentation_changed: true,
+            }),
+            rng,
+        )?;
+        self.before_memory_replacement()?;
+        self.device_state = after;
+        self.discovery_advertised.clear();
+        self.after_memory_replacement()
     }
 
     /// The safety number for out-of-band verification with a contact
@@ -875,14 +2230,40 @@ impl Node {
             .ok_or(NodeError::UnknownPeer)?;
         let their: IdentityPublic =
             postcard::from_bytes(&contact.identity).map_err(|_| NodeError::CorruptState)?;
-        Ok(safety_number(&self.identity.public(), &their))
+        Ok(safety_number(&self.account, &their))
     }
 
-    /// Export a fresh signed prekey bundle for out-of-band sharing (QR, file,
-    /// dictation). Each call mints a new one-time prekey, so hand each
-    /// prospective contact their own bundle.
+    /// Local-only record describing a copied-root Alpha reset and contacts
+    /// whose new safety numbers still require comparison.
+    pub fn authority_reset_history(&self) -> Result<Option<AuthorityResetHistoryRecord>> {
+        Ok(self.store.authority_reset_history()?)
+    }
+
+    /// Write the one-time encrypted offline account authority to a new
+    /// caller-selected file and return the separate 24-word opening phrase.
+    ///
+    /// The destination is created with owner-only permissions on Unix and is
+    /// never overwritten. A failed write leaves the in-memory material
+    /// available for a retry; a successful write consumes it permanently.
+    pub fn export_account_recovery_authority(
+        &mut self,
+        path: &std::path::Path,
+    ) -> Result<zeroize::Zeroizing<String>> {
+        let material = self
+            .pending_recovery_material
+            .as_ref()
+            .ok_or(NodeError::RecoveryAuthorityUnavailable)?;
+        write_new_private_file(path, &material.package)?;
+        let mnemonic = material.mnemonic.clone();
+        self.pending_recovery_material = None;
+        Ok(mnemonic)
+    }
+
+    /// Export a fresh signed prekey and Connect-capability bundle for
+    /// out-of-band sharing (QR, file, dictation). Each call mints a new
+    /// one-time prekey, so hand each prospective contact their own bundle.
     pub fn handshake_bundle(&mut self, now: u64, rng: &mut impl CryptoRngCore) -> Result<Vec<u8>> {
-        self.handshake_bundle_with_hints(&[], now, rng)
+        self.handshake_bundle_inner(&[], false, now, rng)
     }
 
     /// Export a fresh signed prekey bundle carrying this node's current
@@ -898,35 +2279,51 @@ impl Node {
         now: u64,
         rng: &mut impl CryptoRngCore,
     ) -> Result<Vec<u8>> {
+        self.handshake_bundle_inner(hints, true, now, rng)
+    }
+
+    fn handshake_bundle_inner(
+        &mut self,
+        hints: &[DeliveryHint],
+        hints_authoritative: bool,
+        now: u64,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<Vec<u8>> {
         let before_vault = self.vault.encode();
         let mut candidate_vault = self.vault.clone();
         let step = self.begin_crypto_step()?;
         let opk = candidate_vault.fresh_opk(rng);
         self.finish_crypto_step(step)?;
-        let linked = self.device_state.manifest.devices.len() > 1;
-        let signing_identity = if linked {
-            &self.device_identity
-        } else {
-            &self.identity
-        };
-        let bundle = PrekeyBundle::build(
-            signing_identity,
+        let mut bundle = PrekeyBundle::build(
+            &self.device_identity,
             &candidate_vault.spk(),
             &candidate_vault.pqspk()?,
             Some(&opk),
             now + BUNDLE_TTL_SECS,
             encode_hints(hints),
         );
-        let encoded = if linked {
-            DevicePrekeyBundle::new(
-                self.device_state.local_certificate.clone(),
-                self.device_state.manifest.clone(),
-                bundle,
-            )?
-            .encode()?
-        } else {
-            bundle.encode()
-        };
+        let mut invitation = [0u8; 32];
+        rng.fill_bytes(&mut invitation);
+        bundle.attach_admission(
+            &self.device_identity,
+            now,
+            AdmissionPolicy::default(),
+            Some(invitation),
+        )?;
+        let invitation_digest = bundle.verify_admission(now)?.descriptor.bundle_digest;
+        candidate_vault.add_invitation(invitation_digest, invitation, bundle.expires_at, now);
+        let device_bundle = DevicePrekeyBundle::new(
+            self.device_state.local_certificate.clone(),
+            self.device_state.manifest.clone(),
+            bundle,
+        )?;
+        let encoded = AuthorityPairingBundle::new(
+            device_bundle,
+            self.device_state.discovery.capability,
+            self.device_state.discovery.generation,
+            &self.device_identity,
+        )?
+        .encode()?;
         let after_vault = candidate_vault.encode();
         self.store.commit_plan(
             CommitPlan::PrekeyPublish(PrekeyPublishPlan {
@@ -939,64 +2336,234 @@ impl Node {
         )?;
         self.before_memory_replacement()?;
         self.vault = candidate_vault;
-        self.own_hints = hints.to_vec();
+        if hints_authoritative {
+            self.own_hints = hints.to_vec();
+            self.own_hints_authoritative = true;
+            self.discovery_advertised.clear();
+        }
         self.after_memory_replacement()?;
+        if hints_authoritative {
+            self.mark_rendezvous_publication_dirty(rng)?;
+        }
         Ok(encoded)
     }
 
-    // ---- discovery (DHT prekey records, docs/05-transports.md §2) -----------
+    // ---- capability-scoped discovery (ADR-0031) ----------------------------
 
-    /// Publish this node's prekey bundle on every registered discovery
-    /// plane, keyed by the digest inside our kult address — after this,
-    /// anyone holding the address can start a session with no further
-    /// out-of-band exchange.
+    /// Publish the Standard-mode six-record capability window.
     ///
-    /// `hints` are our own reachable addresses (e.g.
-    /// [`kult_transport::Libp2pTransport::listen_addrs`] as
-    /// [`DeliveryHint::Multiaddr`]); they ride in the bundle's `relay_hints`
-    /// so a fetcher learns both *who* we are and *where* to deliver.
-    ///
-    /// The published bundle deliberately carries **no one-time prekey**: a
-    /// DHT record is served to arbitrarily many fetchers, and an OPK is
-    /// single-use — the first handshake would consume it and strand everyone
-    /// else. First-flight forward secrecy for DHT-initiated sessions rests
-    /// on the signed prekeys, exactly as specified for OPK-less PQXDH
-    /// (docs/04-cryptography.md §3). Call it again after rotating prekeys or
-    /// when listen addresses change; the record replaces the previous one.
+    /// Only recipient-selected mailbox hints enter public records. Direct,
+    /// LAN, mesh, and spool routes remain pairing- or relationship-scoped.
     pub async fn publish_bundle(&mut self, hints: &[DeliveryHint], now: u64) -> Result<()> {
+        self.publish_bundle_with_policy(hints, DiscoveryPublicationPolicy::default(), now)
+            .await
+    }
+
+    /// Publish the exact ADR-0031 epoch window under an explicit mode policy.
+    ///
+    /// A direct route is accepted only when both Sovereign mode and the
+    /// separate warning acknowledgement are present. Records contain no
+    /// one-time prekeys and are stored with their encoded validity expiry.
+    pub async fn publish_bundle_with_policy(
+        &mut self,
+        hints: &[DeliveryHint],
+        policy: DiscoveryPublicationPolicy,
+        now: u64,
+    ) -> Result<()> {
         if self.discoveries.is_empty() {
             return Err(NodeError::NoDiscovery);
         }
-        let bundle = PrekeyBundle::build(
-            &self.identity,
-            &self.vault.spk(),
-            &self.vault.pqspk()?,
-            None,
-            now + BUNDLE_TTL_SECS,
-            encode_hints(hints),
+        let routes = discovery_routes(hints, policy)?;
+        let code = ConnectCode::new(&self.account, self.device_state.discovery.capability)?;
+        let before = self.device_state.clone();
+        let mut after = before.clone();
+        after.discovery.generation = after
+            .discovery
+            .generation
+            .checked_add(1)
+            .ok_or(NodeError::CorruptState)?;
+        let mut rng = OsRng;
+        self.store.commit_plan(
+            CommitPlan::AuthorityDeviceControl(AuthorityDeviceControlPlan {
+                state: Some(DeviceAuthorityStateTransition {
+                    before: Some(&before),
+                    after: &after,
+                }),
+                link_recovery: None,
+                groups: &[],
+                insert_events: &[],
+                delete_events: &[],
+                presentation_changed: false,
+            }),
+            &mut rng,
+        )?;
+        self.before_memory_replacement()?;
+        self.device_state = after;
+        self.own_hints = hints.to_vec();
+        self.own_hints_authoritative = true;
+        self.discovery_advertised.clear();
+        self.after_memory_replacement()?;
+        self.mark_rendezvous_publication_dirty(&mut rng)?;
+
+        let current_epoch = kult_crypto::discovery_epoch(now);
+        let first_epoch = current_epoch.saturating_sub(DISCOVERY_PUBLISH_EPOCH_BEHIND);
+        let last_epoch = current_epoch
+            .checked_add(DISCOVERY_PUBLISH_EPOCH_AHEAD)
+            .ok_or(NodeError::CorruptState)?;
+        let mut records = Vec::with_capacity(
+            usize::try_from(last_epoch - first_epoch + 1).map_err(|_| NodeError::CorruptState)?,
         );
-        let key = self.identity.public().address_digest();
-        let value = bundle.encode();
+        for epoch in first_epoch..=last_epoch {
+            let valid_from = kult_crypto::discovery_epoch_valid_from(epoch);
+            let expires_at = kult_crypto::discovery_epoch_valid_until(epoch)?;
+            let mut prekey = PrekeyBundle::build(
+                &self.device_identity,
+                &self.vault.spk(),
+                &self.vault.pqspk()?,
+                None,
+                expires_at,
+                Vec::new(),
+            );
+            prekey.attach_admission(
+                &self.device_identity,
+                valid_from,
+                AdmissionPolicy::default(),
+                None,
+            )?;
+            let ingress = DiscoveryIngressBundle {
+                certificate: self.device_state.local_certificate.clone(),
+                prekey,
+            };
+            let value = kult_crypto::seal_discovery_record(
+                &code,
+                epoch,
+                self.device_state.discovery.generation,
+                now.min(expires_at),
+                self.account.clone(),
+                self.device_state.manifest.clone(),
+                vec![ingress],
+                routes.clone(),
+                &self.device_identity,
+                &mut rng,
+            )?;
+            records.push((
+                epoch,
+                kult_crypto::discovery_locator(&code.capability(), epoch),
+                expires_at,
+                value,
+            ));
+        }
+
         let mut published = false;
         for discovery in &self.discoveries {
-            if discovery.publish(key, value.clone()).await.is_ok() {
-                published = true;
+            let complete = join_all(records.iter().map(|(_, locator, expires_at, value)| {
+                discovery.publish(
+                    DiscoveryNamespace::ConnectV2,
+                    *locator,
+                    value.clone(),
+                    *expires_at,
+                )
+            }))
+            .await
+            .into_iter()
+            .all(|result| result.is_ok());
+            published |= complete;
+        }
+
+        if self.device_state.discovery.legacy_v1_enabled {
+            let mailbox_hints = hints
+                .iter()
+                .filter(|hint| matches!(hint, DeliveryHint::Relay(_)))
+                .cloned()
+                .collect::<Vec<_>>();
+            let mut legacy = PrekeyBundle::build(
+                &self.device_identity,
+                &self.vault.spk(),
+                &self.vault.pqspk()?,
+                None,
+                now.saturating_add(BUNDLE_TTL_SECS),
+                encode_hints(&mailbox_hints),
+            );
+            legacy.attach_admission(
+                &self.device_identity,
+                now,
+                AdmissionPolicy::default(),
+                None,
+            )?;
+            let value = DevicePrekeyBundle::new(
+                self.device_state.local_certificate.clone(),
+                self.device_state.manifest.clone(),
+                legacy,
+            )?
+            .encode()?;
+            for discovery in &self.discoveries {
+                let _ = discovery
+                    .publish(
+                        DiscoveryNamespace::LegacyPrekeyV1,
+                        self.account.address_digest(),
+                        value.clone(),
+                        now.saturating_add(BUNDLE_TTL_SECS),
+                    )
+                    .await;
             }
         }
         if published {
+            self.discovery_published_material =
+                Some(self.discovery_material_digest(hints, policy)?);
             Ok(())
         } else {
             Err(NodeError::NoDiscovery)
         }
     }
 
-    /// Add a contact from their kult address alone, fetching the prekey
-    /// bundle from the discovery planes. Every candidate record is untrusted
-    /// input: it must carry valid signatures **and** hash back to the very
-    /// digest the address encodes, so a malicious DHT node can withhold a
-    /// bundle but never substitute one. Among the survivors the freshest
-    /// (latest-expiring) bundle wins, and its embedded delivery hints become
-    /// the contact's hints. Returns the contact's peer id.
+    fn discovery_material_digest(
+        &self,
+        hints: &[DeliveryHint],
+        policy: DiscoveryPublicationPolicy,
+    ) -> Result<[u8; 32]> {
+        let routes = discovery_routes(hints, policy)?;
+        let manifest = self.device_state.manifest.encode()?;
+        let spk = self.vault.spk();
+        let pqspk = self.vault.pqspk()?;
+        let admission = AdmissionPolicy::default();
+        let mut digest = Sha256::new();
+        digest.update(b"Komms-Discovery-Publication-Material-v2");
+        digest.update(self.account.address_digest());
+        digest.update(self.device_id());
+        digest.update(self.device_state.discovery.capability);
+        digest.update([u8::from(self.device_state.discovery.legacy_v1_enabled)]);
+        digest.update((manifest.len() as u64).to_be_bytes());
+        digest.update(&manifest);
+        digest.update(spk.id.to_be_bytes());
+        digest.update(spk.public());
+        digest.update(pqspk.id.to_be_bytes());
+        digest.update((pqspk.public().len() as u64).to_be_bytes());
+        digest.update(pqspk.public());
+        digest.update([admission.difficulty]);
+        digest.update(admission.max_first_ciphertext.to_be_bytes());
+        digest.update(admission.max_clock_skew_secs.to_be_bytes());
+        digest.update((admission.token_issuers.len() as u64).to_be_bytes());
+        digest.update([match policy.mode {
+            DiscoveryMode::Standard => 1,
+            DiscoveryMode::Private => 2,
+            DiscoveryMode::Sovereign => 3,
+        }]);
+        digest.update([u8::from(policy.publish_direct_routes)]);
+        digest.update((routes.len() as u64).to_be_bytes());
+        for route in routes {
+            digest.update([route.kind as u8]);
+            digest.update((route.value.len() as u64).to_be_bytes());
+            digest.update(route.value);
+        }
+        Ok(digest.finalize().into())
+    }
+
+    /// Add a contact from a Connect code or a legacy Alpha account address.
+    ///
+    /// Connect lookups query exactly the local weekly epoch and one adjacent
+    /// epoch on either side. Every retained candidate is exact-size, opened
+    /// under the bearer capability, and fully authority/prekey verified
+    /// before any contact or session state changes.
     pub async fn add_contact_by_address(
         &mut self,
         name: &str,
@@ -1007,34 +2574,177 @@ impl Node {
         if self.discoveries.is_empty() {
             return Err(NodeError::NoDiscovery);
         }
+        if address.starts_with(kult_crypto::CONNECT_CODE_PREFIX) {
+            let code = ConnectCode::parse(address)?;
+            let record = self
+                .lookup_connect_record(&code, now)
+                .await?
+                .ok_or(NodeError::BundleNotFound)?;
+            let ingress = record
+                .ingress
+                .iter()
+                .max_by(|left, right| {
+                    left.prekey
+                        .expires_at
+                        .cmp(&right.prekey.expires_at)
+                        .then_with(|| {
+                            right
+                                .certificate
+                                .device_id()
+                                .cmp(&left.certificate.device_id())
+                        })
+                })
+                .ok_or(NodeError::BundleNotFound)?;
+            let bundle = DevicePrekeyBundle::new(
+                ingress.certificate.clone(),
+                record.authority.clone(),
+                ingress.prekey.clone(),
+            )?
+            .encode()?;
+            let mut hints = Vec::with_capacity(record.routes.len());
+            for route in &record.routes {
+                let hint = decode_discovery_route(route)?;
+                if !hints.contains(&hint) {
+                    hints.push(hint);
+                }
+            }
+            return self.add_contact_with_discovery_capability(
+                name,
+                &bundle,
+                &hints,
+                devices::ContactDiscoveryProjection {
+                    capability: Some(code.capability()),
+                    generation: record.generation,
+                },
+                now,
+                rng,
+            );
+        }
         let digest = kult_crypto::parse_address(address)?;
         let bundle = self
-            .lookup_bundle(digest, now)
+            .lookup_legacy_bundle(digest, now)
             .await
             .ok_or(NodeError::BundleNotFound)?;
-        let hints = decode_hints(&bundle.relay_hints);
-        self.add_contact(name, &bundle.encode(), &hints, now, rng)
+        let hints = decode_hints(&bundle.prekey.transport_hints());
+        self.add_contact(name, &bundle.encode()?, &hints, now, rng)
     }
 
-    /// Fetch, verify, and select the freshest prekey bundle for `digest`
-    /// across all discovery planes. `None` means no candidate survived
-    /// verification — never that a record was accepted unverified.
-    async fn lookup_bundle(&self, digest: [u8; 32], now: u64) -> Option<PrekeyBundle> {
-        let mut best: Option<PrekeyBundle> = None;
+    async fn lookup_connect_record(
+        &self,
+        code: &ConnectCode,
+        now: u64,
+    ) -> Result<Option<DiscoveryRecord>> {
+        let current = kult_crypto::discovery_epoch(now);
+        let first = current.saturating_sub(DISCOVERY_LOOKUP_EPOCH_ADJACENCY);
+        let last = current
+            .checked_add(DISCOVERY_LOOKUP_EPOCH_ADJACENCY)
+            .ok_or(NodeError::CorruptState)?;
+        let mut requests = Vec::new();
+        for epoch in first..=last {
+            let locator = kult_crypto::discovery_locator(&code.capability(), epoch);
+            for discovery in &self.discoveries {
+                let discovery = Arc::clone(discovery);
+                requests.push(async move {
+                    (
+                        epoch,
+                        discovery
+                            .lookup(DiscoveryNamespace::ConnectV2, locator)
+                            .await,
+                    )
+                });
+            }
+        }
+        let mut by_epoch: BTreeMap<u64, Vec<Vec<u8>>> = BTreeMap::new();
+        for (epoch, result) in join_all(requests).await {
+            if let Ok(mut values) = result {
+                let bytes = values
+                    .iter()
+                    .try_fold(0usize, |total, value| total.checked_add(value.len()));
+                if values.len() > MAX_DISCOVERY_CANDIDATES
+                    || bytes.is_none_or(|bytes| {
+                        bytes > MAX_DISCOVERY_CANDIDATES.saturating_mul(DISCOVERY_RECORD_SIZE)
+                    })
+                {
+                    continue;
+                }
+                // One provider can contribute at most the protocol's exact
+                // candidate bound. Discard wrong-shape values before they
+                // consume the expensive authenticated-open budget.
+                values.retain(|value| value.len() == DISCOVERY_RECORD_SIZE);
+                values.sort_by_key(|value| <[u8; 32]>::from(Sha256::digest(value)));
+                values.dedup();
+                values.truncate(MAX_DISCOVERY_CANDIDATES);
+                by_epoch.entry(epoch).or_default().extend(values);
+            }
+        }
+        let mut verified: Vec<DiscoveryRecord> = Vec::new();
+        for (epoch, mut candidates) in by_epoch {
+            candidates.sort_by_key(|value| <[u8; 32]>::from(Sha256::digest(value)));
+            candidates.dedup();
+            candidates.truncate(MAX_DISCOVERY_CANDIDATES);
+            let mut retained_bytes = 0usize;
+            let byte_limit = MAX_DISCOVERY_CANDIDATES.saturating_mul(DISCOVERY_RECORD_SIZE);
+            for candidate in candidates {
+                retained_bytes = retained_bytes.saturating_add(candidate.len());
+                if retained_bytes > byte_limit {
+                    break;
+                }
+                let Ok(record) = kult_crypto::open_discovery_record(code, epoch, &candidate, now)
+                else {
+                    continue;
+                };
+                for accepted in &verified {
+                    match accepted.authority.relation(&record.authority)? {
+                        kult_crypto::DeviceAuthorityRelation::Fork => {
+                            return Err(NodeError::DeviceAuthorityFork);
+                        }
+                        kult_crypto::DeviceAuthorityRelation::RecoveryConflict => {
+                            return Err(NodeError::DeviceRecoveryConflict);
+                        }
+                        _ => {}
+                    }
+                }
+                verified.push(record);
+            }
+        }
+        let mut best: Option<DiscoveryRecord> = None;
+        for candidate in verified {
+            let replace = best.as_ref().is_none_or(|current| {
+                candidate.authority.generation() > current.authority.generation()
+                    || (candidate.authority.generation() == current.authority.generation()
+                        && (candidate.issued_at > current.issued_at
+                            || (candidate.issued_at == current.issued_at
+                                && candidate.digest() < current.digest())))
+            });
+            if replace {
+                best = Some(candidate);
+            }
+        }
+        Ok(best)
+    }
+
+    /// Fetch and verify the mailbox-only Alpha compatibility record.
+    async fn lookup_legacy_bundle(&self, digest: [u8; 32], now: u64) -> Option<DevicePrekeyBundle> {
+        let mut best: Option<DevicePrekeyBundle> = None;
         for discovery in &self.discoveries {
-            let Ok(candidates) = discovery.lookup(digest).await else {
+            let Ok(candidates) = discovery
+                .lookup(DiscoveryNamespace::LegacyPrekeyV1, digest)
+                .await
+            else {
                 continue;
             };
             for bytes in candidates {
-                let Ok(bundle) = PrekeyBundle::decode(&bytes) else {
+                let Ok(bundle) = DevicePrekeyBundle::decode(&bytes) else {
                     continue;
                 };
-                if bundle.verify(now).is_err() || bundle.identity.address_digest() != digest {
+                if bundle.verify(now).is_err()
+                    || bundle.manifest.account().address_digest() != digest
+                {
                     continue;
                 }
                 if best
                     .as_ref()
-                    .is_none_or(|b| bundle.expires_at > b.expires_at)
+                    .is_none_or(|b| bundle.prekey.expires_at > b.prekey.expires_at)
                 {
                     best = Some(bundle);
                 }
@@ -1053,16 +2763,23 @@ impl Node {
     /// is offline). Every token is scoped to this node as recipient
     /// (ADR-0007), so a check-in can only ever drain mail addressed to us.
     pub fn mailbox_tokens(&self, now: u64) -> Vec<[u8; 32]> {
-        let me = self.identity.public().ed;
+        let me = self.account.ed;
         let device = self.device_id();
         let today = epoch_day(now);
         let lo = today.saturating_sub(TOKEN_LOOKBACK_EPOCHS);
         let hi = today + MAILBOX_AHEAD_EPOCHS;
         let mut tokens = Vec::new();
         for epoch in lo..=hi {
-            tokens.push(intro_token(&me, epoch));
-            if device != me {
-                tokens.push(intro_token(&device, epoch));
+            tokens.push(kult_crypto::discovery_introduction_token(
+                &self.device_state.discovery.capability,
+                &device,
+                epoch,
+            ));
+            if self.device_state.discovery.legacy_v1_enabled {
+                tokens.push(intro_token(&me, epoch));
+                if device != me {
+                    tokens.push(intro_token(&device, epoch));
+                }
             }
             for session in self.sessions.values() {
                 tokens.push(delivery_token(
@@ -1095,29 +2812,73 @@ impl Node {
         now: u64,
         rng: &mut impl CryptoRngCore,
     ) -> Result<[u8; 32]> {
+        self.add_contact_with_discovery_capability(
+            name,
+            bundle_bytes,
+            hints,
+            devices::ContactDiscoveryProjection::default(),
+            now,
+            rng,
+        )
+    }
+
+    fn add_contact_with_discovery_capability(
+        &mut self,
+        name: &str,
+        bundle_bytes: &[u8],
+        hints: &[DeliveryHint],
+        supplied_discovery: devices::ContactDiscoveryProjection,
+        now: u64,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<[u8; 32]> {
+        let mut owned_device_bundle = None;
+        let discovery = if AuthorityPairingBundle::is_encoded(bundle_bytes) {
+            let pairing = AuthorityPairingBundle::decode(bundle_bytes)?;
+            pairing.verify(now)?;
+            if supplied_discovery.capability.is_some()
+                && (supplied_discovery.capability != Some(pairing.discovery_capability)
+                    || supplied_discovery.generation != pairing.discovery_generation)
+            {
+                return Err(NodeError::Crypto(kult_crypto::CryptoError::InvalidBundle));
+            }
+            owned_device_bundle = Some(pairing.device_bundle.encode()?);
+            devices::ContactDiscoveryProjection {
+                capability: Some(pairing.discovery_capability),
+                generation: pairing.discovery_generation,
+            }
+        } else {
+            supplied_discovery
+        };
+        let bundle_bytes = owned_device_bundle.as_deref().unwrap_or(bundle_bytes);
+        let introduction_capability = discovery.capability;
+        let introduction_generation = discovery.generation;
         let name = contact_names::normalize_contact_name(name)?;
         let (peer, identity, stored_bundle, mut endpoint, manifest, advertised_hints) =
             if DevicePrekeyBundle::is_encoded(bundle_bytes) {
                 let device_bundle = DevicePrekeyBundle::decode(bundle_bytes)?;
                 device_bundle.verify(now)?;
-                let advertised_hints = decode_hints(&device_bundle.prekey.relay_hints);
-                let peer = device_bundle.manifest.account.ed;
-                let identity = postcard::to_allocvec(&device_bundle.manifest.account)
+                let advertised_hints = decode_hints(&device_bundle.prekey.transport_hints());
+                let peer = device_bundle.manifest.account().ed;
+                let identity = postcard::to_allocvec(device_bundle.manifest.account())
                     .map_err(|_| NodeError::CorruptState)?;
+                let authority = device_bundle.manifest.encode()?;
                 let endpoint = ContactDeviceRecord {
                     account: peer,
                     device: device_bundle.certificate.device_id(),
                     name: device_bundle
                         .manifest
-                        .devices
+                        .devices()
                         .iter()
                         .find(|entry| entry.certificate == device_bundle.certificate)
                         .map(|entry| entry.name.clone()),
                     certificate: postcard::to_allocvec(&device_bundle.certificate)
                         .map_err(|_| NodeError::CorruptState)?,
+                    authority,
                     bundle: device_bundle.prekey.encode(),
                     hints: Vec::new(),
-                    manifest_generation: device_bundle.manifest.generation,
+                    introduction_capability,
+                    introduction_generation,
+                    manifest_generation: device_bundle.manifest.generation(),
                     manifest_state_id: device_bundle.manifest.state_id(),
                     last_seen: now,
                     revoked_at: None,
@@ -1133,7 +2894,7 @@ impl Node {
                 )
             } else {
                 let verified = PrekeyBundle::decode(bundle_bytes)?.verify(now)?;
-                let advertised_hints = decode_hints(&verified.bundle().relay_hints);
+                let advertised_hints = decode_hints(&verified.bundle().transport_hints());
                 let peer = verified.bundle().identity.ed;
                 let identity = postcard::to_allocvec(&verified.bundle().identity)
                     .map_err(|_| NodeError::CorruptState)?;
@@ -1142,8 +2903,11 @@ impl Node {
                     device: peer,
                     name: None,
                     certificate: Vec::new(),
+                    authority: Vec::new(),
                     bundle: bundle_bytes.to_vec(),
                     hints: Vec::new(),
+                    introduction_capability,
+                    introduction_generation,
                     manifest_generation: 0,
                     manifest_state_id: [0u8; 32],
                     last_seen: now,
@@ -1178,7 +2942,7 @@ impl Node {
         if let Some(manifest) = manifest.as_ref() {
             // A rollback/fork-losing manifest must not mutate even the
             // account-level petname, verification bit, or delivery hints.
-            self.validate_contact_device_manifest(manifest)?;
+            self.validate_contact_device_manifest_visible(manifest, now, rng)?;
         }
         self.store.put_contact(
             &ContactRecord {
@@ -1194,9 +2958,12 @@ impl Node {
         if let Some(manifest) = manifest {
             self.apply_contact_device_manifest(
                 &manifest,
-                endpoint.device,
-                endpoint.bundle,
-                endpoint.hints,
+                devices::ContactDeviceAdvertisement {
+                    device: endpoint.device,
+                    bundle: endpoint.bundle,
+                    hints: endpoint.hints,
+                    discovery,
+                },
                 now,
                 rng,
             )?;
@@ -1334,6 +3101,7 @@ impl Node {
                 delete_capabilities: &delete_capabilities,
                 clear_reset_markers: &[],
                 delete_controls: &[],
+                wake: &[],
                 acknowledge_presentation: None,
                 presentation_changed: true,
             }),
@@ -1342,6 +3110,10 @@ impl Node {
         self.before_memory_replacement()?;
         self.sessions.remove(device);
         self.capabilities_advertised.remove(device);
+        self.discovery_advertised.remove(device);
+        self.rendezvous_advertised.remove(device);
+        self.rendezvous_refresh_requested.remove(device);
+        self.rendezvous_rehandshake_requested.remove(device);
         self.after_memory_replacement()?;
         let deleted = delete_queue
             .iter()
@@ -1429,6 +3201,12 @@ impl Node {
 
     /// Record that safety numbers were verified out-of-band.
     pub fn mark_verified(&mut self, peer: &[u8; 32], rng: &mut impl CryptoRngCore) -> Result<()> {
+        if self.store.authority_reset_reverification_required(peer)? {
+            if !self.store.confirm_authority_reset_contact(peer, rng)? {
+                return Err(NodeError::CorruptState);
+            }
+            return Ok(());
+        }
         let mut contact = self
             .store
             .get_contact(peer)?
@@ -1443,6 +3221,209 @@ impl Node {
         Ok(self.store.contacts()?)
     }
 
+    /// Bounded sealed first-contact requests in deterministic arrival order.
+    pub fn message_requests(&self) -> Result<Vec<MessageRequestInfo>> {
+        Ok(self
+            .store
+            .provisional_requests()?
+            .into_iter()
+            .map(|request| MessageRequestInfo {
+                id: request.request_id,
+                account: request.account,
+                device: request.device,
+                preview: request.preview,
+                safety_number: request
+                    .safety_number
+                    .as_bytes()
+                    .chunks(5)
+                    .map(|chunk| core::str::from_utf8(chunk).expect("validated digits"))
+                    .collect::<Vec<_>>()
+                    .join(" "),
+                arrived_at: request.arrived_at,
+                expires_at: request.expires_at,
+                transport: request.transport,
+            })
+            .collect())
+    }
+
+    /// Explicitly accept and atomically promote one message request.
+    pub fn accept_message_request(
+        &mut self,
+        request_id: &[u8; 16],
+        name: &str,
+        now: u64,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<[u8; 32]> {
+        let request = self
+            .store
+            .provisional_request_by_id(request_id)?
+            .ok_or(NodeError::UnknownMessageRequest)?;
+        if now > request.expires_at {
+            return Err(NodeError::UnknownMessageRequest);
+        }
+        let name = contact_names::normalize_contact_name(name)?;
+        let (session_before, remainder): (Session, &[u8]) =
+            postcard::take_from_bytes(&request.session).map_err(|_| NodeError::CorruptState)?;
+        if !remainder.is_empty() {
+            return Err(NodeError::CorruptState);
+        }
+        let mut session_after = session_before.clone();
+        let acceptance = ReceiptPayload {
+            acks: vec![request.request_id],
+            nacks: Vec::new(),
+        }
+        .encode();
+        let receipt_queue =
+            self.prepare_control_queue(&mut session_after, request.device, &acceptance, now, rng)?;
+        let prepared = if request.first_content.is_empty() {
+            None
+        } else {
+            let prepared = self.prepare_inbound(
+                request.account,
+                request.first_content.clone(),
+                None,
+                now,
+                rng,
+            )?;
+            if prepared.message.is_none()
+                || prepared.ephemeral.is_some()
+                || !prepared.media_transfers.is_empty()
+                || !prepared.media_objects.is_empty()
+            {
+                return Err(NodeError::CorruptState);
+            }
+            Some(prepared)
+        };
+        let mut contact = request.contact.clone();
+        contact.name = name;
+        let receipt = self.store.commit_plan(
+            CommitPlan::AdmissionAccept(AdmissionAcceptPlan {
+                request: &request,
+                session_before: &session_before,
+                session: SessionTransition {
+                    peer_device: request.device,
+                    before: None,
+                    after: &session_after,
+                },
+                contact: &contact,
+                devices: &request.devices,
+                groups: &[],
+                message: prepared
+                    .as_ref()
+                    .and_then(|prepared| prepared.message.as_ref()),
+                queue: core::slice::from_ref(&receipt_queue),
+                accepted_at: now,
+                presentation_changed: true,
+            }),
+            rng,
+        )?;
+        self.before_memory_replacement()?;
+        self.sessions.insert(request.device, session_after);
+        self.capabilities_advertised.remove(&request.device);
+        self.discovery_advertised.remove(&request.device);
+        self.rendezvous_advertised.remove(&request.device);
+        self.rendezvous_refresh_requested.insert(request.device);
+        self.after_memory_replacement()?;
+        let mut events = vec![
+            Event::MessageRequestAccepted {
+                request: request.request_id,
+                peer: request.account,
+            },
+            Event::ContactAdded {
+                peer: request.account,
+            },
+            Event::SessionEstablished {
+                peer: request.account,
+            },
+        ];
+        if let Some(prepared) = prepared {
+            events.extend(prepared.events);
+        }
+        self.accept_commit_receipt(receipt, events);
+        Ok(request.account)
+    }
+
+    /// Explicitly delete one request, retaining only its bounded replay tombstone.
+    pub fn delete_message_request(
+        &mut self,
+        request_id: &[u8; 16],
+        now: u64,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<()> {
+        self.discard_message_request(request_id, now, false, rng)
+    }
+
+    /// Block one verified request sender locally and remove provisional state.
+    pub fn block_message_request(
+        &mut self,
+        request_id: &[u8; 16],
+        now: u64,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<()> {
+        self.discard_message_request(request_id, now, true, rng)
+    }
+
+    fn discard_message_request(
+        &mut self,
+        request_id: &[u8; 16],
+        now: u64,
+        block: bool,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<()> {
+        let request = self
+            .store
+            .provisional_request_by_id(request_id)?
+            .ok_or(NodeError::UnknownMessageRequest)?;
+        let tombstone = AdmissionReplayTombstone {
+            request_id: request.request_id,
+            account: request.account,
+            device: request.device,
+            rejected_at: now,
+            expires_at: now.saturating_add(
+                MAX_PROVISIONAL_LIFETIME_SECS.min(MAX_ADMISSION_REPLAY_LIFETIME_SECS),
+            ),
+        };
+        let tombstones = self.store.admission_tombstones()?;
+        let retire_tombstone = (tombstones.len() >= MAX_ADMISSION_REPLAY_TOMBSTONES).then(|| {
+            tombstones
+                .iter()
+                .min_by_key(|record| (record.expires_at, record.rejected_at, record.request_id))
+                .expect("non-empty at fixed limit")
+        });
+        let block_record = block.then_some(BlockedIdentityRecord {
+            account: request.account,
+            device: request.device,
+            created_at: now,
+        });
+        let receipt = self.store.commit_plan(
+            CommitPlan::AdmissionDiscard(AdmissionDiscardPlan {
+                request: &request,
+                tombstone: &tombstone,
+                retire_tombstone,
+                block: block_record.as_ref(),
+                presentation_changed: true,
+            }),
+            rng,
+        )?;
+        self.capabilities_advertised.remove(&request.device);
+        self.discovery_advertised.remove(&request.device);
+        self.rendezvous_advertised.remove(&request.device);
+        self.rendezvous_refresh_requested.insert(request.device);
+        self.accept_commit_receipt(
+            receipt,
+            [if block {
+                Event::MessageRequestBlocked {
+                    request: request.request_id,
+                }
+            } else {
+                Event::MessageRequestDeleted {
+                    request: request.request_id,
+                }
+            }],
+        );
+        Ok(())
+    }
+
     /// Message history with a peer, in insertion order.
     pub fn messages_with(&self, peer: &[u8; 32]) -> Result<Vec<MessageRecord>> {
         Ok(self.store.messages_with(peer)?)
@@ -1453,7 +3434,7 @@ impl Node {
     pub fn resolved_messages_with(&self, peer: &[u8; 32]) -> Result<Vec<ResolvedMessage>> {
         Ok(edits::resolve_pairwise(
             self.store.messages_with(peer)?,
-            self.identity.public().ed,
+            self.account.ed,
         ))
     }
 
@@ -1542,6 +3523,21 @@ impl Node {
             } => {
                 self.add_contact(&name, &bundle, &hints, now, rng)?;
             }
+            Command::MessageRequestAccept { request, name } => {
+                self.accept_message_request(&request, &name, now, rng)?;
+            }
+            Command::MessageRequestDelete { request } => {
+                self.delete_message_request(&request, now, rng)?;
+            }
+            Command::MessageRequestBlock { request } => {
+                self.block_message_request(&request, now, rng)?;
+            }
+            Command::GroupInvitationAccept { invitation } => {
+                self.accept_group_invitation(&invitation, now, rng)?;
+            }
+            Command::GroupInvitationDelete { invitation } => {
+                self.delete_group_invitation(&invitation, rng)?;
+            }
             Command::RenameContact {
                 peer,
                 name,
@@ -1629,7 +3625,7 @@ impl Node {
         now: u64,
         rng: &mut impl CryptoRngCore,
     ) -> Result<[u8; 16]> {
-        let me = self.identity.public().ed;
+        let me = self.account.ed;
         if target_author != me || text.is_empty() || text.len() > MAX_EDIT_TEXT_LEN {
             return Err(NodeError::InvalidEdit);
         }
@@ -1763,6 +3759,9 @@ impl Node {
             .store
             .get_contact(peer)?
             .ok_or(NodeError::UnknownPeer)?;
+        if self.store.authority_reset_reverification_required(peer)? {
+            return Err(NodeError::ContactReverificationRequired);
+        }
         let endpoints = self.store.contact_devices_for(peer)?;
         let mut routes = endpoints;
         if routes.is_empty() {
@@ -1771,8 +3770,11 @@ impl Node {
                 device: *peer,
                 name: None,
                 certificate: Vec::new(),
+                authority: Vec::new(),
                 bundle: contact.bundle.clone(),
                 hints: contact.hints.clone(),
+                introduction_capability: None,
+                introduction_generation: 0,
                 manifest_generation: 0,
                 manifest_state_id: [0u8; 32],
                 last_seen: now,
@@ -1925,7 +3927,7 @@ impl Node {
                 ephemeral: Ephemeral::DisappearingText { expires_at, .. },
             } => Some(EphemeralRecord {
                 conversation: EphemeralConversation::Pairwise(*peer),
-                author: self.identity.public().ed,
+                author: self.account.ed,
                 content_id,
                 expires_at,
                 mode: EphemeralMode::DisappearingText,
@@ -1951,6 +3953,7 @@ impl Node {
                 media_transfers: &[],
                 media_objects: &[],
                 delete_controls: &[],
+                wake: &[],
                 presentation_changed: true,
             }),
             rng,
@@ -1960,6 +3963,9 @@ impl Node {
             self.sessions.insert(route.route, route.after);
             if route.resets_capabilities {
                 self.capabilities_advertised.remove(&route.route);
+                self.discovery_advertised.remove(&route.route);
+                self.rendezvous_advertised.remove(&route.route);
+                self.rendezvous_refresh_requested.insert(route.route);
             }
         }
         self.after_memory_replacement()?;
@@ -2178,6 +4184,7 @@ impl Node {
                         delete_capabilities: &[],
                         clear_reset_markers: &[],
                         delete_controls: &[],
+                        wake: &[],
                         acknowledge_presentation: Some(delivered),
                         presentation_changed: false,
                     }),
@@ -2199,98 +4206,124 @@ impl Node {
 
     // ---- the heartbeat -----------------------------------------------------
 
-    /// One receive/flush cycle: drain every transport, consume what can be
-    /// consumed (dedup → reassemble → decrypt → persist), queue encrypted
-    /// receipts for consumed messages, then flush the outbound queue through
-    /// the transport scheduler. Returns all events produced.
-    pub async fn tick(&mut self, now: u64, rng: &mut impl CryptoRngCore) -> Result<Vec<Event>> {
-        self.acknowledge_presentation(rng)?;
-        if self.device_state_dirty {
-            let receipt = self.store.commit_plan(
-                CommitPlan::DeviceControl(kult_store::DeviceControlPlan {
-                    state: Some(kult_store::DeviceStateTransition {
-                        before: None,
-                        after: &self.device_state,
-                    }),
-                    link_recovery: None,
-                    groups: &[],
-                    insert_events: &[],
-                    delete_events: &[],
-                    presentation_changed: false,
-                }),
-                rng,
-            )?;
-            self.device_state_dirty = false;
-            self.accept_commit_receipt(receipt, []);
+    /// Run one platform-deadline-bounded native-wake collection pass.
+    ///
+    /// Only immediate non-airtime carriers are drained. Accepted envelopes
+    /// use the ordinary deduplication, ratchet, persistence, and receipt
+    /// paths, but this pass never flushes messages, floods a mesh, exports
+    /// sneakernet work, activates attachments, or starts calls.
+    pub async fn wake_tick(
+        &mut self,
+        now: u64,
+        platform_budget: Duration,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<Vec<Event>> {
+        if platform_budget.is_zero() || self.wake_collection_deadline.is_some() {
+            return Err(NodeError::WakeUnavailable);
         }
-        self.apply_resolved_device_sync(rng)?;
-        if !self.media_reconciled {
-            let batch = self
-                .store
-                .prepare_media_reconciliation(MAX_MAINTENANCE_TRANSITIONS)?;
-            if batch.transitions.is_empty() {
-                self.store
-                    .finish_media_reconciliation(batch.unknown_records)?;
-                self.media_reconciled = batch.complete;
-            } else {
-                let object_transitions = batch
-                    .transitions
-                    .iter()
-                    .map(|(before, after)| MediaObjectTransition { before, after })
-                    .collect::<Vec<_>>();
-                let receipt = self.store.commit_plan(
-                    CommitPlan::AttachmentState(AttachmentStatePlan {
-                        media_transfers: &[],
-                        media_objects: &object_transitions,
-                        delete_controls: &[],
-                        presentation_changed: true,
-                    }),
-                    rng,
-                )?;
-                let transfers = batch
-                    .transitions
-                    .iter()
-                    .map(|(_, after)| after.transfer_id)
-                    .collect::<HashSet<_>>();
-                self.accept_commit_receipt(receipt, []);
-                for transfer in transfers {
-                    self.emit_attachment_update(&transfer)?;
-                }
-                if batch.complete {
+        self.wake_collection_deadline =
+            Some(Instant::now() + platform_budget.min(MAX_WAKE_COLLECTION_DURATION));
+        let result = self.tick(now, rng).await;
+        self.wake_collection_deadline = None;
+        result
+    }
+
+    /// Run one ordinary receive, maintenance, and outbound flush cycle.
+    pub async fn tick(&mut self, now: u64, rng: &mut impl CryptoRngCore) -> Result<Vec<Event>> {
+        let wake_collection = self.wake_collection_deadline.is_some();
+        self.admission_puzzles_remaining =
+            usize::from(!wake_collection) * MAX_ADMISSION_PUZZLES_PER_TICK;
+        self.admission_kems_remaining = usize::from(!wake_collection) * MAX_ADMISSION_KEMS_PER_TICK;
+        self.admission_notifications_remaining =
+            usize::from(!wake_collection) * MAX_ADMISSION_NOTIFICATIONS_PER_TICK;
+        self.admission_carrier_remaining = if wake_collection {
+            [0; ADMISSION_CARRIER_CLASS_COUNT]
+        } else {
+            MAX_ADMISSION_CANDIDATES_PER_CARRIER
+        };
+        self.admission_deadline = None;
+        if !wake_collection {
+            self.acknowledge_presentation(rng)?;
+            self.apply_resolved_device_sync(rng)?;
+            self.sweep_admission(now, rng)?;
+            if !self.media_reconciled {
+                let batch = self
+                    .store
+                    .prepare_media_reconciliation(MAX_MAINTENANCE_TRANSITIONS)?;
+                if batch.transitions.is_empty() {
                     self.store
                         .finish_media_reconciliation(batch.unknown_records)?;
-                    self.media_reconciled = true;
+                    self.media_reconciled = batch.complete;
+                } else {
+                    let object_transitions = batch
+                        .transitions
+                        .iter()
+                        .map(|(before, after)| MediaObjectTransition { before, after })
+                        .collect::<Vec<_>>();
+                    let receipt = self.store.commit_plan(
+                        CommitPlan::AttachmentState(AttachmentStatePlan {
+                            media_transfers: &[],
+                            media_objects: &object_transitions,
+                            delete_controls: &[],
+                            presentation_changed: true,
+                        }),
+                        rng,
+                    )?;
+                    let transfers = batch
+                        .transitions
+                        .iter()
+                        .map(|(_, after)| after.transfer_id)
+                        .collect::<HashSet<_>>();
+                    self.accept_commit_receipt(receipt, []);
+                    for transfer in transfers {
+                        self.emit_attachment_update(&transfer)?;
+                    }
+                    if batch.complete {
+                        self.store
+                            .finish_media_reconciliation(batch.unknown_records)?;
+                        self.media_reconciled = true;
+                    }
                 }
             }
-        }
-        self.apply_deferred_controls(now, rng)?;
-        // Expiry is core-owned and runs before any queue activation, receive,
-        // attachment request, or transport flush. A restart and a clock jump
-        // therefore cannot revive or transmit already-expired plaintext.
-        self.sweep_ephemeral(now, rng)?;
-        if now >= self.next_delivery_sweep {
-            self.sweep_failed_deliveries(now, rng)?;
-            self.next_delivery_sweep = now.saturating_add(DELIVERY_SWEEP_INTERVAL_SECS);
-        }
-        self.sweep_calls(now, rng)?;
-        // 0. Session-reset markers (a restore happened): queue fresh
-        //    handshakes so re-keyed traffic flows without waiting for the
-        //    user to send first.
-        self.rekey_reset_peers(now, rng)?;
-        // A manifest can advertise an active endpoint before its prekey bundle
-        // or session arrives. Ordinary sends retain an honest per-device
-        // `Queued` row; once that route becomes usable, materialize the exact
-        // pending copy instead of leaving the placeholder stuck forever.
-        self.queue_pending_pairwise_device_deliveries(now, rng)?;
+            self.apply_deferred_controls(now, rng)?;
+            // Expiry is core-owned and runs before any queue activation, receive,
+            // attachment request, or transport flush. A restart and a clock jump
+            // therefore cannot revive or transmit already-expired plaintext.
+            self.sweep_ephemeral(now, rng)?;
+            if now >= self.next_delivery_sweep {
+                self.sweep_failed_deliveries(now, rng)?;
+                self.next_delivery_sweep = now.saturating_add(DELIVERY_SWEEP_INTERVAL_SECS);
+            }
+            self.sweep_calls(now, rng)?;
+            // 0. Session-reset markers (a restore happened): queue fresh
+            //    handshakes so re-keyed traffic flows without waiting for the
+            //    user to send first.
+            self.rekey_reset_peers(now, rng)?;
+            // A legacy pairwise session can authenticate the provider upgrade but
+            // cannot safely synthesize a transcript exporter. Exactly one side,
+            // selected by physical-device id ordering, starts a fresh verified
+            // PQXDH exchange and replaces the session plus optional service state
+            // in one commit.
+            self.process_rendezvous_rehandshakes(now, rng)?;
+            // A manifest can advertise an active endpoint before its prekey bundle
+            // or session arrives. Ordinary sends retain an honest per-device
+            // `Queued` row; once that route becomes usable, materialize the exact
+            // pending copy instead of leaving the placeholder stuck forever.
+            self.queue_pending_pairwise_device_deliveries(now, rng)?;
 
-        // Absolute UTC scheduling is enforced in core before encryption:
-        // clock rollback keeps entries held, clock advance activates them on
-        // this tick, and a restart simply reloads the same sealed records.
-        self.activate_scheduled_messages(now, rng)?;
+            // Absolute UTC scheduling is enforced in core before encryption:
+            // clock rollback keeps entries held, clock advance activates them on
+            // this tick, and a restart simply reloads the same sealed records.
+            self.activate_scheduled_messages(now, rng)?;
 
-        // Loaded and newly-created sessions advertise on the first tick.
-        // Controls use the durable queue and are terminal like receipts.
-        self.advertise_capabilities(now, rng)?;
+            // Loaded and newly-created sessions advertise on the first tick.
+            // Controls use the durable queue and are terminal like receipts.
+            self.advertise_capabilities(now, rng)?;
+            self.advertise_discovery_upgrades(now, rng)?;
+            self.advertise_rendezvous_providers(now, rng)?;
+            self.maintain_rendezvous(now, rng).await?;
+            self.admission_deadline = Some(Instant::now() + MAX_ADMISSION_TIME_PER_TICK);
+        }
 
         // 1. Gather: previously-stashed envelopes first, then fresh arrivals.
         //    Every complete fresh envelope is staged under a stable pending
@@ -2306,18 +4339,36 @@ impl Node {
         //    still joins the normal receive path — "foreign" and "ours, but
         //    the unlocking handshake hasn't arrived yet" are indistinguishable
         //    by design, and downstream dedup absorbs the overlap.
-        let mut work: Vec<(Option<i64>, Envelope, u64)> = Vec::new();
+        let mut work: Vec<(Option<i64>, Envelope, u64, AdmissionTransportClass)> = Vec::new();
         let mut gathered = HashSet::new();
+        let mut durable_gathered = HashSet::new();
         let mut redundant_pending = Vec::new();
-        for (sequence, envelope, first_seen) in self
+        let work_limit = if wake_collection {
+            MAX_WAKE_PENDING_WORK_PER_TICK
+        } else {
+            MAX_PENDING_WORK_PER_TICK
+        };
+        let mut work_bytes = 0usize;
+        for (sequence, envelope, first_seen, transport) in self
             .store
-            .pending_all()?
+            .pending_all_with_transport()?
             .into_iter()
-            .take(MAX_PENDING_WORK_PER_TICK)
+            .take(work_limit)
         {
+            let encoded_len = envelope.try_encode()?.len();
+            if wake_collection
+                && work_bytes
+                    .checked_add(encoded_len)
+                    .is_none_or(|bytes| bytes > MAX_WAKE_COLLECTION_BYTES)
+            {
+                break;
+            }
             if gathered.insert(envelope.content_id()) {
-                work.push((Some(sequence), envelope, first_seen));
+                durable_gathered.insert(envelope.content_id());
+                work_bytes += encoded_len;
+                work.push((Some(sequence), envelope, first_seen, transport));
             } else {
+                durable_gathered.insert(envelope.content_id());
                 redundant_pending.push(PendingDelete {
                     sequence,
                     content_id: envelope.content_id(),
@@ -2345,6 +4396,7 @@ impl Node {
                     delete_capabilities: &[],
                     clear_reset_markers: &[],
                     delete_controls: &[],
+                    wake: &[],
                     acknowledge_presentation: None,
                     presentation_changed: false,
                 }),
@@ -2355,13 +4407,39 @@ impl Node {
         let mut fresh_fragments = 0usize;
         let transports = self.transports.clone();
         for transport in &transports {
-            let airtime = transport.profile().cost == CostClass::Airtime;
+            let profile = transport.profile();
+            let airtime = profile.cost == CostClass::Airtime;
+            if wake_collection
+                && (airtime || profile.latency == kult_transport::LatencyClass::HumanScale)
+            {
+                continue;
+            }
+            let envelopes_result = if let Some(deadline) = self.wake_collection_deadline {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    break;
+                }
+                let Some(result) = before_timeout(remaining, transport.recv_staged()).await else {
+                    break;
+                };
+                result
+            } else {
+                transport.recv_staged().await
+            };
             // A dead link must not stall the others; its envelopes will
             // arrive via retry or another path.
-            if let Ok(envelopes) = transport.recv().await {
-                for envelope in envelopes {
+            if let Ok(envelopes) = envelopes_result {
+                for ReceivedEnvelope {
+                    envelope,
+                    receipt,
+                    ingress,
+                } in envelopes
+                {
+                    let encoded_len = envelope.try_encode()?.len();
                     let content_id = envelope.content_id();
+                    let transport_class = admission_transport(ingress);
                     if airtime
+                        && !wake_collection
                         && self.bridge.is_some()
                         && !self.token_is_mine(&envelope.token, now)
                         && bridge_seen.insert((true, content_id))
@@ -2371,25 +4449,144 @@ impl Node {
                         }
                     }
                     if !gathered.insert(content_id) {
+                        if let Some(receipt) = receipt {
+                            // ADR-0030 makes duplicate introductions a
+                            // uniform refusal even when their original copy
+                            // was staged successfully. Do not let generic
+                            // multipath dedup reveal whether a request row
+                            // exists or has spare capacity.
+                            let duplicate_admission = ingress == IngressClass::Direct
+                                && envelope.kind == EnvelopeKind::Handshake
+                                && AdmissionEnvelope::is_encoded(&envelope.body);
+                            let accepted = !duplicate_admission
+                                && (durable_gathered.contains(&content_id)
+                                    || self.store.is_seen(&content_id)?);
+                            let _ = transport.settle_recv(receipt, accepted).await;
+                        }
                         continue;
                     }
                     if envelope.kind == EnvelopeKind::Fragment {
-                        if fresh_fragments < MAX_PENDING_WORK_PER_TICK {
+                        if let Some(receipt) = receipt {
+                            let _ = transport.settle_recv(receipt, false).await;
+                        }
+                        if fresh_fragments < work_limit
+                            && (!wake_collection
+                                || work_bytes
+                                    .checked_add(encoded_len)
+                                    .is_some_and(|bytes| bytes <= MAX_WAKE_COLLECTION_BYTES))
+                        {
                             fresh_fragments += 1;
-                            work.push((None, envelope, now));
+                            work_bytes += encoded_len;
+                            work.push((None, envelope, now, transport_class));
                         }
                         continue;
                     }
-                    match self.store.pending_push(&envelope, now, rng) {
-                        Ok(sequence) if work.len() < MAX_PENDING_WORK_PER_TICK => {
-                            work.push((Some(sequence), envelope, now));
+                    if receipt.is_some()
+                        && ingress == IngressClass::Direct
+                        && envelope.kind == EnvelopeKind::Handshake
+                        && AdmissionEnvelope::is_encoded(&envelope.body)
+                    {
+                        if wake_collection {
+                            if let Some(receipt) = receipt {
+                                let _ = transport.settle_recv(receipt, false).await;
+                            }
+                            continue;
                         }
-                        Ok(_) | Err(kult_store::StoreError::PendingQuota) => {}
-                        Err(error) => return Err(error.into()),
+                        // Seen introductions are duplicates or permanent
+                        // failures. Both receive the same bounded refusal and
+                        // neither is allowed back into the KEM path.
+                        if self.store.is_seen(&content_id)? {
+                            if let Some(receipt) = receipt {
+                                let _ = transport.settle_recv(receipt, false).await;
+                            }
+                            continue;
+                        }
+                        let mut established = false;
+                        let outcome = self.consume(
+                            &envelope,
+                            ConsumeOrigin {
+                                depth: 0,
+                                pending_sequence: None,
+                                transport: transport_class,
+                            },
+                            now,
+                            rng,
+                            &mut established,
+                        );
+                        let accepted = match outcome {
+                            Ok(Consumed::Done | Consumed::DoneAtomic) => true,
+                            Ok(Consumed::RejectedAtomic | Consumed::Later) => false,
+                            Err(error) => {
+                                if let Some(receipt) = receipt {
+                                    let _ = transport.settle_recv(receipt, false).await;
+                                }
+                                return Err(error);
+                            }
+                        };
+                        if self.store.is_seen(&content_id)? {
+                            durable_gathered.insert(content_id);
+                        }
+                        if let Some(receipt) = receipt {
+                            let _ = transport.settle_recv(receipt, accepted).await;
+                        }
+                        continue;
+                    }
+                    if wake_collection
+                        && work_bytes
+                            .checked_add(encoded_len)
+                            .is_none_or(|bytes| bytes > MAX_WAKE_COLLECTION_BYTES)
+                    {
+                        if let Some(receipt) = receipt {
+                            let _ = transport.settle_recv(receipt, false).await;
+                        }
+                        continue;
+                    }
+                    match self.store.commit_plan(
+                        CommitPlan::PendingStage(PendingStagePlan {
+                            envelope: &envelope,
+                            first_seen: now,
+                            transport: transport_class,
+                        }),
+                        rng,
+                    ) {
+                        Ok(committed) if work.len() < work_limit => {
+                            let sequence = committed
+                                .records
+                                .pending_sequences
+                                .first()
+                                .copied()
+                                .ok_or(NodeError::CorruptState)?;
+                            durable_gathered.insert(content_id);
+                            if let Some(receipt) = receipt {
+                                let _ = transport.settle_recv(receipt, true).await;
+                            }
+                            work_bytes += encoded_len;
+                            work.push((Some(sequence), envelope, now, transport_class));
+                        }
+                        Ok(committed) => {
+                            if committed.records.pending_sequences.len() != 1 {
+                                return Err(NodeError::CorruptState);
+                            }
+                            durable_gathered.insert(content_id);
+                            if let Some(receipt) = receipt {
+                                let _ = transport.settle_recv(receipt, true).await;
+                            }
+                        }
+                        Err(kult_store::StoreError::PendingQuota) => {
+                            if let Some(receipt) = receipt {
+                                let _ = transport.settle_recv(receipt, false).await;
+                            }
+                        }
+                        Err(error) => {
+                            if let Some(receipt) = receipt {
+                                let _ = transport.settle_recv(receipt, false).await;
+                            }
+                            return Err(error.into());
+                        }
                     }
                 }
             }
-            if self.bridge.is_some() {
+            if !wake_collection && self.bridge.is_some() {
                 if let Ok(envelopes) = transport.recv_transit().await {
                     for envelope in envelopes {
                         let content_id = envelope.content_id();
@@ -2404,15 +4601,25 @@ impl Node {
                             continue;
                         }
                         if envelope.kind == EnvelopeKind::Fragment {
-                            if fresh_fragments < MAX_PENDING_WORK_PER_TICK {
+                            if fresh_fragments < work_limit {
                                 fresh_fragments += 1;
-                                work.push((None, envelope, now));
+                                work.push((None, envelope, now, AdmissionTransportClass::Bridge));
                             }
                             continue;
                         }
-                        match self.store.pending_push(&envelope, now, rng) {
-                            Ok(sequence) if work.len() < MAX_PENDING_WORK_PER_TICK => {
-                                work.push((Some(sequence), envelope, now));
+                        match self.store.pending_push_with_transport(
+                            &envelope,
+                            now,
+                            AdmissionTransportClass::Bridge,
+                            rng,
+                        ) {
+                            Ok(sequence) if work.len() < work_limit => {
+                                work.push((
+                                    Some(sequence),
+                                    envelope,
+                                    now,
+                                    AdmissionTransportClass::Bridge,
+                                ));
                             }
                             Ok(_) | Err(kult_store::StoreError::PendingQuota) => {}
                             Err(error) => return Err(error.into()),
@@ -2424,7 +4631,7 @@ impl Node {
 
         let mut expired_seen = Vec::new();
         let mut expired_pending = Vec::new();
-        work.retain(|(pending_sequence, env, first_seen)| {
+        work.retain(|(pending_sequence, env, first_seen, _)| {
             let expired = now.saturating_sub(*first_seen) > PENDING_TTL_SECS
                 || env.retention_until.is_some_and(|deadline| deadline <= now);
             if expired {
@@ -2460,6 +4667,7 @@ impl Node {
                     delete_capabilities: &[],
                     clear_reset_markers: &[],
                     delete_controls: &[],
+                    wake: &[],
                     acknowledge_presentation: None,
                     presentation_changed: false,
                 }),
@@ -2475,12 +4683,19 @@ impl Node {
         loop {
             let mut stash = Vec::new();
             let mut established = false;
-            for (pending_sequence, env, first_seen) in work {
+            for (pending_sequence, env, first_seen, transport) in work {
+                if self
+                    .wake_collection_deadline
+                    .is_some_and(|deadline| Instant::now() >= deadline)
+                {
+                    break;
+                }
                 match self.consume(
                     &env,
                     ConsumeOrigin {
                         depth: 0,
                         pending_sequence,
+                        transport,
                     },
                     now,
                     rng,
@@ -2499,10 +4714,14 @@ impl Node {
                         }
                     }
                     Consumed::DoneAtomic => {}
+                    Consumed::RejectedAtomic => {}
                     Consumed::Later => {
                         let sequence = match pending_sequence {
                             Some(sequence) => sequence,
-                            None => match self.store.pending_push(&env, first_seen, rng) {
+                            None => match self
+                                .store
+                                .pending_push_with_transport(&env, first_seen, transport, rng)
+                            {
                                 Ok(sequence) => sequence,
                                 Err(kult_store::StoreError::PendingQuota) => {
                                     // Interim overload containment. The
@@ -2514,11 +4733,13 @@ impl Node {
                                 Err(error) => return Err(error.into()),
                             },
                         };
-                        stash.push((Some(sequence), env, first_seen));
+                        stash.push((Some(sequence), env, first_seen, transport));
                     }
                 }
             }
-            if !stash.is_empty() && (established || self.apply_deferred_controls(now, rng)?) {
+            if !stash.is_empty()
+                && (established || (!wake_collection && self.apply_deferred_controls(now, rng)?))
+            {
                 work = stash;
                 continue;
             }
@@ -2528,48 +4749,50 @@ impl Node {
             break;
         }
 
-        // Accepted authenticated controls are durable before their follow-up
-        // work runs. A second bounded pass lets same-tick attachment windows
-        // advance without coupling filesystem or group work to ratchet commit.
-        self.apply_deferred_controls(now, rng)?;
+        if !wake_collection {
+            // Accepted authenticated controls are durable before their follow-up
+            // work runs. A second bounded pass lets same-tick attachment windows
+            // advance without coupling filesystem or group work to ratchet commit.
+            self.apply_deferred_controls(now, rng)?;
 
-        // 2b. Group upkeep (ADR-0012): flush due announces (initiating
-        //     pairwise sessions where possible) and serve late fan-out to
-        //     members whose session appeared after a group send.
-        self.tick_groups(now, rng).await?;
+            // 2b. Group upkeep (ADR-0012): flush due announces (initiating
+            //     pairwise sessions where possible) and serve late fan-out to
+            //     members whose session appeared after a group send.
+            self.tick_groups(now, rng).await?;
 
-        // 2c. Publish one authoritative, expiring carrier verdict per peer.
-        //     Attachment activation consumes this exact snapshot rather than
-        //     independently inferring capacity from a route.
-        self.refresh_carrier_capabilities(now, rng).await?;
+            // 2c. Publish one authoritative, expiring carrier verdict per peer.
+            //     Attachment activation consumes this exact snapshot rather than
+            //     independently inferring capacity from a route.
+            self.refresh_carrier_capabilities(now, rng).await?;
 
-        // 2d. Attachment offers and resumable missing-range requests activate
-        //     only under a fresh F4 bulk-capable verdict.
-        self.activate_attachment_transfers(now, rng).await?;
+            // 2d. Attachment offers and resumable missing-range requests activate
+            //     only under a fresh F4 bulk-capable verdict.
+            self.activate_attachment_transfers(now, rng).await?;
 
-        // 3. NACK the missing fragment indices of stale
-        //    partials (selective retransmission, docs/05-transports.md §4.2
-        //    rule 2). Accepted messages already own their encrypted receipt
-        //    and duplicate-replay route inside the receive commit plan.
-        let mut nacks_by_peer: BTreeMap<[u8; 32], FragNacks> = BTreeMap::new();
-        for (id, missing) in self.stale_partials(now) {
-            // The fragment's delivery token names the session to ask.
-            // Handshake fragments never match one — correctly so: with no
-            // session there is nothing to encrypt a receipt under.
-            let Some(token) = self.frag_meta.get(&id).map(|m| m.token) else {
-                continue;
-            };
-            let Some(peer) = self.match_session(&token, now) else {
-                continue;
-            };
-            if let Some(meta) = self.frag_meta.get_mut(&id) {
-                meta.last_nack = Some(now);
+            // 3. NACK the missing fragment indices of stale
+            //    partials (selective retransmission, docs/05-transports.md §4.2
+            //    rule 2). Accepted messages already own their encrypted receipt
+            //    and duplicate-replay route inside the receive commit plan.
+            let mut nacks_by_peer: BTreeMap<[u8; 32], FragNacks> = BTreeMap::new();
+            for (id, missing) in self.stale_partials(now) {
+                // The fragment's delivery token names the session to ask.
+                // Handshake fragments never match one — correctly so: with no
+                // session there is nothing to encrypt a receipt under.
+                let Some(token) = self.frag_meta.get(&id).map(|m| m.token) else {
+                    continue;
+                };
+                let Some(peer) = self.match_session(&token, now) else {
+                    continue;
+                };
+                if let Some(meta) = self.frag_meta.get_mut(&id) {
+                    meta.last_nack = Some(now);
+                }
+                nacks_by_peer.entry(peer).or_default().push((id, missing));
             }
-            nacks_by_peer.entry(peer).or_default().push((id, missing));
-        }
-        for peer in nacks_by_peer.keys().copied().collect::<Vec<_>>() {
-            let nacks = nacks_by_peer.remove(&peer).unwrap_or_default();
-            self.queue_receipt(&peer, Vec::new(), nacks, now, rng)?;
+            for peer in nacks_by_peer.keys().copied().collect::<Vec<_>>() {
+                let nacks = nacks_by_peer.remove(&peer).unwrap_or_default();
+                self.queue_receipt(&peer, Vec::new(), nacks, now, rng)?;
+            }
         }
         if !pending_acks.is_empty() {
             self.store.commit_plan(
@@ -2592,6 +4815,7 @@ impl Node {
                     delete_capabilities: &[],
                     clear_reset_markers: &[],
                     delete_controls: &[],
+                    wake: &[],
                     acknowledge_presentation: None,
                     presentation_changed: false,
                 }),
@@ -2601,7 +4825,29 @@ impl Node {
 
         // 4. Flush the outbound queue, then — only with whatever airtime and
         //    attention is left — third-party transit (ADR-0009).
+        if wake_collection {
+            for (_, item) in self
+                .store
+                .queue_all()?
+                .into_iter()
+                .take(MAX_RENDEZVOUS_OPERATIONS_PER_TICK)
+            {
+                self.rendezvous_refresh_requested.insert(item.peer);
+            }
+            if let Some(deadline) = self.wake_collection_deadline {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if !remaining.is_zero() {
+                    if let Some(result) =
+                        before_timeout(remaining, self.maintain_rendezvous(now, rng)).await
+                    {
+                        result?;
+                    }
+                }
+            }
+            return Ok(self.drain_events());
+        }
         self.flush(now, rng).await?;
+        self.maintain_wake(now, rng).await?;
         self.flush_transit(now).await;
 
         Ok(self.drain_events())
@@ -2767,6 +5013,7 @@ impl Node {
                 delete_capabilities: &[],
                 clear_reset_markers: &[],
                 delete_controls: &[],
+                wake: &[],
                 acknowledge_presentation: None,
                 presentation_changed: !events.is_empty(),
             }),
@@ -2793,67 +5040,154 @@ impl Node {
         now: u64,
         rng: &mut impl CryptoRngCore,
     ) -> Result<(Session, Envelope)> {
-        let mut bundle = PrekeyBundle::decode(bundle_bytes)?.verify(now)?;
+        let target_bundle = PrekeyBundle::decode(bundle_bytes)?;
+        let admission = target_bundle.verify_admission(now).ok();
+        let mut bundle = target_bundle.verify(now)?;
         let reset_markers = self.store.reset_markers()?;
-        if (reset_markers.contains(account) || reset_markers.contains(device))
-            || self.device_state.manifest.devices.len() > 1
-        {
+        let resetting = reset_markers.contains(account) || reset_markers.contains(device);
+        let prior_session = self.store.get_session(device)?;
+        let intent = if resetting {
+            DeviceHandshakeIntent::Reset
+        } else if let Some(prior) = prior_session.as_ref() {
+            DeviceHandshakeIntent::Replace {
+                prior_session_id: *prior.session_id(),
+            }
+        } else {
+            DeviceHandshakeIntent::Establish
+        };
+        if resetting {
             bundle = bundle.without_opk();
         }
-        let linked = self.device_state.manifest.devices.len() > 1;
-        let initiator = if linked {
-            &self.device_identity
-        } else {
-            &self.identity
-        };
         let step = self.begin_crypto_step()?;
-        let initiated = initiate(initiator, &bundle, padded, now, rng);
+        let initiated = initiate(&self.device_identity, &bundle, padded, now, rng);
         self.finish_crypto_step(step)?;
         let (session, init) = initiated?;
-        let initial_bytes = if linked {
-            let return_prekey = PrekeyBundle::build(
-                &self.device_identity,
-                &self.vault.spk(),
-                &self.vault.pqspk()?,
-                None,
-                now + BUNDLE_TTL_SECS,
-                Vec::new(),
-            );
-            let return_bundle = DevicePrekeyBundle::new(
-                self.device_state.local_certificate.clone(),
-                self.device_state.manifest.clone(),
-                return_prekey,
-            )?
-            .encode()?;
-            encode_device_initial(&DeviceInitialFlight {
-                initial: init.encode(),
-                return_bundle,
-            })?
-        } else {
-            let return_bundle = PrekeyBundle::build(
-                &self.identity,
-                &self.vault.spk(),
-                &self.vault.pqspk()?,
-                None,
-                now + BUNDLE_TTL_SECS,
-                encode_hints(&self.own_hints),
-            );
-            encode_account_initial(&AccountInitialFlight {
-                initial: init.encode(),
-                return_bundle: return_bundle.encode(),
-            })?
-        };
+        let mut return_prekey = PrekeyBundle::build(
+            &self.device_identity,
+            &self.vault.spk(),
+            &self.vault.pqspk()?,
+            None,
+            now + BUNDLE_TTL_SECS,
+            encode_hints(&self.own_hints),
+        );
+        return_prekey.attach_admission(
+            &self.device_identity,
+            now,
+            AdmissionPolicy::default(),
+            None,
+        )?;
+        let return_bundle = DevicePrekeyBundle::new(
+            self.device_state.local_certificate.clone(),
+            self.device_state.manifest.clone(),
+            return_prekey,
+        )?
+        .encode()?;
+        let initial_bytes = encode_device_initial(&DeviceInitialFlight {
+            initial: init.encode(),
+            return_bundle,
+            intent,
+        })?;
         let step = self.begin_crypto_step()?;
         let sealed = seal_anonymous(&bundle.bundle().identity, HS_AD, &initial_bytes, rng);
         self.finish_crypto_step(step)?;
-        Ok((
-            session,
-            Envelope::new(
-                EnvelopeKind::Handshake,
-                intro_token(device, epoch_day(now)),
+        let body = if let Some(admission) = admission {
+            if sealed.len()
+                > usize::try_from(admission.descriptor.max_first_ciphertext)
+                    .map_err(|_| NodeError::CorruptState)?
+            {
+                return Err(NodeError::Protocol(kult_protocol::ProtocolError::TooLarge));
+            }
+            let context = AdmissionContext {
+                target_account: *account,
+                target_device: *device,
+                bundle_digest: admission.descriptor.bundle_digest,
+                validity_epoch: admission.descriptor.validity_epoch,
+            };
+            let use_invitation = admission.invitation.filter(|_| !resetting);
+            let mut wrapped = AdmissionEnvelope::new(
+                context,
+                if use_invitation.is_some() {
+                    AdmissionProofKind::Invitation
+                } else {
+                    AdmissionProofKind::Puzzle
+                },
+                [0u8; 32],
+                target_bundle.without_invitation_capability().encode(),
                 sealed,
-            ),
-        ))
+            )?;
+            wrapped.proof = if let Some(invitation) = use_invitation {
+                admission_invitation_proof(&invitation, &wrapped.context, &wrapped.content_id)
+            } else {
+                solve_admission_puzzle(
+                    &wrapped.context,
+                    &wrapped.content_id,
+                    admission.descriptor.difficulty,
+                    MAX_ADMISSION_PUZZLE_ATTEMPTS,
+                    rng,
+                )?
+            };
+            wrapped.encode()?
+        } else {
+            // Existing Alpha contacts may still complete an authenticated
+            // legacy re-handshake. Unknown legacy senders are rejected before
+            // ML-KEM by the receiver and must exchange a current invitation.
+            sealed
+        };
+        let introduction_capability = self
+            .store
+            .contact_devices_for(account)?
+            .into_iter()
+            .find(|endpoint| endpoint.device == *device)
+            .and_then(|endpoint| endpoint.introduction_capability);
+        let token = introduction_capability.map_or_else(
+            || intro_token(device, epoch_day(now)),
+            |capability| {
+                kult_crypto::discovery_introduction_token(&capability, device, epoch_day(now))
+            },
+        );
+        Ok((session, Envelope::new(EnvelopeKind::Handshake, token, body)))
+    }
+
+    fn sweep_admission(&mut self, now: u64, rng: &mut impl CryptoRngCore) -> Result<()> {
+        let requests = self
+            .store
+            .provisional_requests()?
+            .into_iter()
+            .filter(|request| request.expires_at <= now)
+            .take(MAX_ADMISSION_EXPIRIES_PER_TICK)
+            .collect::<Vec<_>>();
+        let remaining = MAX_ADMISSION_EXPIRIES_PER_TICK.saturating_sub(requests.len());
+        let tombstones = self
+            .store
+            .admission_tombstones()?
+            .into_iter()
+            .filter(|record| record.expires_at <= now)
+            .take(remaining)
+            .collect::<Vec<_>>();
+        if requests.is_empty() && tombstones.is_empty() {
+            return Ok(());
+        }
+        let receipt = self.store.commit_plan(
+            CommitPlan::AdmissionSweep(AdmissionSweepPlan {
+                requests: &requests,
+                tombstones: &tombstones,
+                now,
+                presentation_changed: !requests.is_empty(),
+            }),
+            rng,
+        )?;
+        let mut events = Vec::new();
+        for request in &requests {
+            if self.admission_notifications_remaining == 0 {
+                break;
+            }
+            self.admission_notifications_remaining -= 1;
+            events.push(Event::MessageRequestExpired {
+                request: request.request_id,
+            });
+        }
+        self.accept_commit_receipt(receipt, events);
+        Ok(())
     }
 
     fn sweep_ephemeral(&mut self, now: u64, rng: &mut impl CryptoRngCore) -> Result<()> {
@@ -2867,7 +5201,7 @@ impl Node {
         if due.is_empty() {
             return Ok(());
         }
-        let me = self.identity.public().ed;
+        let me = self.account.ed;
         let queue = self.store.queue_all()?;
         let mut tombstones = Vec::new();
         let mut pairwise_deletes = Vec::new();
@@ -2994,6 +5328,7 @@ impl Node {
                 delete_capabilities: &[],
                 clear_reset_markers: &[],
                 delete_controls: &[],
+                wake: &[],
                 acknowledge_presentation: None,
                 presentation_changed: true,
             }),
@@ -3112,8 +5447,11 @@ impl Node {
                         device: account,
                         name: None,
                         certificate: Vec::new(),
+                        authority: Vec::new(),
                         bundle: contact.bundle,
                         hints: contact.hints,
+                        introduction_capability: None,
+                        introduction_generation: 0,
                         manifest_generation: 0,
                         manifest_state_id: [0u8; 32],
                         last_seen: now,
@@ -3178,6 +5516,7 @@ impl Node {
                         delete_capabilities: &[],
                         clear_reset_markers: &[marker],
                         delete_controls: &[],
+                        wake: &[],
                         acknowledge_presentation: None,
                         presentation_changed: false,
                     }),
@@ -3211,6 +5550,7 @@ impl Node {
                     media_transfers: &[],
                     media_objects: &[],
                     delete_controls: &[],
+                    wake: &[],
                     presentation_changed: false,
                 }),
                 rng,
@@ -3219,7 +5559,96 @@ impl Node {
             for route in prepared {
                 self.sessions.insert(route.route, route.after);
                 self.capabilities_advertised.remove(&route.route);
+                self.discovery_advertised.remove(&route.route);
+                self.rendezvous_advertised.remove(&route.route);
+                self.rendezvous_refresh_requested.insert(route.route);
             }
+            self.after_memory_replacement()?;
+        }
+        Ok(())
+    }
+
+    fn process_rendezvous_rehandshakes(
+        &mut self,
+        now: u64,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<()> {
+        let mut due = self
+            .rendezvous_rehandshake_requested
+            .iter()
+            .copied()
+            .collect::<Vec<_>>();
+        due.sort_unstable();
+        due.truncate(MAX_RENDEZVOUS_REHANDSHAKES_PER_TICK);
+        for peer_device in due {
+            let Some(before) = self.store.get_session(&peer_device)? else {
+                self.rendezvous_rehandshake_requested.remove(&peer_device);
+                continue;
+            };
+            if before.hybrid_service_exporter().is_some() {
+                self.rendezvous_rehandshake_requested.remove(&peer_device);
+                continue;
+            }
+            let Some(endpoint) = self.store.contact_devices()?.into_iter().find(|endpoint| {
+                endpoint.device == peer_device
+                    && endpoint.revoked_at.is_none()
+                    && !endpoint.bundle.is_empty()
+            }) else {
+                continue;
+            };
+            let Ok((after, envelope)) = self.prepare_session(
+                &endpoint.account,
+                &peer_device,
+                &endpoint.bundle,
+                &pad(&[])?,
+                now,
+                rng,
+            ) else {
+                continue;
+            };
+            let queue = QueueItem {
+                peer: peer_device,
+                msg_id: None,
+                group_msg_id: None,
+                class: QueueClass::Normal,
+                created_at: now,
+                attempts: 0,
+                next_attempt_at: now,
+                envelope,
+            };
+            self.store.commit_plan(
+                CommitPlan::PairwiseSend(PairwiseSendPlan {
+                    sessions: &[SessionTransition {
+                        peer_device,
+                        before: Some(&before),
+                        after: &after,
+                    }],
+                    message: None,
+                    message_update: None,
+                    deliveries: &[],
+                    delivery_updates: &[],
+                    queue: &[queue],
+                    groups: &[],
+                    authorities: &[],
+                    scheduled: None,
+                    clear_capabilities: &[peer_device],
+                    clear_reset_markers: &[],
+                    ephemeral: None,
+                    media_transfers: &[],
+                    media_objects: &[],
+                    delete_controls: &[],
+                    wake: &[],
+                    presentation_changed: false,
+                }),
+                rng,
+            )?;
+            self.before_memory_replacement()?;
+            self.sessions.insert(peer_device, after);
+            self.capabilities_advertised.remove(&peer_device);
+            self.discovery_advertised.remove(&peer_device);
+            self.rendezvous_advertised.remove(&peer_device);
+            self.rendezvous_refresh_requested.insert(peer_device);
+            self.rendezvous_rehandshake_requested.remove(&peer_device);
             self.after_memory_replacement()?;
         }
         Ok(())
@@ -3396,6 +5825,7 @@ impl Node {
                             delete_capabilities: &[],
                             clear_reset_markers: &[],
                             delete_controls: &[],
+                            wake: &[],
                             acknowledge_presentation: None,
                             presentation_changed: false,
                         }),
@@ -3436,6 +5866,7 @@ impl Node {
                         media_transfers: &[],
                         media_objects: &[],
                         delete_controls: &[],
+                        wake: &[],
                         presentation_changed: false,
                     }),
                     rng,
@@ -3445,6 +5876,9 @@ impl Node {
                     self.sessions.insert(route.route, route.after);
                     if route.resets_capabilities {
                         self.capabilities_advertised.remove(&route.route);
+                        self.discovery_advertised.remove(&route.route);
+                        self.rendezvous_advertised.remove(&route.route);
+                        self.rendezvous_refresh_requested.insert(route.route);
                     }
                 }
                 self.after_memory_replacement()?;
@@ -3456,12 +5890,13 @@ impl Node {
     // ---- receive path ------------------------------------------------------
 
     fn apply_deferred_controls(&mut self, now: u64, rng: &mut impl CryptoRngCore) -> Result<bool> {
+        self.sweep_group_invitations(now, rng)?;
         let mut made_progress = false;
         for control in self
             .store
             .deferred_controls(MAX_DEFERRED_CONTROLS_PER_TICK)?
         {
-            let (applied, acknowledged) = match control.kind {
+            let (applied, deleted_atomically) = match control.kind {
                 DeferredControlKind::AttachmentBulk => {
                     let acknowledged = self.apply_attachment_bulk(
                         control.peer,
@@ -3475,15 +5910,32 @@ impl Node {
                 }
                 DeferredControlKind::GroupControl => {
                     let mut established = false;
-                    self.apply_group_control(&control, now, rng, &mut established)?
+                    self.apply_group_control(&control, now, rng, &mut established, false)?
                 }
             };
             if !applied {
                 continue;
             }
             made_progress = true;
-            if acknowledged {
+            if deleted_atomically {
                 continue;
+            }
+            if control.kind == DeferredControlKind::GroupControl
+                && self.accepted_group_origin_control(&control)?
+            {
+                let acknowledgement = ReceiptPayload {
+                    acks: vec![control.content_id],
+                    nacks: Vec::new(),
+                }
+                .encode();
+                if !self.commit_pairwise_control_send(
+                    &control.peer_device,
+                    &acknowledgement,
+                    now,
+                    rng,
+                )? {
+                    continue;
+                }
             }
             let receipt = self.store.commit_plan(
                 CommitPlan::Maintenance(MaintenancePlan {
@@ -3505,6 +5957,7 @@ impl Node {
                     delete_capabilities: &[],
                     clear_reset_markers: &[],
                     delete_controls: &[control],
+                    wake: &[],
                     acknowledge_presentation: None,
                     presentation_changed: true,
                 }),
@@ -3578,12 +6031,13 @@ impl Node {
                 delete_capabilities: &[],
                 clear_reset_markers: &[],
                 delete_controls: &[],
+                wake: &[],
                 acknowledge_presentation: None,
                 presentation_changed: false,
             }),
             rng,
         )?;
-        Ok(Consumed::DoneAtomic)
+        Ok(Consumed::RejectedAtomic)
     }
 
     fn consume(
@@ -3676,6 +6130,7 @@ impl Node {
                             ConsumeOrigin {
                                 depth: 1,
                                 pending_sequence: None,
+                                transport: origin.transport,
                             },
                             now,
                             rng,
@@ -3683,7 +6138,12 @@ impl Node {
                         )? {
                             // Reassembled before its session exists — stash
                             // the inner envelope for later ticks.
-                            match self.store.pending_push(&inner, now, rng) {
+                            match self.store.pending_push_with_transport(
+                                &inner,
+                                now,
+                                origin.transport,
+                                rng,
+                            ) {
                                 Ok(_) | Err(kult_store::StoreError::PendingQuota) => {}
                                 Err(error) => return Err(error.into()),
                             }
@@ -3692,9 +6152,14 @@ impl Node {
                 }
                 Ok(Consumed::Done)
             }
-            EnvelopeKind::Handshake => {
-                self.consume_handshake(env, origin.pending_sequence, now, rng, established)
-            }
+            EnvelopeKind::Handshake => self.consume_handshake(
+                env,
+                origin.pending_sequence,
+                origin.transport,
+                now,
+                rng,
+                established,
+            ),
             EnvelopeKind::Message | EnvelopeKind::Receipt | EnvelopeKind::GroupControl => {
                 self.consume_ratchet(env, origin.pending_sequence, now, rng, established)
             }
@@ -3704,10 +6169,29 @@ impl Node {
         }
     }
 
+    fn reserve_admission_candidate(&mut self, transport: AdmissionTransportClass) -> bool {
+        if self
+            .admission_deadline
+            .is_some_and(|deadline| Instant::now() >= deadline)
+        {
+            return false;
+        }
+        let index = admission_transport_index(transport);
+        let Some(remaining) = self.admission_carrier_remaining.get_mut(index) else {
+            return false;
+        };
+        if *remaining == 0 {
+            return false;
+        }
+        *remaining -= 1;
+        true
+    }
+
     fn consume_handshake(
         &mut self,
         env: &Envelope,
         pending_sequence: Option<i64>,
+        transport: AdmissionTransportClass,
         now: u64,
         rng: &mut impl CryptoRngCore,
         established: &mut bool,
@@ -3715,43 +6199,111 @@ impl Node {
         // Every failure below is permanent for this envelope (it cannot
         // become decryptable later), so it is marked seen and dropped —
         // parsers never panic, dropped flights never wedge the queue.
+        let content_id = env.content_id();
+        let mut admission_bundle_digest = None;
+        let mut invitation_admission = false;
+        let admission = if AdmissionEnvelope::is_encoded(&env.body) {
+            if !self.reserve_admission_candidate(transport) {
+                return Ok(Consumed::Later);
+            }
+            if self.admission_puzzles_remaining == 0 {
+                return Ok(Consumed::Later);
+            }
+            self.admission_puzzles_remaining -= 1;
+            let Ok(admission) = AdmissionEnvelope::decode(&env.body) else {
+                return self.commit_terminal_input(content_id, pending_sequence, rng);
+            };
+            let Ok(target_bundle) = PrekeyBundle::decode(&admission.target_bundle) else {
+                return self.commit_terminal_input(content_id, pending_sequence, rng);
+            };
+            let Ok(target_policy) = target_bundle.verify_admission(now) else {
+                return self.commit_terminal_input(content_id, pending_sequence, rng);
+            };
+            if admission.context.target_account != self.account.ed
+                || admission.context.target_device != self.device_id()
+                || target_bundle.identity != self.device_identity.public()
+                || admission.context.bundle_digest != target_policy.descriptor.bundle_digest
+                || admission.context.validity_epoch != target_policy.descriptor.validity_epoch
+                || admission.sealed_flight.len()
+                    > usize::try_from(target_policy.descriptor.max_first_ciphertext)
+                        .map_err(|_| NodeError::CorruptState)?
+            {
+                return self.commit_terminal_input(content_id, pending_sequence, rng);
+            }
+            let proof_valid = match admission.proof_kind {
+                AdmissionProofKind::Puzzle => verify_admission_puzzle(
+                    &admission.context,
+                    &admission.content_id,
+                    &admission.proof,
+                    target_policy.descriptor.difficulty,
+                ),
+                AdmissionProofKind::Invitation => self
+                    .vault
+                    .invitation(&admission.context.bundle_digest, now)
+                    .map(|invitation| {
+                        admission_invitation_proof(
+                            &invitation,
+                            &admission.context,
+                            &admission.content_id,
+                        )
+                    })
+                    .is_some_and(|expected| bool::from(expected.ct_eq(&admission.proof))),
+            };
+            if !proof_valid {
+                return self.commit_terminal_input(content_id, pending_sequence, rng);
+            }
+            let current_pq = self.vault.pqspk()?;
+            if target_bundle.spk_id != self.vault.spk_id
+                || target_bundle.spk != self.vault.spk().public()
+                || target_bundle.pqspk_id != self.vault.pqspk_id
+                || target_bundle.pqspk.as_slice() != current_pq.public()
+            {
+                return self.commit_terminal_input(content_id, pending_sequence, rng);
+            }
+            admission_bundle_digest = Some(admission.context.bundle_digest);
+            invitation_admission = admission.proof_kind == AdmissionProofKind::Invitation;
+            Some(admission)
+        } else {
+            None
+        };
+        let sealed_flight = admission.as_ref().map_or(env.body.as_slice(), |admission| {
+            admission.sealed_flight.as_slice()
+        });
         let step = self.begin_crypto_step()?;
-        let device_open = open_anonymous(&self.device_identity, HS_AD, &env.body);
+        let device_open = open_anonymous(&self.device_identity, HS_AD, sealed_flight);
         self.finish_crypto_step(step)?;
         let (recipient, init_bytes) = if let Ok(bytes) = device_open {
             (&self.device_identity, bytes)
         } else {
-            let step = self.begin_crypto_step()?;
-            let account_open = open_anonymous(&self.identity, HS_AD, &env.body);
-            self.finish_crypto_step(step)?;
-            if let Ok(bytes) = account_open {
-                (&self.identity, bytes)
-            } else {
-                return self.commit_terminal_input(env.content_id(), pending_sequence, rng);
-            }
+            return self.commit_terminal_input(content_id, pending_sequence, rng);
         };
-        let (raw_initial, sender_bundle, sender_account_bundle) =
+        let (raw_initial, sender_bundle, sender_account_bundle, handshake_intent) =
             if let Some(flight) = decode_device_initial(&init_bytes) {
                 let Ok(bundle) = DevicePrekeyBundle::decode(&flight.return_bundle) else {
-                    return self.commit_terminal_input(env.content_id(), pending_sequence, rng);
+                    return self.commit_terminal_input(content_id, pending_sequence, rng);
                 };
                 if bundle.verify(now).is_err() {
-                    return self.commit_terminal_input(env.content_id(), pending_sequence, rng);
+                    return self.commit_terminal_input(content_id, pending_sequence, rng);
                 }
-                (flight.initial, Some(bundle), None)
+                (flight.initial, Some(bundle), None, flight.intent)
             } else if let Some(flight) = decode_account_initial(&init_bytes) {
                 let Ok(bundle) = PrekeyBundle::decode(&flight.return_bundle) else {
-                    return self.commit_terminal_input(env.content_id(), pending_sequence, rng);
+                    return self.commit_terminal_input(content_id, pending_sequence, rng);
                 };
                 if bundle.verify(now).is_err() {
-                    return self.commit_terminal_input(env.content_id(), pending_sequence, rng);
+                    return self.commit_terminal_input(content_id, pending_sequence, rng);
                 }
-                (flight.initial, None, Some(bundle))
+                (
+                    flight.initial,
+                    None,
+                    Some(bundle),
+                    DeviceHandshakeIntent::Legacy,
+                )
             } else {
-                (init_bytes, None, None)
+                (init_bytes, None, None, DeviceHandshakeIntent::Legacy)
             };
         let Ok(init) = InitialMessage::decode(&raw_initial) else {
-            return self.commit_terminal_input(env.content_id(), pending_sequence, rng);
+            return self.commit_terminal_input(content_id, pending_sequence, rng);
         };
         if sender_bundle
             .as_ref()
@@ -3760,16 +6312,43 @@ impl Node {
                 .as_ref()
                 .is_some_and(|bundle| bundle.identity != init.initiator)
         {
-            return self.commit_terminal_input(env.content_id(), pending_sequence, rng);
+            return self.commit_terminal_input(content_id, pending_sequence, rng);
+        }
+        let peer_device = init.initiator.ed;
+        let (peer, account_identity) = sender_bundle.as_ref().map_or_else(
+            || (peer_device, init.initiator.clone()),
+            |bundle| {
+                (
+                    bundle.manifest.account().ed,
+                    bundle.manifest.account().clone(),
+                )
+            },
+        );
+        let existing_contact = self.store.get_contact(&peer)?;
+        let was_new_contact = existing_contact.is_none();
+        if (admission.is_none() && was_new_contact) || self.store.is_blocked_identity(&peer)? {
+            return self.commit_terminal_input(content_id, pending_sequence, rng);
+        }
+        if was_new_contact {
+            let existing_request = self.store.get_provisional_request(&peer)?;
+            if existing_request.is_none()
+                && self.store.provisional_requests()?.len() >= kult_store::MAX_PROVISIONAL_REQUESTS
+            {
+                return self.commit_terminal_input(content_id, pending_sequence, rng);
+            }
+            if self.admission_kems_remaining == 0 {
+                return Ok(Consumed::Later);
+            }
+            self.admission_kems_remaining -= 1;
         }
         if init.spk_id != self.vault.spk_id || init.pqspk_id != self.vault.pqspk_id {
-            return self.commit_terminal_input(env.content_id(), pending_sequence, rng);
+            return self.commit_terminal_input(content_id, pending_sequence, rng);
         }
         let opk = match init.opk_id {
             Some(id) => match self.vault.opk(id) {
                 Some(opk) => Some(opk),
                 None => {
-                    return self.commit_terminal_input(env.content_id(), pending_sequence, rng);
+                    return self.commit_terminal_input(content_id, pending_sequence, rng);
                 }
             },
             None => None,
@@ -3780,7 +6359,7 @@ impl Node {
         let responded = respond(recipient, &spk, &pqspk, opk.as_ref(), &init, now, rng);
         self.finish_crypto_step(step)?;
         let Ok((mut session, first_payload)) = responded else {
-            return self.commit_terminal_input(env.content_id(), pending_sequence, rng);
+            return self.commit_terminal_input(content_id, pending_sequence, rng);
         };
 
         let before_vault = self.vault.encode();
@@ -3788,12 +6367,12 @@ impl Node {
         if let Some(id) = init.opk_id {
             candidate_vault.remove_opk(id);
         }
+        if invitation_admission {
+            if let Some(digest) = admission_bundle_digest {
+                candidate_vault.remove_invitation(&digest);
+            }
+        }
         let after_vault = candidate_vault.encode();
-        let peer_device = init.initiator.ed;
-        let (peer, account_identity) = sender_bundle.as_ref().map_or_else(
-            || (peer_device, init.initiator.clone()),
-            |bundle| (bundle.manifest.account.ed, bundle.manifest.account.clone()),
-        );
         let identity =
             postcard::to_allocvec(&account_identity).map_err(|_| NodeError::CorruptState)?;
         let account_return_bundle = sender_account_bundle
@@ -3801,9 +6380,7 @@ impl Node {
             .map_or_else(Vec::new, PrekeyBundle::encode);
         let account_return_hints = sender_account_bundle
             .as_ref()
-            .map_or_else(Vec::new, |bundle| bundle.relay_hints.clone());
-        let existing_contact = self.store.get_contact(&peer)?;
-        let was_new_contact = existing_contact.is_none();
+            .map_or_else(Vec::new, PrekeyBundle::transport_hints);
         let contact = if let Some(mut contact) = existing_contact {
             if sender_account_bundle.is_some() {
                 contact.identity = identity;
@@ -3827,14 +6404,14 @@ impl Node {
         let mut delete_endpoint_records = Vec::new();
         let mut cleanup_devices = Vec::new();
         if let Some(bundle) = sender_bundle.as_ref() {
-            self.validate_contact_device_manifest(&bundle.manifest)?;
+            self.validate_contact_device_manifest_visible(&bundle.manifest, now, rng)?;
             let state_id = bundle.manifest.state_id();
             let legacy_alias = existing_endpoints
                 .iter()
                 .find(|endpoint| endpoint.device == peer && endpoint.manifest_generation == 0);
             let mut active_by_issuance = bundle
                 .manifest
-                .devices
+                .devices()
                 .iter()
                 .filter(|entry| entry.revoked_at.is_none())
                 .collect::<Vec<_>>();
@@ -3847,7 +6424,8 @@ impl Node {
                 });
                 unique_earliest.then_some(first.certificate.device_id())
             });
-            for entry in &bundle.manifest.devices {
+            let encoded_authority = bundle.manifest.encode()?;
+            for entry in bundle.manifest.devices() {
                 let device = entry.certificate.device_id();
                 let prior = existing_endpoints
                     .iter()
@@ -3863,8 +6441,9 @@ impl Node {
                 let mut hints = prior.map_or_else(Vec::new, |endpoint| endpoint.hints.clone());
                 if advertised {
                     endpoint_bundle = bundle.prekey.encode();
-                    if !bundle.prekey.relay_hints.is_empty() || hints.is_empty() {
-                        hints = bundle.prekey.relay_hints.clone();
+                    let advertised_hints = bundle.prekey.transport_hints();
+                    if !advertised_hints.is_empty() || hints.is_empty() {
+                        hints = advertised_hints;
                     }
                 }
                 let endpoint = ContactDeviceRecord {
@@ -3873,9 +6452,14 @@ impl Node {
                     name: Some(entry.name.clone()),
                     certificate: postcard::to_allocvec(&entry.certificate)
                         .map_err(|_| NodeError::CorruptState)?,
+                    authority: encoded_authority.clone(),
                     bundle: endpoint_bundle,
                     hints,
-                    manifest_generation: bundle.manifest.generation,
+                    introduction_capability: prior
+                        .and_then(|endpoint| endpoint.introduction_capability),
+                    introduction_generation: prior
+                        .map_or(0, |endpoint| endpoint.introduction_generation),
+                    manifest_generation: bundle.manifest.generation(),
                     manifest_state_id: state_id,
                     last_seen: entry
                         .last_seen
@@ -3893,6 +6477,12 @@ impl Node {
                 .iter()
                 .map(|endpoint| endpoint.device)
                 .collect::<HashSet<_>>();
+            for orphaned in existing_endpoints.iter().filter(|endpoint| {
+                endpoint.manifest_generation > 0 && !manifest_devices.contains(&endpoint.device)
+            }) {
+                delete_endpoint_records.push(orphaned.clone());
+                cleanup_devices.push(orphaned.device);
+            }
             for legacy in existing_endpoints.iter().filter(|endpoint| {
                 endpoint.manifest_generation == 0
                     && !manifest_devices.contains(&endpoint.device)
@@ -3910,8 +6500,15 @@ impl Node {
                 device: peer_device,
                 name: None,
                 certificate: Vec::new(),
+                authority: Vec::new(),
                 bundle: account_return_bundle,
                 hints: account_return_hints,
+                introduction_capability: prior
+                    .as_ref()
+                    .and_then(|endpoint| endpoint.introduction_capability),
+                introduction_generation: prior
+                    .as_ref()
+                    .map_or(0, |endpoint| endpoint.introduction_generation),
                 manifest_generation: 0,
                 manifest_state_id: [0u8; 32],
                 last_seen: now,
@@ -3928,12 +6525,123 @@ impl Node {
                 if endpoint.certificate.is_empty() {
                     endpoint.certificate.clone_from(&prior.certificate);
                 }
+                if endpoint.authority.is_empty() {
+                    endpoint.authority.clone_from(&prior.authority);
+                }
                 if endpoint.name.is_none() {
                     endpoint.name.clone_from(&prior.name);
                 }
                 endpoint.last_seen = endpoint.last_seen.max(prior.last_seen);
             }
             endpoints.push(endpoint);
+        }
+
+        if was_new_contact {
+            if !existing_endpoints.is_empty() {
+                return self.commit_terminal_input(content_id, pending_sequence, rng);
+            }
+            let Ok(first_content) = unpad(&first_payload) else {
+                return self.commit_terminal_input(content_id, pending_sequence, rng);
+            };
+            if first_content.len() > MAX_PROVISIONAL_CONTENT_BYTES {
+                return self.commit_terminal_input(content_id, pending_sequence, rng);
+            }
+            let preview = if first_content.is_empty() {
+                String::new()
+            } else {
+                match decode_content(&first_content) {
+                    DecodedContent::LegacyText(text) | DecodedContent::Text { text, .. } => {
+                        bounded_request_preview(text)
+                    }
+                    _ => {
+                        return self.commit_terminal_input(content_id, pending_sequence, rng);
+                    }
+                }
+            };
+            let safety = safety_number(&self.account, &account_identity);
+            let session_bytes =
+                postcard::to_allocvec(&session).map_err(|_| NodeError::CorruptState)?;
+            let request = ProvisionalRequestRecord {
+                version: PROVISIONAL_REQUEST_VERSION,
+                request_id: content_id,
+                account: peer,
+                device: peer_device,
+                contact,
+                devices: endpoints,
+                session: session_bytes,
+                first_content,
+                preview,
+                safety_number: safety.digits,
+                safety_number_qr: safety.qr,
+                arrived_at: now,
+                expires_at: now.saturating_add(MAX_PROVISIONAL_LIFETIME_SECS),
+                transport,
+            };
+            let before = self.store.get_provisional_request(&peer)?;
+            if before.as_ref().is_some_and(|prior| {
+                (request.arrived_at, request.request_id) <= (prior.arrived_at, prior.request_id)
+            }) {
+                return self.commit_terminal_input(content_id, pending_sequence, rng);
+            }
+            let vault_changed = init.opk_id.is_some() || invitation_admission;
+            let prekeys = vault_changed.then_some(PrekeyTransition {
+                before: Some(before_vault.as_ref()),
+                after: after_vault.as_ref(),
+            });
+            let source_pending = Self::pending_delete(pending_sequence, content_id);
+            let staged = self.store.commit_plan(
+                CommitPlan::AdmissionStage(AdmissionStagePlan {
+                    prekeys,
+                    before: before.as_ref(),
+                    after: &request,
+                    content_id,
+                    source_pending,
+                    presentation_changed: true,
+                }),
+                rng,
+            );
+            let receipt = match staged {
+                Ok(receipt) => receipt,
+                Err(kult_store::StoreError::AdmissionQuota) => {
+                    return self.commit_terminal_input(content_id, pending_sequence, rng);
+                }
+                Err(error) => return Err(error.into()),
+            };
+            self.before_memory_replacement()?;
+            if vault_changed {
+                self.vault = candidate_vault;
+            }
+            self.after_memory_replacement()?;
+            let events = if self.admission_notifications_remaining == 0 {
+                Vec::new()
+            } else {
+                self.admission_notifications_remaining -= 1;
+                vec![Event::MessageRequestReceived {
+                    request: content_id,
+                }]
+            };
+            self.accept_commit_receipt(receipt, events);
+            return Ok(Consumed::DoneAtomic);
+        }
+
+        let prior_session = self.store.get_session(&peer_device)?;
+        let keep_prior_session = match decide_inbound_session(
+            self.device_id(),
+            peer_device,
+            prior_session.as_ref().map(Session::session_id),
+            handshake_intent,
+        ) {
+            HandshakeSessionDecision::Reject => {
+                return self.commit_terminal_input(content_id, pending_sequence, rng);
+            }
+            HandshakeSessionDecision::KeepPrior => true,
+            HandshakeSessionDecision::AcceptInbound => false,
+        };
+        if keep_prior_session {
+            session = prior_session
+                .as_ref()
+                .ok_or(NodeError::CorruptState)?
+                .clone();
         }
 
         cleanup_devices.sort_unstable();
@@ -3945,22 +6653,181 @@ impl Node {
             }
         }
         let mut delete_capabilities = cleanup_devices.clone();
-        delete_capabilities.push(peer_device);
+        if !keep_prior_session {
+            delete_capabilities.push(peer_device);
+        }
         delete_capabilities.sort_unstable();
         delete_capabilities.dedup();
+        let replacing_prior_session = prior_session.is_some() && !keep_prior_session;
+        let mut reset_message_candidates = Vec::new();
+        let mut reset_delivery_candidates = Vec::new();
+        let mut retired_group_message_candidates = Vec::new();
+        let mut retired_group_delivery_candidates = Vec::new();
+        let mut reset_events = Vec::new();
+        if replacing_prior_session {
+            for message_before in self.store.messages_with(&peer)? {
+                if message_before.direction != Direction::Outbound {
+                    continue;
+                }
+                let mut deliveries = self.store.message_device_deliveries(&message_before.id)?;
+                let mut changed = false;
+                for delivery in &mut deliveries {
+                    if delivery.device != peer_device
+                        || matches!(
+                            delivery.state,
+                            DeliveryState::Delivered | DeliveryState::Failed
+                        )
+                        || (delivery.state == DeliveryState::Queued && delivery.wire_id.is_none())
+                    {
+                        continue;
+                    }
+                    let before = delivery.clone();
+                    delivery.state = DeliveryState::Queued;
+                    delivery.wire_id = None;
+                    reset_delivery_candidates.push((before, delivery.clone()));
+                    changed = true;
+                }
+                if !changed {
+                    continue;
+                }
+                let mut message_after = message_before.clone();
+                message_after.state = if deliveries
+                    .iter()
+                    .any(|delivery| delivery.state == DeliveryState::Delivered)
+                {
+                    DeliveryState::Delivered
+                } else if deliveries
+                    .iter()
+                    .any(|delivery| delivery.state == DeliveryState::Sent)
+                {
+                    DeliveryState::Sent
+                } else if deliveries
+                    .iter()
+                    .any(|delivery| delivery.state == DeliveryState::Queued)
+                {
+                    DeliveryState::Queued
+                } else {
+                    DeliveryState::Failed
+                };
+                message_after.wire_id = deliveries.iter().find_map(|delivery| delivery.wire_id);
+                if message_after != message_before {
+                    reset_events.push(Event::DeliveryUpdated {
+                        id: message_after.id,
+                        state: message_after.state,
+                    });
+                    reset_message_candidates.push((message_before, message_after));
+                }
+            }
+            for message_before in self.store.all_group_messages()? {
+                if message_before.direction != Direction::Outbound {
+                    continue;
+                }
+                let mut deliveries = self.store.message_device_deliveries(&message_before.id)?;
+                let mut changed = false;
+                for delivery in &mut deliveries {
+                    if delivery.account != peer
+                        || delivery.device != peer_device
+                        || matches!(
+                            delivery.state,
+                            DeliveryState::Delivered | DeliveryState::Failed
+                        )
+                    {
+                        continue;
+                    }
+                    let before = delivery.clone();
+                    delivery.state = DeliveryState::Failed;
+                    delivery.wire_id = None;
+                    retired_group_delivery_candidates.push((before, delivery.clone()));
+                    changed = true;
+                }
+                if !changed {
+                    continue;
+                }
+                let account_deliveries = deliveries
+                    .iter()
+                    .filter(|delivery| delivery.account == peer)
+                    .collect::<Vec<_>>();
+                let mut message_after = message_before.clone();
+                let account = message_after
+                    .deliveries
+                    .iter_mut()
+                    .find(|delivery| delivery.peer == peer)
+                    .ok_or(NodeError::CorruptState)?;
+                account.state = if account_deliveries
+                    .iter()
+                    .any(|delivery| delivery.state == DeliveryState::Delivered)
+                {
+                    DeliveryState::Delivered
+                } else if account_deliveries
+                    .iter()
+                    .any(|delivery| delivery.state == DeliveryState::Sent)
+                {
+                    DeliveryState::Sent
+                } else if account_deliveries
+                    .iter()
+                    .any(|delivery| delivery.state == DeliveryState::Queued)
+                {
+                    DeliveryState::Queued
+                } else {
+                    DeliveryState::Failed
+                };
+                account.wire_id = account_deliveries
+                    .iter()
+                    .find_map(|delivery| delivery.wire_id);
+                let account_state = account.state;
+                if message_after != message_before {
+                    reset_events.push(Event::GroupDeliveryUpdated {
+                        id: message_after.id,
+                        peer,
+                        state: account_state,
+                    });
+                    retired_group_message_candidates.push((message_before, message_after));
+                }
+            }
+        }
+        let reset_messages = reset_message_candidates
+            .iter()
+            .map(|(before, after)| MessageTransition { before, after })
+            .collect::<Vec<_>>();
+        let reset_deliveries = reset_delivery_candidates
+            .iter()
+            .map(|(before, after)| DeliveryTransition { before, after })
+            .collect::<Vec<_>>();
+        let retire_group_messages = retired_group_message_candidates
+            .iter()
+            .map(|(before, after)| GroupMessageTransition { before, after })
+            .collect::<Vec<_>>();
+        let retire_group_deliveries = retired_group_delivery_candidates
+            .iter()
+            .map(|(before, after)| DeliveryTransition { before, after })
+            .collect::<Vec<_>>();
         let cleanup_set = cleanup_devices.iter().copied().collect::<HashSet<_>>();
         let delete_queue = self
             .store
             .queue_all()?
             .into_iter()
             .filter_map(|(sequence, item)| {
-                cleanup_set.contains(&item.peer).then_some(QueueDelete {
-                    sequence,
-                    content_id: item.envelope.content_id(),
-                })
+                (cleanup_set.contains(&item.peer)
+                    || (replacing_prior_session && item.peer == peer_device))
+                    .then_some(QueueDelete {
+                        sequence,
+                        content_id: item.envelope.content_id(),
+                    })
             })
             .collect::<Vec<_>>();
-        let group_candidates = self.prepare_groups_on_session_established(&peer)?;
+        if delete_queue.len() > kult_store::MAX_COMMIT_QUEUE_ROWS
+            || reset_messages.len() > kult_store::MAX_COMMIT_QUEUE_ROWS
+            || reset_deliveries.len() > kult_store::MAX_COMMIT_QUEUE_ROWS
+            || retire_group_messages.len() > kult_store::MAX_COMMIT_QUEUE_ROWS
+            || retire_group_deliveries.len() > kult_store::MAX_COMMIT_QUEUE_ROWS
+        {
+            return Ok(Consumed::Later);
+        }
+        let group_candidates = if keep_prior_session {
+            Vec::new()
+        } else {
+            self.prepare_groups_on_session_established(&peer, rng)?
+        };
         let group_transitions = group_candidates
             .iter()
             .map(|(before, after)| GroupTransition { before, after })
@@ -3975,10 +6842,10 @@ impl Node {
             }
             _ => None,
         };
-        let needs_receipt = prepared_inbound.is_some();
+        let needs_receipt = prepared_inbound.is_some() || keep_prior_session;
         let receipt_queue = if needs_receipt {
             let payload = ReceiptPayload {
-                acks: vec![env.content_id()],
+                acks: vec![content_id],
                 nacks: Vec::new(),
             }
             .encode();
@@ -3986,24 +6853,69 @@ impl Node {
         } else {
             None
         };
-        let prior_session = self.store.get_session(&peer_device)?;
         let delete_devices = delete_endpoint_records
             .iter()
             .map(|before| ContactDeviceDelete { before })
             .collect::<Vec<_>>();
-        let source_pending = Self::pending_delete(pending_sequence, env.content_id());
+        let source_pending = Self::pending_delete(pending_sequence, content_id);
         let mut events = Vec::new();
-        if was_new_contact {
-            events.push(Event::ContactAdded { peer });
+        if !keep_prior_session {
+            events.push(Event::SessionEstablished { peer });
         }
-        events.push(Event::SessionEstablished { peer });
+        events.extend(reset_events);
         if let Some(prepared) = prepared_inbound.as_ref() {
             events.extend(prepared.events.clone());
         }
-        let prekeys = init.opk_id.map(|_| PrekeyTransition {
+        let vault_changed = init.opk_id.is_some() || invitation_admission;
+        let prekeys = vault_changed.then_some(PrekeyTransition {
             before: Some(before_vault.as_ref()),
             after: after_vault.as_ref(),
         });
+        let inbound_media_transfers = prepared_inbound
+            .as_ref()
+            .map_or(0, |prepared| prepared.media_transfers.len());
+        let inbound_media_objects = prepared_inbound
+            .as_ref()
+            .map_or(0, |prepared| prepared.media_objects.len());
+        let mutation_count = [
+            usize::from(prekeys.is_some()),
+            1,
+            1,
+            endpoints.len(),
+            delete_devices.len(),
+            delete_sessions.len(),
+            delete_capabilities.len(),
+            delete_queue.len(),
+            reset_messages.len(),
+            reset_deliveries.len(),
+            retire_group_messages.len(),
+            retire_group_deliveries.len(),
+            group_transitions.len(),
+            usize::from(
+                prepared_inbound
+                    .as_ref()
+                    .and_then(|prepared| prepared.message.as_ref())
+                    .is_some(),
+            ),
+            usize::from(
+                prepared_inbound
+                    .as_ref()
+                    .and_then(|prepared| prepared.ephemeral.as_ref())
+                    .is_some(),
+            ),
+            inbound_media_transfers,
+            inbound_media_objects,
+            usize::from(receipt_queue.is_some()),
+            1,
+            usize::from(needs_receipt),
+            usize::from(source_pending.is_some()),
+        ]
+        .into_iter()
+        .try_fold(0usize, usize::checked_add)
+        .ok_or(NodeError::CorruptState)?;
+        if mutation_count > kult_store::MAX_COMMIT_MUTATIONS {
+            return Ok(Consumed::Later);
+        }
         let receipt = self.store.commit_plan(
             CommitPlan::HandshakeReceive(HandshakeReceivePlan {
                 prekeys,
@@ -4018,6 +6930,10 @@ impl Node {
                 delete_sessions: &delete_sessions,
                 delete_capabilities: &delete_capabilities,
                 delete_queue: &delete_queue,
+                reset_messages: &reset_messages,
+                reset_deliveries: &reset_deliveries,
+                retire_group_messages: &retire_group_messages,
+                retire_group_deliveries: &retire_group_deliveries,
                 groups: &group_transitions,
                 message: prepared_inbound
                     .as_ref()
@@ -4032,7 +6948,7 @@ impl Node {
                     .as_ref()
                     .map_or(&[], |prepared| prepared.media_objects.as_slice()),
                 queue: receipt_queue.as_slice(),
-                content_id: env.content_id(),
+                content_id,
                 received_at: now,
                 receipt_replay: needs_receipt,
                 source_pending,
@@ -4041,17 +6957,35 @@ impl Node {
             rng,
         )?;
         self.before_memory_replacement()?;
-        if init.opk_id.is_some() {
+        if vault_changed {
             self.vault = candidate_vault;
         }
         for device in cleanup_devices {
             self.sessions.remove(&device);
             self.capabilities_advertised.remove(&device);
+            self.discovery_advertised.remove(&device);
+            self.rendezvous_advertised.remove(&device);
+            self.rendezvous_refresh_requested.remove(&device);
+            self.rendezvous_rehandshake_requested.remove(&device);
         }
-        self.capabilities_advertised.remove(&peer_device);
+        if !keep_prior_session {
+            self.capabilities_advertised.remove(&peer_device);
+            self.discovery_advertised.remove(&peer_device);
+            self.rendezvous_advertised.remove(&peer_device);
+            self.rendezvous_refresh_requested.insert(peer_device);
+            self.rendezvous_rehandshake_requested.remove(&peer_device);
+        }
         self.sessions.insert(peer_device, session);
-        *established = true;
+        *established |= !keep_prior_session;
         self.after_memory_replacement()?;
+        let deleted = delete_queue
+            .iter()
+            .map(|delete| delete.sequence)
+            .collect::<HashSet<_>>();
+        self.held_notified
+            .retain(|sequence| !deleted.contains(sequence));
+        self.call_queue_deadlines
+            .retain(|sequence, _| !deleted.contains(sequence));
         self.accept_commit_receipt(receipt, events);
         if let Some(prepared) = prepared_inbound {
             for transfer in prepared.attachment_updates {
@@ -4115,6 +7049,9 @@ impl Node {
         match env.kind {
             EnvelopeKind::Message => {
                 if let DecodedContent::CallControl { control, .. } = decode_content(&body) {
+                    if self.wake_collection_deadline.is_some() {
+                        return Ok(Consumed::Later);
+                    }
                     let source_pending = Self::pending_delete(pending_sequence, env.content_id());
                     self.store.commit_plan(
                         CommitPlan::PairwiseReceive(PairwiseReceivePlan {
@@ -4218,9 +7155,12 @@ impl Node {
                             deliveries: &[],
                             group_messages: &[],
                             groups: &[],
+                            contact_devices: &[],
                             media_transfers: &[],
                             media_objects: &[],
                             capabilities: None,
+                            rendezvous: None,
+                            wake: None,
                             deferred_control: Some(&control),
                             content_id: env.content_id(),
                             source_pending,
@@ -4230,6 +7170,462 @@ impl Node {
                     )?;
                     self.before_memory_replacement()?;
                     self.sessions.insert(peer_device, after);
+                    self.after_memory_replacement()?;
+                } else if is_wake_capability_control(&body) {
+                    let Ok(control) = WakeCapabilityControl::decode(&body) else {
+                        return self.commit_terminal_input(env.content_id(), pending_sequence, rng);
+                    };
+                    if control.sender_account != peer
+                        || control.sender_device != peer_device
+                        || control.recipient_account != self.account.ed
+                        || control.recipient_device != self.device_id()
+                    {
+                        return self.commit_terminal_input(env.content_id(), pending_sequence, rng);
+                    }
+                    let endpoints = self.store.contact_devices_for(&peer)?;
+                    let Some(sender) = endpoints
+                        .iter()
+                        .find(|endpoint| endpoint.device == peer_device)
+                    else {
+                        return self.commit_terminal_input(env.content_id(), pending_sequence, rng);
+                    };
+                    if sender.revoked_at.is_some()
+                        || sender.manifest_generation != control.authority_generation
+                    {
+                        return self.commit_terminal_input(env.content_id(), pending_sequence, rng);
+                    }
+                    let incoming = control
+                        .capabilities
+                        .iter()
+                        .map(|capability| {
+                            let provider = WakeProvider::new(
+                                capability.origin.clone(),
+                                capability.static_key,
+                            )?;
+                            if provider.provider_id()
+                                != kult_protocol::wake_provider_id(
+                                    capability.origin.as_bytes(),
+                                    &capability.static_key,
+                                )
+                                .map_err(kult_transport::TransportError::Protocol)?
+                                || capability.expires_at <= now
+                                || capability.expires_at
+                                    > now.saturating_add(WAKE_CAPABILITY_MAX_LIFETIME_SECS)
+                            {
+                                return Err(kult_transport::TransportError::UnsupportedHint);
+                            }
+                            WakeStoredCapability::new(
+                                WakeCapabilityDirection::Remote,
+                                capability.origin.clone(),
+                                capability.static_key,
+                                capability.capability.as_bytes().to_vec(),
+                                capability.expires_at,
+                            )
+                            .map_err(|_| kult_transport::TransportError::UnsupportedHint)
+                        })
+                        .collect::<kult_transport::Result<Vec<_>>>();
+                    let Ok(incoming) = incoming else {
+                        return self.commit_terminal_input(env.content_id(), pending_sequence, rng);
+                    };
+                    let before_state = self
+                        .store
+                        .get_wake_service_state(&peer_device)?
+                        .ok_or(NodeError::CorruptState)?;
+                    if before_state.session_id != *before.session_id() {
+                        return Err(NodeError::CorruptState);
+                    }
+                    let mut after_state = before_state.clone();
+                    if after_state
+                        .replace_direction(
+                            WakeCapabilityDirection::Remote,
+                            control.generation,
+                            incoming,
+                        )
+                        .is_err()
+                    {
+                        return self.commit_terminal_input(env.content_id(), pending_sequence, rng);
+                    }
+                    let conflict = after_state.remote_conflict_generation
+                        == Some(control.generation)
+                        && before_state != after_state;
+                    let wake = (before_state != after_state).then_some(WakeServiceTransition {
+                        peer_device,
+                        before: &before_state,
+                        after: &after_state,
+                    });
+                    let source_pending = Self::pending_delete(pending_sequence, env.content_id());
+                    let committed = self.store.commit_plan(
+                        CommitPlan::ReceiptReceive(ReceiptReceivePlan {
+                            session: SessionTransition {
+                                peer_device,
+                                before: Some(&before),
+                                after: &after,
+                            },
+                            delete_queue: &[],
+                            queue: &[],
+                            messages: &[],
+                            deliveries: &[],
+                            group_messages: &[],
+                            groups: &[],
+                            contact_devices: &[],
+                            media_transfers: &[],
+                            media_objects: &[],
+                            capabilities: None,
+                            rendezvous: None,
+                            wake,
+                            deferred_control: None,
+                            content_id: env.content_id(),
+                            source_pending,
+                            presentation_changed: conflict,
+                        }),
+                        rng,
+                    )?;
+                    self.before_memory_replacement()?;
+                    self.sessions.insert(peer_device, after);
+                    self.after_memory_replacement()?;
+                    let events = conflict.then_some(Event::WakeConflict {
+                        peer,
+                        device: peer_device,
+                        generation: control.generation,
+                    });
+                    self.accept_commit_receipt(committed, events);
+                } else if is_rendezvous_provider_control(&body) {
+                    let Ok(control) = RendezvousProviderControl::decode(&body) else {
+                        return self.commit_terminal_input(env.content_id(), pending_sequence, rng);
+                    };
+                    if control.account != peer || control.device != peer_device {
+                        return self.commit_terminal_input(env.content_id(), pending_sequence, rng);
+                    }
+                    let endpoints = self.store.contact_devices_for(&peer)?;
+                    let Some(sender) = endpoints
+                        .iter()
+                        .find(|endpoint| endpoint.device == peer_device)
+                    else {
+                        return self.commit_terminal_input(env.content_id(), pending_sequence, rng);
+                    };
+                    if sender.revoked_at.is_some()
+                        || sender.manifest_generation != control.authority_generation
+                    {
+                        return self.commit_terminal_input(env.content_id(), pending_sequence, rng);
+                    }
+                    let incoming = control
+                        .providers
+                        .iter()
+                        .map(|provider| {
+                            RendezvousProvider::new(provider.origin.clone(), provider.static_key)
+                        })
+                        .collect::<kult_transport::Result<Vec<_>>>();
+                    let Ok(incoming) = incoming else {
+                        return self.commit_terminal_input(env.content_id(), pending_sequence, rng);
+                    };
+
+                    let service_before = self.store.get_rendezvous_service_state(&peer_device)?;
+                    let mut service_after = service_before.clone();
+                    let mut provider_set_conflict = false;
+                    if let Some(candidate) = service_after.as_mut() {
+                        let mut current = candidate
+                            .providers
+                            .iter()
+                            .filter(|provider| provider.lookup_enabled)
+                            .map(|provider| {
+                                (
+                                    provider.provider_id,
+                                    provider.origin.clone(),
+                                    provider.static_key,
+                                )
+                            })
+                            .collect::<Vec<_>>();
+                        current.sort();
+                        let mut proposed = incoming
+                            .iter()
+                            .map(|provider| {
+                                (
+                                    provider.provider_id(),
+                                    provider.origin().to_owned(),
+                                    provider.static_key(),
+                                )
+                            })
+                            .collect::<Vec<_>>();
+                        proposed.sort();
+                        if control.generation < candidate.remote_provider_generation {
+                            return self.commit_terminal_input(
+                                env.content_id(),
+                                pending_sequence,
+                                rng,
+                            );
+                        }
+                        if candidate
+                            .remote_provider_conflict_generation
+                            .is_some_and(|generation| control.generation <= generation)
+                        {
+                            return self.commit_terminal_input(
+                                env.content_id(),
+                                pending_sequence,
+                                rng,
+                            );
+                        }
+                        if control.generation == candidate.remote_provider_generation
+                            && current != proposed
+                        {
+                            candidate.remote_provider_conflict_generation =
+                                Some(control.generation);
+                            for provider in &mut candidate.providers {
+                                if provider.lookup_enabled {
+                                    provider.lookup_enabled = false;
+                                    provider.routes.clear();
+                                    provider.routes_expires_at = 0;
+                                }
+                            }
+                            provider_set_conflict = true;
+                        }
+                        if control.generation > candidate.remote_provider_generation {
+                            candidate.remote_provider_generation = control.generation;
+                            candidate.remote_provider_conflict_generation = None;
+                            for provider in &mut candidate.providers {
+                                provider.lookup_enabled = false;
+                            }
+                            for provider in &incoming {
+                                candidate
+                                    .provider_mut(
+                                        provider.provider_id(),
+                                        provider.origin().to_owned(),
+                                        provider.static_key(),
+                                    )?
+                                    .lookup_enabled = true;
+                            }
+                            candidate.providers.retain(|provider| {
+                                provider.publish_enabled || provider.lookup_enabled
+                            });
+                            candidate
+                                .providers
+                                .sort_by_key(|provider| provider.provider_id);
+                        }
+                    }
+
+                    if provider_set_conflict {
+                        let Some(before_state) = service_before.as_ref() else {
+                            return Err(NodeError::CorruptState);
+                        };
+                        let Some(after_state) = service_after.as_ref() else {
+                            return Err(NodeError::CorruptState);
+                        };
+                        let source_pending =
+                            Self::pending_delete(pending_sequence, env.content_id());
+                        let committed = self.store.commit_plan(
+                            CommitPlan::ReceiptReceive(ReceiptReceivePlan {
+                                session: SessionTransition {
+                                    peer_device,
+                                    before: Some(&before),
+                                    after: &after,
+                                },
+                                delete_queue: &[],
+                                queue: &[],
+                                messages: &[],
+                                deliveries: &[],
+                                group_messages: &[],
+                                groups: &[],
+                                contact_devices: &[],
+                                media_transfers: &[],
+                                media_objects: &[],
+                                capabilities: None,
+                                rendezvous: Some(RendezvousServiceTransition {
+                                    peer_device,
+                                    before: before_state,
+                                    after: after_state,
+                                }),
+                                wake: None,
+                                deferred_control: None,
+                                content_id: env.content_id(),
+                                source_pending,
+                                presentation_changed: true,
+                            }),
+                            rng,
+                        )?;
+                        self.before_memory_replacement()?;
+                        self.sessions.insert(peer_device, after);
+                        self.rendezvous_refresh_requested.remove(&peer_device);
+                        self.after_memory_replacement()?;
+                        self.accept_commit_receipt(
+                            committed,
+                            [Event::RendezvousConflict {
+                                peer,
+                                device: peer_device,
+                                provider: [0u8; 32],
+                            }],
+                        );
+                        return Ok(Consumed::DoneAtomic);
+                    }
+
+                    let local_control = self.local_rendezvous_provider_control()?;
+                    let advertise = local_control.is_some()
+                        && !self.rendezvous_advertised.contains(&peer_device);
+                    let response = local_control
+                        .filter(|_| advertise)
+                        .map(|control| {
+                            self.prepare_control_queue(
+                                &mut after,
+                                peer_device,
+                                &control.encode()?,
+                                now,
+                                rng,
+                            )
+                        })
+                        .transpose()?;
+                    let rendezvous = match (service_before.as_ref(), service_after.as_ref()) {
+                        (Some(before_state), Some(after_state)) if before_state != after_state => {
+                            Some(RendezvousServiceTransition {
+                                peer_device,
+                                before: before_state,
+                                after: after_state,
+                            })
+                        }
+                        _ => None,
+                    };
+                    let source_pending = Self::pending_delete(pending_sequence, env.content_id());
+                    self.store.commit_plan(
+                        CommitPlan::ReceiptReceive(ReceiptReceivePlan {
+                            session: SessionTransition {
+                                peer_device,
+                                before: Some(&before),
+                                after: &after,
+                            },
+                            delete_queue: &[],
+                            queue: response.as_slice(),
+                            messages: &[],
+                            deliveries: &[],
+                            group_messages: &[],
+                            groups: &[],
+                            contact_devices: &[],
+                            media_transfers: &[],
+                            media_objects: &[],
+                            capabilities: None,
+                            rendezvous,
+                            wake: None,
+                            deferred_control: None,
+                            content_id: env.content_id(),
+                            source_pending,
+                            presentation_changed: false,
+                        }),
+                        rng,
+                    )?;
+                    self.before_memory_replacement()?;
+                    self.sessions.insert(peer_device, after);
+                    if advertise {
+                        self.rendezvous_advertised.insert(peer_device);
+                    }
+                    if service_before.is_none() && self.device_id() < peer_device {
+                        self.rendezvous_rehandshake_requested.insert(peer_device);
+                    }
+                    if service_before != service_after {
+                        self.rendezvous_refresh_requested.insert(peer_device);
+                    }
+                    self.after_memory_replacement()?;
+                } else if is_discovery_upgrade_control(&body) {
+                    let Ok(control) = DiscoveryUpgradeControl::decode(&body) else {
+                        return self.commit_terminal_input(env.content_id(), pending_sequence, rng);
+                    };
+                    if control.account != peer
+                        || validate_discovery_upgrade_routes(&control.routes).is_err()
+                    {
+                        return self.commit_terminal_input(env.content_id(), pending_sequence, rng);
+                    }
+                    let endpoints = self.store.contact_devices_for(&peer)?;
+                    let Some(sender) = endpoints
+                        .iter()
+                        .find(|endpoint| endpoint.device == peer_device)
+                    else {
+                        return self.commit_terminal_input(env.content_id(), pending_sequence, rng);
+                    };
+                    if sender.revoked_at.is_some()
+                        || sender.manifest_generation != control.authority_generation
+                    {
+                        return self.commit_terminal_input(env.content_id(), pending_sequence, rng);
+                    }
+                    let accepted_generation = endpoints
+                        .iter()
+                        .filter(|endpoint| endpoint.revoked_at.is_none())
+                        .map(|endpoint| endpoint.introduction_generation)
+                        .max()
+                        .unwrap_or_default();
+                    let conflicting = endpoints.iter().any(|endpoint| {
+                        endpoint.revoked_at.is_none()
+                            && endpoint.introduction_generation == control.generation
+                            && endpoint
+                                .introduction_capability
+                                .is_some_and(|capability| capability != control.capability)
+                    });
+                    if control.generation < accepted_generation || conflicting {
+                        return self.commit_terminal_input(env.content_id(), pending_sequence, rng);
+                    }
+
+                    let mut changed = Vec::new();
+                    for before_endpoint in &endpoints {
+                        if before_endpoint.revoked_at.is_some() {
+                            continue;
+                        }
+                        let mut after_endpoint = before_endpoint.clone();
+                        after_endpoint.introduction_capability = Some(control.capability);
+                        after_endpoint.introduction_generation = control.generation;
+                        if after_endpoint.device == peer_device && control.routes_complete {
+                            after_endpoint.hints.clone_from(&control.routes);
+                        }
+                        if after_endpoint != *before_endpoint {
+                            changed.push((before_endpoint.clone(), after_endpoint));
+                        }
+                    }
+                    let transitions = changed
+                        .iter()
+                        .map(
+                            |(before_endpoint, after_endpoint)| ContactDeviceTransition {
+                                before: before_endpoint,
+                                after: after_endpoint,
+                            },
+                        )
+                        .collect::<Vec<_>>();
+                    let advertise = !self.discovery_advertised.contains(&peer_device);
+                    let response = advertise
+                        .then(|| {
+                            self.prepare_control_queue(
+                                &mut after,
+                                peer_device,
+                                &self.local_discovery_upgrade()?.encode()?,
+                                now,
+                                rng,
+                            )
+                        })
+                        .transpose()?;
+                    let source_pending = Self::pending_delete(pending_sequence, env.content_id());
+                    self.store.commit_plan(
+                        CommitPlan::ReceiptReceive(ReceiptReceivePlan {
+                            session: SessionTransition {
+                                peer_device,
+                                before: Some(&before),
+                                after: &after,
+                            },
+                            delete_queue: &[],
+                            queue: response.as_slice(),
+                            messages: &[],
+                            deliveries: &[],
+                            group_messages: &[],
+                            groups: &[],
+                            contact_devices: &transitions,
+                            media_transfers: &[],
+                            media_objects: &[],
+                            capabilities: None,
+                            rendezvous: None,
+                            wake: None,
+                            deferred_control: None,
+                            content_id: env.content_id(),
+                            source_pending,
+                            presentation_changed: !transitions.is_empty(),
+                        }),
+                        rng,
+                    )?;
+                    self.before_memory_replacement()?;
+                    self.sessions.insert(peer_device, after);
+                    if advertise {
+                        self.discovery_advertised.insert(peer_device);
+                    }
                     self.after_memory_replacement()?;
                 } else if is_capability_control(&body) {
                     if let Ok(capabilities) = CapabilityControl::decode(&body) {
@@ -4260,9 +7656,12 @@ impl Node {
                                 deliveries: &[],
                                 group_messages: &[],
                                 groups: &[],
+                                contact_devices: &[],
                                 media_transfers: &[],
                                 media_objects: &[],
                                 capabilities: Some(&capabilities),
+                                rendezvous: None,
+                                wake: None,
                                 deferred_control: None,
                                 content_id: env.content_id(),
                                 source_pending,
@@ -4315,9 +7714,12 @@ impl Node {
                             deliveries: &delivery_transitions,
                             group_messages: &group_message_transitions,
                             groups: &group_transitions,
+                            contact_devices: &[],
                             media_transfers: &[],
                             media_objects: &[],
                             capabilities: None,
+                            rendezvous: None,
+                            wake: None,
                             deferred_control: None,
                             content_id: env.content_id(),
                             source_pending,
@@ -4353,9 +7755,12 @@ impl Node {
                             deliveries: &[],
                             group_messages: &[],
                             groups: &[],
+                            contact_devices: &[],
                             media_transfers: &[],
                             media_objects: &[],
                             capabilities: None,
+                            rendezvous: None,
+                            wake: None,
                             deferred_control: None,
                             content_id: env.content_id(),
                             source_pending,
@@ -4378,8 +7783,9 @@ impl Node {
                     body,
                     received_at: now,
                 };
+                let (retain_control, invitation_event) = self.admit_group_control(&control)?;
                 let source_pending = Self::pending_delete(pending_sequence, env.content_id());
-                self.store.commit_plan(
+                let receipt = self.store.commit_plan(
                     CommitPlan::ReceiptReceive(ReceiptReceivePlan {
                         session: SessionTransition {
                             peer_device,
@@ -4392,19 +7798,23 @@ impl Node {
                         deliveries: &[],
                         group_messages: &[],
                         groups: &[],
+                        contact_devices: &[],
                         media_transfers: &[],
                         media_objects: &[],
                         capabilities: None,
-                        deferred_control: Some(&control),
+                        rendezvous: None,
+                        wake: None,
+                        deferred_control: retain_control.then_some(&control),
                         content_id: env.content_id(),
                         source_pending,
-                        presentation_changed: false,
+                        presentation_changed: invitation_event.is_some(),
                     }),
                     rng,
                 )?;
                 self.before_memory_replacement()?;
                 self.sessions.insert(peer_device, after);
                 self.after_memory_replacement()?;
+                self.accept_commit_receipt(receipt, invitation_event);
                 Ok(Consumed::DoneAtomic)
             }
             _ => unreachable!("consume() routes only Message/Receipt/GroupControl here"),
@@ -4740,19 +8150,25 @@ impl Node {
 
     fn local_capabilities() -> CapabilityControl {
         CapabilityControl {
-            formats: vec![FormatCapabilities {
-                format_version: CONTENT_FORMAT_V1,
-                kinds: vec![
-                    CONTENT_KIND_TEXT,
-                    CONTENT_KIND_ATTACHMENT,
-                    CONTENT_KIND_MENTION,
-                    CONTENT_KIND_EDIT,
-                    CONTENT_KIND_EPHEMERAL,
-                    CONTENT_KIND_POLL,
-                    CONTENT_KIND_GROUP_AUTHORITY,
-                    CONTENT_KIND_CALL_CONTROL,
-                ],
-            }],
+            formats: vec![
+                FormatCapabilities {
+                    format_version: CONTENT_FORMAT_V1,
+                    kinds: vec![
+                        CONTENT_KIND_TEXT,
+                        CONTENT_KIND_ATTACHMENT,
+                        CONTENT_KIND_MENTION,
+                        CONTENT_KIND_EDIT,
+                        CONTENT_KIND_EPHEMERAL,
+                        CONTENT_KIND_POLL,
+                        CONTENT_KIND_GROUP_AUTHORITY,
+                        CONTENT_KIND_CALL_CONTROL,
+                    ],
+                },
+                FormatCapabilities {
+                    format_version: kult_protocol::GROUP_ORIGIN_CAPABILITY_FORMAT,
+                    kinds: vec![kult_protocol::GROUP_ORIGIN_CAPABILITY_KIND],
+                },
+            ],
         }
     }
 
@@ -4784,6 +8200,765 @@ impl Node {
             return Ok(());
         }
         self.capabilities_advertised.insert(*peer);
+        Ok(())
+    }
+
+    fn local_discovery_upgrade(&self) -> Result<DiscoveryUpgradeControl> {
+        let mut routes = if self.own_hints_authoritative {
+            encode_hints(&self.own_hints)
+        } else {
+            Vec::new()
+        };
+        routes.sort();
+        routes.dedup();
+        let control = DiscoveryUpgradeControl {
+            account: self.account.ed,
+            capability: self.device_state.discovery.capability,
+            generation: self.device_state.discovery.generation,
+            authority_generation: self.device_state.manifest.generation(),
+            routes_complete: self.own_hints_authoritative,
+            routes,
+        };
+        // Encoding is the single canonical bound check used by both
+        // proactive advertisements and transactional responses.
+        control.encode()?;
+        Ok(control)
+    }
+
+    fn local_rendezvous_provider_control(&self) -> Result<Option<RendezvousProviderControl>> {
+        if self.rendezvous_provider_generation == 0 {
+            return Ok(None);
+        }
+        let mut providers = self
+            .rendezvous_providers
+            .iter()
+            .map(|provider| RendezvousProviderDescriptor {
+                origin: provider.origin().to_owned(),
+                static_key: provider.static_key(),
+            })
+            .collect::<Vec<_>>();
+        providers.sort();
+        let control = RendezvousProviderControl {
+            account: self.account.ed,
+            device: self.device_id(),
+            authority_generation: self.device_state.manifest.generation(),
+            generation: self.rendezvous_provider_generation,
+            providers,
+        };
+        control.encode()?;
+        Ok(Some(control))
+    }
+
+    fn advertise_rendezvous_providers(
+        &mut self,
+        now: u64,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<()> {
+        let Some(payload) = self
+            .local_rendezvous_provider_control()?
+            .map(|control| control.encode())
+            .transpose()?
+        else {
+            return Ok(());
+        };
+        let due = self
+            .sessions
+            .keys()
+            .filter(|peer| !self.rendezvous_advertised.contains(*peer))
+            .copied()
+            .collect::<Vec<_>>();
+        for peer in due {
+            if self.commit_pairwise_control_send(&peer, &payload, now, rng)? {
+                self.rendezvous_advertised.insert(peer);
+            }
+        }
+        Ok(())
+    }
+
+    fn synchronize_rendezvous_provider_roles(
+        &mut self,
+        now: u64,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<()> {
+        let configured = self.rendezvous_providers.clone();
+        let mut devices = self.sessions.keys().copied().collect::<Vec<_>>();
+        devices.sort_unstable();
+        for peer_device in devices {
+            let Some(before) = self.store.get_rendezvous_service_state(&peer_device)? else {
+                continue;
+            };
+            let mut after = before.clone();
+            let configured_ids = configured
+                .iter()
+                .map(RendezvousProvider::provider_id)
+                .collect::<HashSet<_>>();
+            for state in &mut after.providers {
+                if state.publish_enabled && !configured_ids.contains(&state.provider_id) {
+                    state.publish_enabled = false;
+                    state.withdrawal_pending = state.publish_generation > 0;
+                    state.next_register_at = now;
+                }
+            }
+            for provider in &configured {
+                let state = after.provider_mut(
+                    provider.provider_id(),
+                    provider.origin().to_owned(),
+                    provider.static_key(),
+                )?;
+                state.publish_enabled = true;
+                state.withdrawal_pending = false;
+                if state.next_register_at == 0 {
+                    state.next_register_at = now.saturating_add(rendezvous_jitter(rng));
+                }
+            }
+            after.providers.retain(|provider| {
+                provider.publish_enabled || provider.lookup_enabled || provider.withdrawal_pending
+            });
+            after.providers.sort_by_key(|provider| provider.provider_id);
+            if after != before {
+                self.store
+                    .put_rendezvous_service_state(&peer_device, &after, rng)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn mark_rendezvous_publication_dirty(&mut self, rng: &mut impl CryptoRngCore) -> Result<()> {
+        let mut devices = self.sessions.keys().copied().collect::<Vec<_>>();
+        devices.sort_unstable();
+        for peer_device in devices {
+            let Some(mut state) = self.store.get_rendezvous_service_state(&peer_device)? else {
+                continue;
+            };
+            let before = state.clone();
+            for provider in &mut state.providers {
+                if provider.publish_enabled || provider.withdrawal_pending {
+                    provider.next_register_at = 0;
+                    provider.circuit_open_until = 0;
+                    provider.consecutive_failures = 0;
+                }
+            }
+            if state != before {
+                self.store
+                    .put_rendezvous_service_state(&peer_device, &state, rng)?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn maintain_rendezvous(&mut self, now: u64, rng: &mut impl CryptoRngCore) -> Result<()> {
+        self.synchronize_rendezvous_provider_roles(now, rng)?;
+        let Some(client) = self.rendezvous_client.clone() else {
+            return Ok(());
+        };
+        let deadline = Instant::now() + RENDEZVOUS_MAINTENANCE_BUDGET;
+        let mut operations_left = MAX_RENDEZVOUS_OPERATIONS_PER_TICK;
+
+        let mut registrations = Vec::new();
+        let mut devices = self.sessions.keys().copied().collect::<Vec<_>>();
+        devices.sort_unstable();
+        for peer_device in &devices {
+            let Some(state) = self.store.get_rendezvous_service_state(peer_device)? else {
+                continue;
+            };
+            for provider in &state.providers {
+                if (provider.publish_enabled || provider.withdrawal_pending)
+                    && provider.next_register_at <= now
+                    && provider.circuit_open_until <= now
+                    && (!provider.publish_enabled || self.own_hints_authoritative)
+                {
+                    let Ok(provider) =
+                        RendezvousProvider::new(provider.origin.clone(), provider.static_key)
+                    else {
+                        continue;
+                    };
+                    registrations.push((*peer_device, provider));
+                }
+            }
+        }
+        registrations.sort_by_key(|(device, provider)| (*device, provider.provider_id()));
+        for (peer_device, provider) in registrations {
+            if operations_left < 3 || Instant::now() >= deadline {
+                break;
+            }
+            self.maintain_rendezvous_registration(
+                &client,
+                peer_device,
+                &provider,
+                now,
+                deadline,
+                &mut operations_left,
+                rng,
+            )
+            .await?;
+        }
+
+        let mut requested = self.rendezvous_refresh_requested.clone();
+        for (_, item) in self.store.queue_all()? {
+            if !self.has_fresh_relationship_route(&item.peer, now)? {
+                requested.insert(item.peer);
+            }
+        }
+        requested.extend(self.active_conversation_rendezvous_devices()?);
+        requested.extend(self.active_rendezvous_devices()?);
+        let mut lookups = requested.into_iter().collect::<Vec<_>>();
+        lookups.sort_unstable();
+        for peer_device in lookups {
+            if operations_left < 3 || Instant::now() >= deadline {
+                break;
+            }
+            let Some(state) = self.store.get_rendezvous_service_state(&peer_device)? else {
+                self.rendezvous_refresh_requested.remove(&peer_device);
+                continue;
+            };
+            let peer_identity = match self.rendezvous_peer_identity(&peer_device) {
+                Ok(identity) => identity,
+                Err(_) => {
+                    self.rendezvous_refresh_requested.remove(&peer_device);
+                    continue;
+                }
+            };
+            let explicitly_requested = self.rendezvous_refresh_requested.contains(&peer_device);
+            let mut providers = state
+                .providers
+                .iter()
+                .filter(|provider| {
+                    provider.lookup_enabled
+                        && (explicitly_requested || provider.next_lookup_at <= now)
+                        && provider.circuit_open_until <= now
+                })
+                .filter_map(|provider| {
+                    RendezvousProvider::new(provider.origin.clone(), provider.static_key).ok()
+                })
+                .collect::<Vec<_>>();
+            providers.sort_by_key(RendezvousProvider::provider_id);
+            for provider in providers {
+                if operations_left < 3 || Instant::now() >= deadline {
+                    break;
+                }
+                self.maintain_rendezvous_lookup(
+                    &client,
+                    peer_device,
+                    &peer_identity,
+                    &provider,
+                    explicitly_requested,
+                    now,
+                    deadline,
+                    &mut operations_left,
+                    rng,
+                )
+                .await?;
+            }
+            self.rendezvous_refresh_requested.remove(&peer_device);
+        }
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)] // fixed provider operation context
+    async fn maintain_rendezvous_registration(
+        &mut self,
+        client: &Arc<dyn RendezvousClient>,
+        peer_device: [u8; 32],
+        provider: &RendezvousProvider,
+        now: u64,
+        deadline: Instant,
+        operations_left: &mut usize,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<()> {
+        let operation = (
+            peer_device,
+            provider.provider_id(),
+            RendezvousOperationKind::Register,
+        );
+        if !self.rendezvous_inflight.insert(operation) {
+            return Ok(());
+        }
+        let result = self
+            .try_rendezvous_registration(
+                client,
+                peer_device,
+                provider,
+                now,
+                deadline,
+                operations_left,
+                rng,
+            )
+            .await;
+        self.rendezvous_inflight.remove(&operation);
+        result
+    }
+
+    #[allow(clippy::too_many_arguments)] // fixed provider operation context
+    async fn try_rendezvous_registration(
+        &mut self,
+        client: &Arc<dyn RendezvousClient>,
+        peer_device: [u8; 32],
+        provider: &RendezvousProvider,
+        now: u64,
+        deadline: Instant,
+        operations_left: &mut usize,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<()> {
+        let Some(mut state) = self.store.get_rendezvous_service_state(&peer_device)? else {
+            return Ok(());
+        };
+        let Some(provider_state) = state
+            .providers
+            .iter_mut()
+            .find(|state| state.provider_id == provider.provider_id())
+        else {
+            return Ok(());
+        };
+        if provider_state.next_register_at > now
+            || provider_state.circuit_open_until > now
+            || (!provider_state.publish_enabled && !provider_state.withdrawal_pending)
+        {
+            return Ok(());
+        }
+        let withdrawal = !provider_state.publish_enabled && provider_state.withdrawal_pending;
+        let generation = provider_state
+            .publish_generation
+            .checked_add(1)
+            .ok_or(NodeError::RendezvousUnavailable)?
+            .max(self.rendezvous_provider_generation.max(1));
+        provider_state.publish_generation = generation;
+        // The reserved generation remains due until success/failure below is
+        // durably recorded. A process interruption therefore skips, rather
+        // than reuses, a generation.
+        self.store
+            .put_rendezvous_service_state(&peer_device, &state, rng)?;
+
+        let mut routes = if withdrawal {
+            Vec::new()
+        } else {
+            self.own_hints
+                .iter()
+                .filter_map(|hint| rendezvous_record_route(hint).ok())
+                .collect::<Vec<_>>()
+        };
+        routes.sort();
+        routes.dedup();
+        routes.truncate(kult_protocol::MAX_RENDEZVOUS_ROUTES);
+        let exporter = state.hybrid_service_exporter;
+        let local_recipient = self.device_identity.public();
+        let current_epoch = rendezvous_epoch(now);
+        let expires_at = now.saturating_add(u64::from(RENDEZVOUS_MAX_TTL_SECS));
+
+        let attempted = async {
+            let mut current_record = None;
+            for epoch in [current_epoch, current_epoch.saturating_add(1)] {
+                if *operations_left == 0 || Instant::now() >= deadline {
+                    return Ok::<bool, NodeError>(false);
+                }
+                let keys = derive_rendezvous_epoch_keys(
+                    &exporter,
+                    &provider.provider_id(),
+                    &local_recipient,
+                    epoch,
+                )?;
+                let record = RendezvousRouteRecord {
+                    epoch,
+                    generation,
+                    issued_at: now,
+                    expires_at,
+                    routes: routes.clone(),
+                };
+                let plaintext = record.encode()?;
+                let request = RendezvousRegisterRequest {
+                    slot: keys.slot(),
+                    epoch,
+                    ttl_seconds: RENDEZVOUS_MAX_TTL_SECS,
+                    sealed_record: seal_rendezvous_record(&keys, &plaintext, rng),
+                };
+                *operations_left -= 1;
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero()
+                    || !matches!(
+                        before_timeout(remaining, client.register(provider, &request)).await,
+                        Some(Ok(_))
+                    )
+                {
+                    return Ok(false);
+                }
+                if epoch == current_epoch {
+                    current_record = Some((keys, record));
+                }
+            }
+
+            // A fixed acknowledgement only confirms that the service handled
+            // a body. Registration is successful solely when the endpoint can
+            // retrieve and authenticate its exact current record.
+            let Some((keys, expected)) = current_record else {
+                return Ok(false);
+            };
+            if *operations_left == 0 || Instant::now() >= deadline {
+                return Ok(false);
+            }
+            let request = RendezvousLookupRequest {
+                slot: keys.slot(),
+                epoch: current_epoch,
+            };
+            *operations_left -= 1;
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            let Some(Ok(sealed)) =
+                before_timeout(remaining, client.lookup(provider, &request)).await
+            else {
+                return Ok(false);
+            };
+            let plaintext = open_rendezvous_record(&keys, &sealed)?;
+            let observed = RendezvousRouteRecord::decode(plaintext.as_ref())?;
+            observed.validate_acceptance(current_epoch, now, 0, generation)?;
+            Ok(observed == expected)
+        }
+        .await
+        .unwrap_or(false);
+
+        let Some(mut state) = self.store.get_rendezvous_service_state(&peer_device)? else {
+            return Ok(());
+        };
+        if let Some(provider_state) = state
+            .providers
+            .iter_mut()
+            .find(|state| state.provider_id == provider.provider_id())
+        {
+            if attempted {
+                provider_state.registration_confirmed_at = now;
+                provider_state.consecutive_failures = 0;
+                provider_state.circuit_open_until = 0;
+                provider_state.withdrawal_pending = false;
+                provider_state.next_register_at = if provider_state.publish_enabled {
+                    now.saturating_add(RENDEZVOUS_REGISTER_REFRESH_SECS)
+                        .saturating_add(rendezvous_jitter(rng))
+                } else {
+                    0
+                };
+            } else {
+                note_rendezvous_failure(provider_state, RendezvousOperationKind::Register, now);
+            }
+        }
+        state.providers.retain(|provider| {
+            provider.publish_enabled || provider.lookup_enabled || provider.withdrawal_pending
+        });
+        self.store
+            .put_rendezvous_service_state(&peer_device, &state, rng)?;
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)] // fixed provider operation context
+    async fn maintain_rendezvous_lookup(
+        &mut self,
+        client: &Arc<dyn RendezvousClient>,
+        peer_device: [u8; 32],
+        peer_identity: &IdentityPublic,
+        provider: &RendezvousProvider,
+        force: bool,
+        now: u64,
+        deadline: Instant,
+        operations_left: &mut usize,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<()> {
+        let operation = (
+            peer_device,
+            provider.provider_id(),
+            RendezvousOperationKind::Lookup,
+        );
+        if !self.rendezvous_inflight.insert(operation) {
+            return Ok(());
+        }
+        let result = self
+            .try_rendezvous_lookup(
+                client,
+                peer_device,
+                peer_identity,
+                provider,
+                force,
+                now,
+                deadline,
+                operations_left,
+                rng,
+            )
+            .await;
+        self.rendezvous_inflight.remove(&operation);
+        result
+    }
+
+    #[allow(clippy::too_many_arguments)] // fixed provider operation context
+    async fn try_rendezvous_lookup(
+        &mut self,
+        client: &Arc<dyn RendezvousClient>,
+        peer_device: [u8; 32],
+        peer_identity: &IdentityPublic,
+        provider: &RendezvousProvider,
+        force: bool,
+        now: u64,
+        deadline: Instant,
+        operations_left: &mut usize,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<()> {
+        let Some(state) = self.store.get_rendezvous_service_state(&peer_device)? else {
+            return Ok(());
+        };
+        let Some(provider_state) = state
+            .providers
+            .iter()
+            .find(|state| state.provider_id == provider.provider_id())
+        else {
+            return Ok(());
+        };
+        if !provider_state.lookup_enabled
+            || (!force && provider_state.next_lookup_at > now)
+            || provider_state.circuit_open_until > now
+        {
+            return Ok(());
+        }
+        let exporter = state.hybrid_service_exporter;
+        let clock_floor = provider_state.clock_floor;
+        let accepted_generation = provider_state.accepted_generation;
+        let conflict_floor = provider_state.conflict_generation;
+        let accepted_routes_expires_at = provider_state.routes_expires_at;
+        let accepted_routes = provider_state.routes.clone();
+        let current_epoch = rendezvous_epoch(now);
+        let Some(previous_epoch) = current_epoch.checked_sub(1) else {
+            return Ok(());
+        };
+        let Some(next_epoch) = current_epoch.checked_add(1) else {
+            return Ok(());
+        };
+        let mut candidates = Vec::new();
+        for epoch in [previous_epoch, current_epoch, next_epoch] {
+            if *operations_left == 0 || Instant::now() >= deadline {
+                break;
+            }
+            let Ok(keys) = derive_rendezvous_epoch_keys(
+                &exporter,
+                &provider.provider_id(),
+                peer_identity,
+                epoch,
+            ) else {
+                continue;
+            };
+            let request = RendezvousLookupRequest {
+                slot: keys.slot(),
+                epoch,
+            };
+            *operations_left -= 1;
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            let Some(Ok(sealed)) =
+                before_timeout(remaining, client.lookup(provider, &request)).await
+            else {
+                continue;
+            };
+            let Ok(plaintext) = open_rendezvous_record(&keys, &sealed) else {
+                continue;
+            };
+            let Ok(record) = RendezvousRouteRecord::decode(plaintext.as_ref()) else {
+                continue;
+            };
+            if record
+                .validate_acceptance(epoch, now, clock_floor, accepted_generation)
+                .is_err()
+            {
+                continue;
+            }
+            let mut stored = Vec::with_capacity(record.routes.len());
+            let mut valid_routes = true;
+            for route in &record.routes {
+                if rendezvous_route_hint(route).is_err() {
+                    valid_routes = false;
+                    break;
+                }
+                match RendezvousStoredRoute::new(route.kind, route.value.as_bytes()) {
+                    Ok(route) => stored.push(route),
+                    Err(_) => {
+                        valid_routes = false;
+                        break;
+                    }
+                }
+            }
+            if valid_routes {
+                candidates.push((record, stored));
+            }
+        }
+
+        if let Some(floor) = conflict_floor {
+            candidates.retain(|(record, _)| record.generation > floor);
+        }
+        let mut conflict_generation = candidates
+            .iter()
+            .filter(|(record, stored)| {
+                record.generation == accepted_generation
+                    && accepted_generation != 0
+                    && if accepted_routes.is_empty() {
+                        !stored.is_empty()
+                    } else {
+                        stored != &accepted_routes
+                            || record.expires_at != accepted_routes_expires_at
+                    }
+            })
+            .map(|(record, _)| record.generation)
+            .max();
+        for left in 0..candidates.len() {
+            for right in left + 1..candidates.len() {
+                let left_record = &candidates[left].0;
+                let right_record = &candidates[right].0;
+                if left_record.generation == right_record.generation
+                    && (left_record.expires_at != right_record.expires_at
+                        || left_record.routes != right_record.routes)
+                {
+                    conflict_generation =
+                        Some(conflict_generation.unwrap_or(0).max(left_record.generation));
+                }
+            }
+        }
+        let selected = if conflict_generation.is_some() {
+            None
+        } else {
+            candidates
+                .into_iter()
+                .max_by_key(|(record, _)| (record.generation, record.issued_at, record.epoch))
+        };
+
+        let Some(mut state) = self.store.get_rendezvous_service_state(&peer_device)? else {
+            return Ok(());
+        };
+        if let Some(provider_state) = state
+            .providers
+            .iter_mut()
+            .find(|state| state.provider_id == provider.provider_id())
+        {
+            if let Some(generation) = conflict_generation {
+                provider_state.conflict_generation = Some(
+                    provider_state
+                        .conflict_generation
+                        .unwrap_or(0)
+                        .max(generation),
+                );
+                provider_state.routes.clear();
+                provider_state.routes_expires_at = 0;
+                note_rendezvous_failure(provider_state, RendezvousOperationKind::Lookup, now);
+            } else if let Some((record, stored)) = selected {
+                provider_state.accepted_generation = record.generation;
+                provider_state.conflict_generation = None;
+                provider_state.clock_floor = provider_state.clock_floor.max(now);
+                provider_state.routes_expires_at = if stored.is_empty() {
+                    0
+                } else {
+                    record.expires_at
+                };
+                provider_state.routes = stored;
+                provider_state.consecutive_failures = 0;
+                provider_state.circuit_open_until = 0;
+                provider_state.next_lookup_at = if provider_state.routes_expires_at == 0 {
+                    now.saturating_add(RENDEZVOUS_REGISTER_REFRESH_SECS)
+                        .saturating_add(rendezvous_jitter(rng))
+                } else {
+                    provider_state
+                        .routes_expires_at
+                        .saturating_sub(RENDEZVOUS_NEAR_EXPIRY_SECS)
+                        .max(now.saturating_add(RENDEZVOUS_BACKOFF_MIN_SECS))
+                };
+            } else {
+                if provider_state.routes_expires_at <= now {
+                    provider_state.routes.clear();
+                    provider_state.routes_expires_at = 0;
+                }
+                note_rendezvous_failure(provider_state, RendezvousOperationKind::Lookup, now);
+            }
+        }
+        self.store
+            .put_rendezvous_service_state(&peer_device, &state, rng)?;
+        if conflict_generation.is_some() {
+            self.events.push_back(Event::RendezvousConflict {
+                peer: self.account_for_device(&peer_device)?,
+                device: peer_device,
+                provider: provider.provider_id(),
+            });
+        }
+        Ok(())
+    }
+
+    fn rendezvous_peer_identity(&self, peer_device: &[u8; 32]) -> Result<IdentityPublic> {
+        let endpoint = self
+            .store
+            .contact_devices()?
+            .into_iter()
+            .find(|endpoint| {
+                endpoint.device == *peer_device
+                    && endpoint.revoked_at.is_none()
+                    && !endpoint.certificate.is_empty()
+            })
+            .ok_or(NodeError::RendezvousUnavailable)?;
+        let (certificate, remainder): (DeviceAuthorityCertificate, &[u8]) =
+            postcard::take_from_bytes(&endpoint.certificate)
+                .map_err(|_| NodeError::CorruptState)?;
+        if !remainder.is_empty()
+            || certificate.verify().is_err()
+            || certificate.account.ed != endpoint.account
+            || certificate.device_id() != endpoint.device
+        {
+            return Err(NodeError::CorruptState);
+        }
+        Ok(certificate.device)
+    }
+
+    fn has_fresh_relationship_route(&self, peer_device: &[u8; 32], now: u64) -> Result<bool> {
+        if !self.base_hints_for(peer_device)?.is_empty() {
+            return Ok(true);
+        }
+        Ok(self
+            .store
+            .get_rendezvous_service_state(peer_device)?
+            .is_some_and(|state| {
+                state.providers.iter().any(|provider| {
+                    provider.lookup_enabled
+                        && provider.routes_expires_at > now
+                        && !provider.routes.is_empty()
+                })
+            }))
+    }
+
+    fn active_conversation_rendezvous_devices(&self) -> Result<Vec<[u8; 32]>> {
+        let mut devices = Vec::new();
+        for peer in &self.rendezvous_active_conversations {
+            let endpoints = self.store.contact_devices_for(peer)?;
+            if endpoints.is_empty() {
+                if self.store.get_contact(peer)?.is_some() {
+                    devices.push(*peer);
+                }
+            } else {
+                devices.extend(
+                    endpoints
+                        .into_iter()
+                        .filter(|endpoint| endpoint.revoked_at.is_none())
+                        .map(|endpoint| endpoint.device),
+                );
+            }
+        }
+        devices.sort_unstable();
+        devices.dedup();
+        Ok(devices)
+    }
+
+    fn advertise_discovery_upgrades(
+        &mut self,
+        now: u64,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<()> {
+        let due = self
+            .sessions
+            .keys()
+            .filter(|peer| !self.discovery_advertised.contains(*peer))
+            .copied()
+            .collect::<Vec<_>>();
+        if due.is_empty() {
+            return Ok(());
+        }
+        let payload = self.local_discovery_upgrade()?.encode()?;
+        for peer in due {
+            if self.commit_pairwise_control_send(&peer, &payload, now, rng)? {
+                self.discovery_advertised.insert(peer);
+            }
+        }
         Ok(())
     }
 
@@ -4953,6 +9128,7 @@ impl Node {
                 media_transfers,
                 media_objects,
                 delete_controls,
+                wake: &[],
                 presentation_changed: !media_transfers.is_empty() || !media_objects.is_empty(),
             }),
             rng,
@@ -5083,6 +9259,11 @@ impl Node {
                 after_group.pending.retain(|pending| {
                     !(pending.peer == peer && pending.wire_id.as_ref().is_some_and(acked))
                 });
+                if let Some(origin_after) =
+                    self.prepare_group_origin_ack(&after_group, &peer, peer_device, &receipt.acks)?
+                {
+                    after_group = origin_after;
+                }
                 if after_group != before_group {
                     groups.push((before_group, after_group));
                 }
@@ -5138,7 +9319,7 @@ impl Node {
     /// are recipient-scoped (ADR-0007), so only envelopes addressed to *this*
     /// node match — never multipath echoes of our own outbound.
     fn match_session(&self, token: &[u8; 32], now: u64) -> Option<[u8; 32]> {
-        let me = self.identity.public().ed;
+        let me = self.account.ed;
         let device = self.device_id();
         let today = epoch_day(now);
         let lo = today.saturating_sub(TOKEN_LOOKBACK_EPOCHS);
@@ -5165,14 +9346,22 @@ impl Node {
         if self.match_session(token, now).is_some() {
             return true;
         }
-        let me = self.identity.public().ed;
+        let me = self.account.ed;
         let device = self.device_id();
         let today = epoch_day(now);
         let lo = today.saturating_sub(TOKEN_LOOKBACK_EPOCHS);
         let hi = today + TOKEN_LOOKAHEAD_EPOCHS;
         (lo..=hi).any(|epoch| {
-            bool::from(intro_token(&me, epoch).ct_eq(token))
-                || (device != me && bool::from(intro_token(&device, epoch).ct_eq(token)))
+            bool::from(
+                kult_crypto::discovery_introduction_token(
+                    &self.device_state.discovery.capability,
+                    &device,
+                    epoch,
+                )
+                .ct_eq(token),
+            ) || (self.device_state.discovery.legacy_v1_enabled
+                && (bool::from(intro_token(&me, epoch).ct_eq(token))
+                    || (device != me && bool::from(intro_token(&device, epoch).ct_eq(token)))))
         })
     }
 
@@ -5226,12 +9415,225 @@ impl Node {
 
     // ---- send path (delivery engine + scheduler) ----------------------------
 
+    fn prepare_wake_pending(
+        &self,
+        peer_device: &[u8; 32],
+        now: u64,
+    ) -> Result<Option<PreparedWakeUpdate>> {
+        if self.wake_client.is_none() {
+            return Ok(None);
+        }
+        let Some(before) = self.store.get_wake_service_state(peer_device)? else {
+            return Ok(None);
+        };
+        if before.remote_conflict_generation.is_some() {
+            return Ok(None);
+        }
+        let mut after = before.clone();
+        for capability in after.remote_mut() {
+            if capability.expires_at > now {
+                capability.mark_pending(now)?;
+            }
+        }
+        if before == after {
+            return Ok(None);
+        }
+        Ok(Some(PreparedWakeUpdate {
+            peer_device: *peer_device,
+            before,
+            after,
+        }))
+    }
+
+    fn commit_wake_update(
+        &mut self,
+        update: &PreparedWakeUpdate,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<()> {
+        self.store.commit_plan(
+            CommitPlan::Maintenance(MaintenancePlan {
+                seen: &[],
+                delete_pending: &[],
+                delete_queue: &[],
+                update_queue: &[],
+                delete_replay: &[],
+                messages: &[],
+                deliveries: &[],
+                group_messages: &[],
+                groups: &[],
+                ephemeral: &[],
+                delete_messages: &[],
+                delete_group_messages: &[],
+                delete_media: &[],
+                delete_scheduled: &[],
+                delete_sessions: &[],
+                delete_capabilities: &[],
+                clear_reset_markers: &[],
+                delete_controls: &[],
+                wake: &[WakeServiceTransition {
+                    peer_device: update.peer_device,
+                    before: &update.before,
+                    after: &update.after,
+                }],
+                acknowledge_presentation: None,
+                presentation_changed: false,
+            }),
+            rng,
+        )?;
+        Ok(())
+    }
+
+    fn commit_wake_revocation(
+        &mut self,
+        before: &WakeRevocationRecord,
+        after: Option<&WakeRevocationRecord>,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<()> {
+        self.store.commit_plan(
+            CommitPlan::WakeRevocation(WakeRevocationPlan {
+                transitions: &[WakeRevocationTransition { before, after }],
+            }),
+            rng,
+        )?;
+        Ok(())
+    }
+
+    async fn maintain_wake(&mut self, now: u64, rng: &mut impl CryptoRngCore) -> Result<()> {
+        let deadline = Instant::now() + WAKE_MAINTENANCE_BUDGET;
+        let mut attempts = 0usize;
+        let mut revocation_attempts = 0usize;
+        let mut revocation_changes = 0usize;
+        let client = self.wake_client.clone();
+        let mut revocations = self.store.wake_revocations(MAX_WAKE_REVOCATION_ROWS)?;
+        revocations.sort_by_key(|record| {
+            (
+                if record.expires_at <= now {
+                    0
+                } else {
+                    record.next_attempt_at
+                },
+                record.id,
+            )
+        });
+        for before in revocations {
+            if revocation_changes >= MAX_WAKE_REVOCATION_CHANGES_PER_TICK
+                || Instant::now() >= deadline
+            {
+                break;
+            }
+            if before.expires_at <= now {
+                self.commit_wake_revocation(&before, None, rng)?;
+                revocation_changes += 1;
+                continue;
+            }
+            if before.next_attempt_at > now
+                || attempts >= MAX_WAKE_GATEWAY_OPERATIONS_PER_TICK
+                || revocation_attempts >= MAX_WAKE_REVOCATIONS_PER_TICK
+            {
+                continue;
+            }
+            let Some(client) = client.as_ref() else {
+                continue;
+            };
+            let provider = WakeProvider::new(before.origin.clone(), before.static_key)?;
+            if provider.provider_id() != before.provider_id {
+                return Err(NodeError::CorruptState);
+            }
+            let mut request_nonce = [0u8; 16];
+            rng.fill_bytes(&mut request_nonce);
+            if request_nonce == [0u8; 16] {
+                request_nonce[15] = 1;
+            }
+            let request = WakeTriggerRequest {
+                capability: before.decoded_capability()?,
+                request_nonce,
+            };
+            attempts += 1;
+            revocation_attempts += 1;
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            let outcome = before_timeout(remaining, client.revoke(&provider, &request)).await;
+            match outcome {
+                Some(Ok(())) => self.commit_wake_revocation(&before, None, rng)?,
+                Some(Err(_)) | None => {
+                    let mut after = before.clone();
+                    after.mark_failed(now)?;
+                    self.commit_wake_revocation(&before, Some(&after), rng)?;
+                }
+            }
+            revocation_changes += 1;
+        }
+        let Some(client) = client else {
+            return Ok(());
+        };
+        let mut devices = self.sessions.keys().copied().collect::<Vec<_>>();
+        devices.sort_unstable();
+        for peer_device in devices {
+            if attempts >= MAX_WAKE_GATEWAY_OPERATIONS_PER_TICK || Instant::now() >= deadline {
+                break;
+            }
+            let Some(before) = self.store.get_wake_service_state(&peer_device)? else {
+                continue;
+            };
+            if before.remote_conflict_generation.is_some() {
+                continue;
+            }
+            let mut after = before.clone();
+            for capability in after.remote_mut() {
+                if attempts >= MAX_WAKE_GATEWAY_OPERATIONS_PER_TICK || Instant::now() >= deadline {
+                    break;
+                }
+                if !capability.pending
+                    || capability.expires_at <= now
+                    || capability.next_attempt_at > now
+                {
+                    continue;
+                }
+                let provider =
+                    match WakeProvider::new(capability.origin.clone(), capability.static_key) {
+                        Ok(provider) => provider,
+                        Err(_) => {
+                            capability.mark_failed(now)?;
+                            continue;
+                        }
+                    };
+                let mut request_nonce = [0u8; 16];
+                rng.fill_bytes(&mut request_nonce);
+                if request_nonce == [0u8; 16] {
+                    request_nonce[15] = 1;
+                }
+                let request = WakeTriggerRequest {
+                    capability: capability.decoded_capability()?,
+                    request_nonce,
+                };
+                attempts += 1;
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                let outcome = before_timeout(remaining, client.trigger(&provider, &request)).await;
+                match outcome {
+                    Some(Ok(())) => capability.mark_attempted(),
+                    Some(Err(_)) | None => capability.mark_failed(now)?,
+                }
+            }
+            if before != after {
+                self.commit_wake_update(
+                    &PreparedWakeUpdate {
+                        peer_device,
+                        before,
+                        after,
+                    },
+                    rng,
+                )?;
+            }
+        }
+        Ok(())
+    }
+
     fn commit_queue_maintenance(
         &mut self,
         sequence: i64,
         before: &QueueItem,
         after: Option<&QueueItem>,
         prepared: PreparedDeliveryUpdate,
+        wake: Option<PreparedWakeUpdate>,
         rng: &mut impl CryptoRngCore,
     ) -> Result<()> {
         let delete = after.is_none().then_some(QueueDelete {
@@ -5258,6 +9660,15 @@ impl Node {
             .iter()
             .map(|(before, after)| GroupMessageTransition { before, after })
             .collect::<Vec<_>>();
+        let wake = wake
+            .as_ref()
+            .map(|transition| WakeServiceTransition {
+                peer_device: transition.peer_device,
+                before: &transition.before,
+                after: &transition.after,
+            })
+            .into_iter()
+            .collect::<Vec<_>>();
         let receipt = self.store.commit_plan(
             CommitPlan::Maintenance(MaintenancePlan {
                 seen: &[],
@@ -5278,6 +9689,7 @@ impl Node {
                 delete_capabilities: &[],
                 clear_reset_markers: &[],
                 delete_controls: &[],
+                wake: &wake,
                 acknowledge_presentation: None,
                 presentation_changed: !prepared.events.is_empty(),
             }),
@@ -5315,6 +9727,7 @@ impl Node {
                     &before,
                     None,
                     PreparedDeliveryUpdate::default(),
+                    None,
                     rng,
                 )?;
                 continue;
@@ -5329,6 +9742,7 @@ impl Node {
                     &before,
                     None,
                     PreparedDeliveryUpdate::default(),
+                    None,
                     rng,
                 )?;
                 continue;
@@ -5336,12 +9750,11 @@ impl Node {
             if now < item.next_attempt_at {
                 continue;
             }
-            // A route that keeps failing is a stale-hint suspect: re-consult
-            // the discovery planes for the peer's current address.
-            let refresh = item.attempts >= HINT_REFRESH_MIN_ATTEMPTS;
+            // Relationship routes are refreshed only by authenticated
+            // controls or pairwise rendezvous, never public discovery.
             let remaining = deadline.saturating_duration_since(Instant::now());
             let hints =
-                match before_timeout(remaining, self.resolve_hints(&item.peer, now, refresh, rng))
+                match before_timeout(remaining, self.resolve_hints(&item.peer, now, false, rng))
                     .await
                 {
                     Some(result) => result?,
@@ -5352,12 +9765,13 @@ impl Node {
                             &before,
                             Some(&item),
                             PreparedDeliveryUpdate::default(),
+                            None,
                             rng,
                         )?;
                         break;
                     }
                 };
-            let oversize = item.envelope.encode().len() > AIRTIME_CEILING_BYTES;
+            let oversize = item.envelope.encode().len() > airtime_ceiling(&item.envelope);
             let mut held_for_airtime = false;
 
             // Scheduler: rank every (transport, hint) pair by reachability
@@ -5406,7 +9820,9 @@ impl Node {
             candidates.sort_by_key(|(rank, _, _)| *rank);
 
             let mut sent = false;
+            let mut sent_receipt = None;
             let mut sent_fragments = None;
+            let mut capacity_refused = false;
             for (_, transport, hint) in &candidates {
                 let remaining = deadline.saturating_duration_since(Instant::now());
                 if remaining.is_zero() {
@@ -5420,10 +9836,17 @@ impl Node {
                 else {
                     break;
                 };
-                if let Ok(fragments) = result {
-                    sent_fragments = fragments;
-                    sent = true;
-                    break;
+                match result {
+                    Ok((receipt, fragments)) => {
+                        sent_receipt = Some(receipt);
+                        sent_fragments = fragments;
+                        sent = true;
+                        break;
+                    }
+                    Err(NodeError::Transport(kult_transport::TransportError::RefusedByNextHop)) => {
+                        capacity_refused = true;
+                    }
+                    Err(_) => {}
                 }
             }
 
@@ -5449,11 +9872,16 @@ impl Node {
                     // delivery. Retain the exact sealed envelope and retry it
                     // passively until its encrypted receipt arrives.
                     schedule_after_handoff(&mut item, now);
-                    self.commit_queue_maintenance(seq, &before, Some(&item), prepared, rng)?;
+                    let wake = if sent_receipt == Some(SendReceipt::AckedByNextHop) {
+                        self.prepare_wake_pending(&item.peer, now)?
+                    } else {
+                        None
+                    };
+                    self.commit_queue_maintenance(seq, &before, Some(&item), prepared, wake, rng)?;
                 } else {
                     // Receipts, capability controls, fragments, and realtime
                     // controls are terminal at transport handoff.
-                    self.commit_queue_maintenance(seq, &before, None, prepared, rng)?;
+                    self.commit_queue_maintenance(seq, &before, None, prepared, None, rng)?;
                 }
                 if let Some(bodies) = sent_fragments {
                     self.remember_fragments(
@@ -5476,12 +9904,17 @@ impl Node {
                     }
                 }
             } else {
-                schedule_passive_retry(&mut item, now);
+                if capacity_refused {
+                    schedule_capacity_retry(&mut item, now);
+                } else {
+                    schedule_passive_retry(&mut item, now);
+                }
                 self.commit_queue_maintenance(
                     seq,
                     &before,
                     Some(&item),
                     PreparedDeliveryUpdate::default(),
+                    None,
                     rng,
                 )?;
             }
@@ -5689,7 +10122,7 @@ impl Node {
         })
     }
 
-    fn hints_for(&self, peer: &[u8; 32]) -> Result<Vec<DeliveryHint>> {
+    fn base_hints_for(&self, peer: &[u8; 32]) -> Result<Vec<DeliveryHint>> {
         if let Some(endpoint) = self
             .store
             .contact_devices()?
@@ -5711,60 +10144,51 @@ impl Node {
         Ok(decode_hints(&contact.hints))
     }
 
-    /// Delivery hints for a peer, consulting the discovery planes when the
-    /// contact record has none — or, with `refresh`, when delivery over the
-    /// stored hints keeps failing. Sealed sender means an inbound handshake
-    /// never reveals a return path — for a contact learned that way, the
-    /// peer's published DHT bundle is where the reply path comes from. A
-    /// pairing-time hint also goes stale whenever the peer rebinds to fresh
-    /// OS-assigned ports (mobile shells restart often), so a failing route
-    /// re-consults the same bundle for the peer's current address instead
-    /// of retrying the dead one forever. Discovered hints are persisted via
-    /// [`Node::set_hints`]; refresh lookups are rate-limited per account
-    /// (and failed sends stay gated by the delivery engine's backoff
-    /// regardless).
+    fn hints_for(&self, peer: &[u8; 32], now: u64) -> Result<Vec<DeliveryHint>> {
+        let mut hints = self.base_hints_for(peer)?;
+        let Some(state) = self.store.get_rendezvous_service_state(peer)? else {
+            return Ok(hints);
+        };
+        for provider in state
+            .providers
+            .iter()
+            .filter(|provider| provider.lookup_enabled && provider.routes_expires_at > now)
+        {
+            for stored in &provider.routes {
+                let Ok(kind) = stored.route_kind() else {
+                    continue;
+                };
+                let Ok(value) = core::str::from_utf8(&stored.value) else {
+                    continue;
+                };
+                let route = RendezvousRoute {
+                    kind,
+                    value: value.to_owned(),
+                };
+                let Ok(hint) = rendezvous_route_hint(&route) else {
+                    continue;
+                };
+                if !hints.contains(&hint) {
+                    hints.push(hint);
+                }
+            }
+        }
+        Ok(hints)
+    }
+
+    /// Delivery hints for a peer.
+    ///
+    /// Post-pairing failures deliberately never return to public DHT lookup.
+    /// Stored mailboxes, authenticated route controls, pairwise rendezvous,
+    /// and the ordinary fallback ladder are the only relationship routes.
     async fn resolve_hints(
         &mut self,
         peer: &[u8; 32],
         now: u64,
-        refresh: bool,
-        rng: &mut impl CryptoRngCore,
+        _refresh: bool,
+        _rng: &mut impl CryptoRngCore,
     ) -> Result<Vec<DeliveryHint>> {
-        let hints = self.hints_for(peer)?;
-        if self.discoveries.is_empty() || (!hints.is_empty() && !refresh) {
-            return Ok(hints);
-        }
-        let account = self.account_for_device(peer)?;
-        if !hints.is_empty() {
-            // Refresh of a non-empty (possibly stale) hint set: bounded by
-            // the per-account interval so retries stay cheap.
-            if self
-                .hint_refresh
-                .get(&account)
-                .is_some_and(|next| now < *next)
-            {
-                return Ok(hints);
-            }
-            self.hint_refresh
-                .insert(account, now + HINT_REFRESH_INTERVAL_SECS);
-        }
-        let Some(contact) = self.store.get_contact(&account)? else {
-            return Ok(hints);
-        };
-        let Ok(identity) = postcard::from_bytes::<IdentityPublic>(&contact.identity) else {
-            return Ok(hints);
-        };
-        let Some(bundle) = self.lookup_bundle(identity.address_digest(), now).await else {
-            return Ok(hints);
-        };
-        let found = decode_hints(&bundle.relay_hints);
-        if found.is_empty() {
-            return Ok(hints);
-        }
-        if found != hints {
-            self.set_hints(&account, &found, rng)?;
-        }
-        Ok(found)
+        self.hints_for(peer, now)
     }
 }
 
@@ -5791,12 +10215,12 @@ async fn send_via(
     transport: &dyn Transport,
     hint: &DeliveryHint,
     envelope: &Envelope,
-) -> Result<Option<Vec<Vec<u8>>>> {
+) -> Result<(SendReceipt, Option<Vec<Vec<u8>>>)> {
     let mtu = transport.profile().mtu;
     let encoded = envelope.try_encode()?;
     if encoded.len() <= mtu {
-        transport.send(hint, envelope).await?;
-        return Ok(None);
+        let receipt = transport.send(hint, envelope).await?;
+        return Ok((receipt, None));
     }
     // Fragments never nest (the receiver treats nested ones as malformed):
     // a retransmitted fragment that does not fit this link makes the
@@ -5812,6 +10236,7 @@ async fn send_via(
             kult_protocol::ProtocolError::MtuTooSmall,
         ))?;
     let bodies = fragment(&encoded, budget)?;
+    let mut receipt = SendReceipt::AckedByNextHop;
     for body in &bodies {
         let fragment_envelope = match envelope.retention_until {
             Some(deadline) => Envelope::new_retained(
@@ -5822,9 +10247,11 @@ async fn send_via(
             )?,
             None => Envelope::new(EnvelopeKind::Fragment, envelope.token, body.clone()),
         };
-        transport.send(hint, &fragment_envelope).await?;
+        if transport.send(hint, &fragment_envelope).await? == SendReceipt::HandedToLink {
+            receipt = SendReceipt::HandedToLink;
+        }
     }
-    Ok(Some(bodies))
+    Ok((receipt, Some(bodies)))
 }
 
 /// Flush priority (docs/05-transports.md §4.2 rule 3): text > receipts >
@@ -5862,6 +10289,14 @@ fn schedule_passive_retry(item: &mut QueueItem, now: u64) {
     item.next_attempt_at = now.saturating_add(delay);
 }
 
+fn schedule_capacity_retry(item: &mut QueueItem, now: u64) {
+    if item.created_at == 0 {
+        item.created_at = now;
+    }
+    item.attempts = item.attempts.saturating_add(1);
+    item.next_attempt_at = now.saturating_add(capacity_retry_delay(item.attempts));
+}
+
 fn schedule_after_handoff(item: &mut QueueItem, now: u64) {
     if item.created_at == 0 {
         item.created_at = now;
@@ -5883,6 +10318,59 @@ fn retry_delay(attempts: u32) -> u64 {
     delay
 }
 
+fn capacity_retry_delay(attempts: u32) -> u64 {
+    let exponent = attempts.saturating_sub(1).min(5);
+    (CAPACITY_RETRY_BASE_SECS << exponent).min(CAPACITY_RETRY_CAP_SECS)
+}
+
+fn rendezvous_jitter(rng: &mut impl CryptoRngCore) -> u64 {
+    rng.next_u64() % RENDEZVOUS_INITIAL_JITTER_SECS.saturating_add(1)
+}
+
+fn note_rendezvous_failure(
+    provider: &mut RendezvousProviderState,
+    operation: RendezvousOperationKind,
+    now: u64,
+) {
+    provider.consecutive_failures = provider.consecutive_failures.saturating_add(1);
+    let exponent = u32::from(provider.consecutive_failures.saturating_sub(1)).min(8);
+    let retry_at = if provider.consecutive_failures >= RENDEZVOUS_CIRCUIT_FAILURES {
+        provider.circuit_open_until = now.saturating_add(RENDEZVOUS_CIRCUIT_OPEN_SECS);
+        provider.circuit_open_until
+    } else {
+        let delay = RENDEZVOUS_BACKOFF_MIN_SECS
+            .saturating_mul(1u64 << exponent)
+            .min(RENDEZVOUS_BACKOFF_MAX_SECS);
+        now.saturating_add(delay)
+    };
+    match operation {
+        RendezvousOperationKind::Register => provider.next_register_at = retry_at,
+        RendezvousOperationKind::Lookup => provider.next_lookup_at = retry_at,
+    }
+}
+
+fn admission_transport(ingress: IngressClass) -> AdmissionTransportClass {
+    match ingress {
+        IngressClass::Unknown => AdmissionTransportClass::Unknown,
+        IngressClass::Direct => AdmissionTransportClass::Direct,
+        IngressClass::Mailbox => AdmissionTransportClass::Mailbox,
+        IngressClass::Mesh => AdmissionTransportClass::Mesh,
+        IngressClass::Delayed => AdmissionTransportClass::Delayed,
+        IngressClass::Bridge => AdmissionTransportClass::Bridge,
+    }
+}
+
+fn admission_transport_index(transport: AdmissionTransportClass) -> usize {
+    match transport {
+        AdmissionTransportClass::Unknown => 0,
+        AdmissionTransportClass::Direct => 1,
+        AdmissionTransportClass::Mailbox => 2,
+        AdmissionTransportClass::Mesh => 3,
+        AdmissionTransportClass::Delayed => 4,
+        AdmissionTransportClass::Bridge => 5,
+    }
+}
+
 fn scheduled_info(record: ScheduledMessageRecord) -> ScheduledMessageInfo {
     let conversation = match record.conversation {
         StoreScheduledConversation::Peer(peer) => ScheduledConversation::Peer(peer),
@@ -5897,11 +10385,71 @@ fn scheduled_info(record: ScheduledMessageRecord) -> ScheduledMessageInfo {
     }
 }
 
+fn bounded_request_preview(text: &str) -> String {
+    if text.len() <= MAX_PROVISIONAL_PREVIEW_BYTES {
+        return text.to_owned();
+    }
+    let mut boundary = MAX_PROVISIONAL_PREVIEW_BYTES;
+    while !text.is_char_boundary(boundary) {
+        boundary -= 1;
+    }
+    text[..boundary].to_owned()
+}
+
 fn encode_hints(hints: &[DeliveryHint]) -> Vec<Vec<u8>> {
     hints
         .iter()
         .map(|h| postcard::to_allocvec(h).expect("hint serialization cannot fail"))
         .collect()
+}
+
+fn discovery_routes(
+    hints: &[DeliveryHint],
+    policy: DiscoveryPublicationPolicy,
+) -> Result<Vec<DiscoveryRoute>> {
+    let mut routes = Vec::new();
+    for hint in hints {
+        let kind = match hint {
+            DeliveryHint::Relay(_) => DiscoveryRouteKind::IntroductionMailbox,
+            DeliveryHint::Multiaddr(_) if policy.permits_direct_routes() => {
+                DiscoveryRouteKind::SovereignDirect
+            }
+            DeliveryHint::Multiaddr(_) | DeliveryHint::MeshNode(_) | DeliveryHint::Spool(_) => {
+                continue;
+            }
+            _ => continue,
+        };
+        let value = postcard::to_allocvec(hint).map_err(|_| NodeError::CorruptState)?;
+        routes.push(DiscoveryRoute { kind, value });
+    }
+    routes.sort_by(|left, right| {
+        (left.kind as u8, left.value.as_slice()).cmp(&(right.kind as u8, right.value.as_slice()))
+    });
+    routes.dedup_by(|left, right| left.kind == right.kind && left.value == right.value);
+    if routes.len() > MAX_DISCOVERY_ROUTES {
+        return Err(NodeError::Protocol(kult_protocol::ProtocolError::TooLarge));
+    }
+    Ok(routes)
+}
+
+fn decode_discovery_route(route: &DiscoveryRoute) -> Result<DeliveryHint> {
+    let (hint, remainder): (DeliveryHint, &[u8]) =
+        postcard::take_from_bytes(&route.value).map_err(|_| NodeError::CorruptState)?;
+    if !remainder.is_empty()
+        || !matches!(
+            (route.kind, &hint),
+            (
+                DiscoveryRouteKind::IntroductionMailbox,
+                DeliveryHint::Relay(_)
+            ) | (
+                DiscoveryRouteKind::SovereignDirect,
+                DeliveryHint::Multiaddr(_)
+            )
+        )
+    {
+        return Err(NodeError::CorruptState);
+    }
+    Ok(hint)
 }
 
 /// Decode persisted/published hint blobs, skipping any that fail to parse
@@ -5913,6 +10461,241 @@ fn decode_hints(blobs: &[Vec<u8>]) -> Vec<DeliveryHint> {
         .iter()
         .filter_map(|bytes| postcard::from_bytes(bytes).ok())
         .collect()
+}
+
+fn validate_discovery_upgrade_routes(blobs: &[Vec<u8>]) -> Result<()> {
+    for bytes in blobs {
+        let (hint, remainder): (DeliveryHint, &[u8]) =
+            postcard::take_from_bytes(bytes).map_err(|_| NodeError::CorruptState)?;
+        if !remainder.is_empty()
+            || postcard::to_allocvec(&hint).map_err(|_| NodeError::CorruptState)? != *bytes
+        {
+            return Err(NodeError::CorruptState);
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod scheduler_tests {
+    use super::*;
+
+    #[test]
+    fn capacity_refusal_retries_promptly_then_caps() {
+        assert_eq!(capacity_retry_delay(1), 1);
+        assert_eq!(capacity_retry_delay(2), 2);
+        assert_eq!(capacity_retry_delay(3), 4);
+        assert_eq!(capacity_retry_delay(4), 8);
+        assert_eq!(capacity_retry_delay(5), 16);
+        assert_eq!(capacity_retry_delay(6), 30);
+        assert_eq!(capacity_retry_delay(u32::MAX), 30);
+    }
+}
+
+#[cfg(test)]
+mod operating_mode_tests {
+    use std::sync::Arc;
+
+    use async_trait::async_trait;
+    use rand::{rngs::StdRng, SeedableRng};
+
+    use kult_crypto::{KdfProfile, RENDEZVOUS_SEALED_RECORD_LEN};
+    use kult_protocol::{
+        RendezvousLookupRequest, RendezvousRegisterRequest, RENDEZVOUS_REGISTER_ACK_LEN,
+    };
+    use kult_transport::{
+        RendezvousClient, RendezvousProvider, Result as TransportResult, TransportError,
+    };
+
+    use super::*;
+
+    struct NoopRendezvousClient;
+
+    #[async_trait]
+    impl RendezvousClient for NoopRendezvousClient {
+        async fn register(
+            &self,
+            _provider: &RendezvousProvider,
+            _request: &RendezvousRegisterRequest,
+        ) -> TransportResult<[u8; RENDEZVOUS_REGISTER_ACK_LEN]> {
+            Ok([0u8; RENDEZVOUS_REGISTER_ACK_LEN])
+        }
+
+        async fn lookup(
+            &self,
+            _provider: &RendezvousProvider,
+            _request: &RendezvousLookupRequest,
+        ) -> TransportResult<[u8; RENDEZVOUS_SEALED_RECORD_LEN]> {
+            Err(TransportError::RefusedByNextHop)
+        }
+    }
+
+    #[test]
+    fn mode_reconciliation_is_monotonic_restart_safe_and_sovereign_empty() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("node.db");
+        let mut rng = StdRng::seed_from_u64(0x1717);
+        let mut node = Node::create(
+            &path,
+            b"passphrase",
+            KdfProfile {
+                m_cost_kib: 8,
+                t_cost: 1,
+                p_cost: 1,
+            },
+            &mut rng,
+        )
+        .unwrap();
+        let identity = node.account.ed;
+        let client = Arc::new(NoopRendezvousClient);
+        let first = RendezvousProvider::new("https://first.example".to_owned(), [1u8; 32]).unwrap();
+        node.reconcile_rendezvous(
+            DiscoveryMode::Standard,
+            Some(Arc::clone(&client) as Arc<dyn RendezvousClient>),
+            vec![first.clone()],
+        )
+        .unwrap();
+        assert_eq!(node.rendezvous_provider_generation, 1);
+
+        node.reconcile_rendezvous(
+            DiscoveryMode::Private,
+            Some(Arc::clone(&client) as Arc<dyn RendezvousClient>),
+            vec![first],
+        )
+        .unwrap();
+        assert_eq!(node.rendezvous_provider_generation, 1);
+
+        node.reconcile_rendezvous(DiscoveryMode::Sovereign, None, Vec::new())
+            .unwrap();
+        assert_eq!(node.rendezvous_provider_generation, 2);
+        assert!(node.rendezvous_providers.is_empty());
+        drop(node);
+
+        let mut node = Node::open(&path, b"passphrase").unwrap();
+        assert_eq!(node.account.ed, identity);
+        assert_eq!(node.rendezvous_provider_generation, 2);
+        assert!(node.rendezvous_providers.is_empty());
+        node.reconcile_rendezvous(DiscoveryMode::Sovereign, None, Vec::new())
+            .unwrap();
+        assert_eq!(node.rendezvous_provider_generation, 2);
+
+        let replacement =
+            RendezvousProvider::new("https://replacement.example".to_owned(), [2u8; 32]).unwrap();
+        node.reconcile_rendezvous(
+            DiscoveryMode::Standard,
+            Some(client as Arc<dyn RendezvousClient>),
+            vec![replacement],
+        )
+        .unwrap();
+        assert_eq!(node.rendezvous_provider_generation, 3);
+    }
+}
+
+#[cfg(test)]
+mod handshake_flight_tests {
+    use super::*;
+
+    #[test]
+    fn device_initial_v2_round_trips_and_legacy_is_explicit() {
+        let flight = DeviceInitialFlight {
+            initial: vec![1, 2, 3],
+            return_bundle: vec![4, 5],
+            intent: DeviceHandshakeIntent::Replace {
+                prior_session_id: [6u8; 32],
+            },
+        };
+        let encoded = encode_device_initial(&flight).unwrap();
+        assert!(encoded.starts_with(DEVICE_INITIAL_MAGIC));
+        let decoded = decode_device_initial(&encoded).unwrap();
+        assert_eq!(decoded.initial, flight.initial);
+        assert_eq!(decoded.return_bundle, flight.return_bundle);
+        assert_eq!(decoded.intent, flight.intent);
+
+        let legacy = LegacyDeviceInitialFlight {
+            initial: vec![7, 8],
+            return_bundle: vec![9],
+        };
+        let mut encoded_legacy = LEGACY_DEVICE_INITIAL_MAGIC.to_vec();
+        encoded_legacy.extend(postcard::to_allocvec(&legacy).unwrap());
+        let decoded_legacy = decode_device_initial(&encoded_legacy).unwrap();
+        assert_eq!(decoded_legacy.initial, legacy.initial);
+        assert_eq!(decoded_legacy.return_bundle, legacy.return_bundle);
+        assert_eq!(decoded_legacy.intent, DeviceHandshakeIntent::Legacy);
+
+        encoded_legacy.push(0);
+        assert!(decode_device_initial(&encoded_legacy).is_none());
+    }
+
+    #[test]
+    fn simultaneous_establishments_choose_one_device_initiator() {
+        let lower = [1u8; 32];
+        let higher = [2u8; 32];
+        let lower_session = [3u8; 32];
+        let higher_session = [4u8; 32];
+
+        assert_eq!(
+            decide_inbound_session(
+                lower,
+                higher,
+                Some(&lower_session),
+                DeviceHandshakeIntent::Establish,
+            ),
+            HandshakeSessionDecision::KeepPrior
+        );
+        assert_eq!(
+            decide_inbound_session(
+                higher,
+                lower,
+                Some(&higher_session),
+                DeviceHandshakeIntent::Establish,
+            ),
+            HandshakeSessionDecision::AcceptInbound
+        );
+    }
+
+    #[test]
+    fn replacement_is_bound_to_the_exact_prior_session() {
+        let local = [1u8; 32];
+        let peer = [2u8; 32];
+        let prior = [3u8; 32];
+        assert_eq!(
+            decide_inbound_session(
+                local,
+                peer,
+                Some(&prior),
+                DeviceHandshakeIntent::Replace {
+                    prior_session_id: prior,
+                },
+            ),
+            HandshakeSessionDecision::AcceptInbound
+        );
+        assert_eq!(
+            decide_inbound_session(
+                local,
+                peer,
+                Some(&prior),
+                DeviceHandshakeIntent::Replace {
+                    prior_session_id: [4u8; 32],
+                },
+            ),
+            HandshakeSessionDecision::Reject
+        );
+        assert_eq!(
+            decide_inbound_session(
+                local,
+                peer,
+                None,
+                DeviceHandshakeIntent::Replace {
+                    prior_session_id: prior,
+                },
+            ),
+            HandshakeSessionDecision::Reject
+        );
+        assert_eq!(
+            decide_inbound_session(local, peer, Some(&prior), DeviceHandshakeIntent::Reset),
+            HandshakeSessionDecision::AcceptInbound
+        );
+    }
 }
 
 #[cfg(test)]
@@ -5943,7 +10726,7 @@ mod edit_tests {
         let original = alice
             .send_message(&bob_peer, b"legacy first flight", 1_800_000_001, &mut rng)
             .unwrap();
-        let alice_peer = alice.identity.public().ed;
+        let alice_peer = alice.account.ed;
 
         assert!(matches!(
             alice.edit_message(
@@ -5955,6 +10738,1308 @@ mod edit_tests {
                 &mut rng,
             ),
             Err(NodeError::EditUnsupported)
+        ));
+    }
+}
+
+#[cfg(test)]
+mod wake_tests {
+    use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
+
+    use async_trait::async_trait;
+    use rand::{rngs::StdRng, SeedableRng};
+
+    use kult_protocol::{
+        WakeCapability, WakeRegisterRequest, WakeRegisterResponse, WakeTriggerRequest,
+        WAKE_CAPABILITY_PLAINTEXT_LEN,
+    };
+    use kult_transport::{LatencyClass, LinkProfile, Result as TransportResult, TransportError};
+
+    use super::*;
+
+    const NOW: u64 = 1_800_000_000;
+    const TEST_KDF: KdfProfile = KdfProfile {
+        m_cost_kib: 8,
+        t_cost: 1,
+        p_cost: 1,
+    };
+
+    #[derive(Default)]
+    struct RecordingWakeClient {
+        registrations: AtomicUsize,
+        triggers: AtomicUsize,
+        revokes: AtomicUsize,
+        issue_registrations: AtomicBool,
+        fail_revokes: AtomicBool,
+    }
+
+    #[async_trait]
+    impl WakeClient for RecordingWakeClient {
+        async fn register(
+            &self,
+            _provider: &WakeProvider,
+            request: &WakeRegisterRequest,
+        ) -> TransportResult<WakeRegisterResponse> {
+            request.encode().map_err(TransportError::Protocol)?;
+            let registration = self.registrations.fetch_add(1, Ordering::SeqCst) + 1;
+            if !self.issue_registrations.load(Ordering::SeqCst) {
+                return Ok(WakeRegisterResponse::refused());
+            }
+            let byte = u8::try_from(registration).unwrap_or(u8::MAX).max(1);
+            WakeRegisterResponse::issued(
+                NOW + 3_600,
+                WakeCapability::from_parts(
+                    1,
+                    [byte; 24],
+                    &[byte; WAKE_CAPABILITY_PLAINTEXT_LEN + 16],
+                )
+                .map_err(TransportError::Protocol)?,
+            )
+            .map_err(TransportError::Protocol)
+        }
+
+        async fn trigger(
+            &self,
+            _provider: &WakeProvider,
+            _request: &WakeTriggerRequest,
+        ) -> TransportResult<()> {
+            self.triggers.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+
+        async fn revoke(
+            &self,
+            _provider: &WakeProvider,
+            _request: &WakeTriggerRequest,
+        ) -> TransportResult<()> {
+            self.revokes.fetch_add(1, Ordering::SeqCst);
+            if self.fail_revokes.load(Ordering::SeqCst) {
+                Err(TransportError::RefusedByNextHop)
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    struct RecordingTransport {
+        receipt: AtomicU8,
+        sends: AtomicUsize,
+        receives: AtomicUsize,
+        inbound: Mutex<Vec<Envelope>>,
+        profile: LinkProfile,
+    }
+
+    impl RecordingTransport {
+        fn new(receipt: SendReceipt, latency: LatencyClass, cost: CostClass) -> Self {
+            Self {
+                receipt: AtomicU8::new(match receipt {
+                    SendReceipt::HandedToLink => 1,
+                    SendReceipt::AckedByNextHop => 2,
+                }),
+                sends: AtomicUsize::new(0),
+                receives: AtomicUsize::new(0),
+                inbound: Mutex::new(Vec::new()),
+                profile: LinkProfile {
+                    mtu: 64 * 1024,
+                    latency,
+                    cost,
+                    broadcast: cost == CostClass::Airtime,
+                },
+            }
+        }
+
+        fn set_receipt(&self, receipt: SendReceipt) {
+            self.receipt.store(
+                match receipt {
+                    SendReceipt::HandedToLink => 1,
+                    SendReceipt::AckedByNextHop => 2,
+                },
+                Ordering::SeqCst,
+            );
+        }
+    }
+
+    #[async_trait]
+    impl Transport for RecordingTransport {
+        fn profile(&self) -> LinkProfile {
+            self.profile
+        }
+
+        async fn reachable(&self, _peer: &DeliveryHint) -> Reachability {
+            Reachability::Now
+        }
+
+        async fn send(
+            &self,
+            _peer: &DeliveryHint,
+            _envelope: &Envelope,
+        ) -> TransportResult<SendReceipt> {
+            self.sends.fetch_add(1, Ordering::SeqCst);
+            match self.receipt.load(Ordering::SeqCst) {
+                1 => Ok(SendReceipt::HandedToLink),
+                2 => Ok(SendReceipt::AckedByNextHop),
+                _ => Err(TransportError::RefusedByNextHop),
+            }
+        }
+
+        async fn recv(&self) -> TransportResult<Vec<Envelope>> {
+            self.receives.fetch_add(1, Ordering::SeqCst);
+            Ok(std::mem::take(
+                &mut *self.inbound.lock().expect("test inbound lock"),
+            ))
+        }
+    }
+
+    fn add_sender_contact(
+        directory: &tempfile::TempDir,
+        rng: &mut StdRng,
+    ) -> (Node, [u8; 32], [u8; 32]) {
+        let mut sender = Node::create(
+            &directory.path().join("sender.db"),
+            b"sender",
+            TEST_KDF,
+            rng,
+        )
+        .unwrap();
+        let mut receiver = Node::create(
+            &directory.path().join("receiver.db"),
+            b"receiver",
+            TEST_KDF,
+            rng,
+        )
+        .unwrap();
+        let bundle = receiver.handshake_bundle(NOW, rng).unwrap();
+        let account = sender
+            .add_contact(
+                "receiver",
+                &bundle,
+                &[DeliveryHint::Multiaddr(
+                    "/ip4/127.0.0.1/udp/4001/quic-v1".into(),
+                )],
+                NOW,
+                rng,
+            )
+            .unwrap();
+        let device = sender
+            .store
+            .contact_devices_for(&account)
+            .unwrap()
+            .into_iter()
+            .find(|endpoint| endpoint.revoked_at.is_none())
+            .unwrap()
+            .device;
+        (sender, account, device)
+    }
+
+    fn install_remote_wake(node: &mut Node, peer_device: [u8; 32], rng: &mut StdRng) {
+        let capability =
+            WakeCapability::from_parts(1, [3u8; 24], &[4u8; WAKE_CAPABILITY_PLAINTEXT_LEN + 16])
+                .unwrap();
+        let mut state = node
+            .store
+            .get_wake_service_state(&peer_device)
+            .unwrap()
+            .unwrap();
+        state
+            .replace_direction(
+                WakeCapabilityDirection::Remote,
+                1,
+                vec![WakeStoredCapability::new(
+                    WakeCapabilityDirection::Remote,
+                    "https://wake.example".into(),
+                    [5u8; 32],
+                    capability.as_bytes().to_vec(),
+                    NOW + 3_600,
+                )
+                .unwrap()],
+            )
+            .unwrap();
+        node.store
+            .put_wake_service_state(&peer_device, &state, rng)
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn only_next_hop_acceptance_triggers_and_gateway_ack_never_delivers() {
+        let mut rng = StdRng::seed_from_u64(0x1901_0001);
+        let directory = tempfile::tempdir().unwrap();
+        let (mut sender, account, peer_device) = add_sender_contact(&directory, &mut rng);
+        let wake = Arc::new(RecordingWakeClient::default());
+        sender
+            .configure_wake(
+                DiscoveryMode::Standard,
+                Some(Arc::clone(&wake) as Arc<dyn WakeClient>),
+            )
+            .unwrap();
+        let transport = Arc::new(RecordingTransport::new(
+            SendReceipt::AckedByNextHop,
+            LatencyClass::Millis,
+            CostClass::Metered,
+        ));
+        sender.add_transport(Arc::clone(&transport) as Arc<dyn Transport>);
+
+        let first = sender
+            .send_message(&account, b"accepted by next hop", NOW + 1, &mut rng)
+            .unwrap();
+        install_remote_wake(&mut sender, peer_device, &mut rng);
+        sender.tick(NOW + 2, &mut rng).await.unwrap();
+        assert_eq!(wake.triggers.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            sender
+                .messages_with(&account)
+                .unwrap()
+                .into_iter()
+                .find(|message| message.id == first)
+                .unwrap()
+                .state,
+            DeliveryState::Sent
+        );
+
+        transport.set_receipt(SendReceipt::HandedToLink);
+        let second = sender
+            .send_message(&account, b"link handoff only", NOW + 3, &mut rng)
+            .unwrap();
+        sender.tick(NOW + 4, &mut rng).await.unwrap();
+        assert_eq!(wake.triggers.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            sender
+                .messages_with(&account)
+                .unwrap()
+                .into_iter()
+                .find(|message| message.id == second)
+                .unwrap()
+                .state,
+            DeliveryState::Sent
+        );
+    }
+
+    #[tokio::test]
+    async fn wake_collection_does_not_flush_or_touch_mesh_and_sneakernet() {
+        let mut rng = StdRng::seed_from_u64(0x1901_0002);
+        let directory = tempfile::tempdir().unwrap();
+        let (mut sender, account, _) = add_sender_contact(&directory, &mut rng);
+        let immediate = Arc::new(RecordingTransport::new(
+            SendReceipt::AckedByNextHop,
+            LatencyClass::Millis,
+            CostClass::Metered,
+        ));
+        let mesh = Arc::new(RecordingTransport::new(
+            SendReceipt::HandedToLink,
+            LatencyClass::Seconds,
+            CostClass::Airtime,
+        ));
+        let sneakernet = Arc::new(RecordingTransport::new(
+            SendReceipt::HandedToLink,
+            LatencyClass::HumanScale,
+            CostClass::Free,
+        ));
+        sender.add_transport(Arc::clone(&immediate) as Arc<dyn Transport>);
+        sender.add_transport(Arc::clone(&mesh) as Arc<dyn Transport>);
+        sender.add_transport(Arc::clone(&sneakernet) as Arc<dyn Transport>);
+        let message = sender
+            .send_message(&account, b"must remain queued", NOW + 1, &mut rng)
+            .unwrap();
+
+        sender
+            .wake_tick(NOW + 2, Duration::from_secs(2), &mut rng)
+            .await
+            .unwrap();
+        assert_eq!(immediate.sends.load(Ordering::SeqCst), 0);
+        assert_eq!(mesh.sends.load(Ordering::SeqCst), 0);
+        assert_eq!(sneakernet.sends.load(Ordering::SeqCst), 0);
+        assert_eq!(immediate.receives.load(Ordering::SeqCst), 1);
+        assert_eq!(mesh.receives.load(Ordering::SeqCst), 0);
+        assert_eq!(sneakernet.receives.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            sender
+                .messages_with(&account)
+                .unwrap()
+                .into_iter()
+                .find(|candidate| candidate.id == message)
+                .unwrap()
+                .state,
+            DeliveryState::Queued
+        );
+    }
+
+    #[tokio::test]
+    async fn issued_capability_generations_are_atomic_idempotent_and_revocable() {
+        let mut rng = StdRng::seed_from_u64(0x1901_0003);
+        let directory = tempfile::tempdir().unwrap();
+        let (mut sender, account, peer_device) = add_sender_contact(&directory, &mut rng);
+        let message = sender
+            .send_message(&account, b"create session", NOW + 1, &mut rng)
+            .unwrap();
+        let wake = Arc::new(RecordingWakeClient::default());
+        sender
+            .configure_wake(
+                DiscoveryMode::Standard,
+                Some(Arc::clone(&wake) as Arc<dyn WakeClient>),
+            )
+            .unwrap();
+        let descriptor = |byte| WakeCapabilityDescriptor {
+            origin: "https://wake.example".into(),
+            static_key: [5u8; 32],
+            expires_at: NOW + 3_600,
+            capability: WakeCapability::from_parts(
+                1,
+                [byte; 24],
+                &[byte; WAKE_CAPABILITY_PLAINTEXT_LEN + 16],
+            )
+            .unwrap(),
+        };
+        sender
+            .publish_wake_capabilities(peer_device, 1, vec![descriptor(6)], NOW + 2, &mut rng)
+            .unwrap();
+        let after_first = sender
+            .store
+            .get_wake_service_state(&peer_device)
+            .unwrap()
+            .unwrap();
+        assert_eq!(after_first.issued_generation, 1);
+        assert_eq!(after_first.issued().count(), 1);
+        let queue_len = sender.store.queue_all().unwrap().len();
+
+        sender
+            .publish_wake_capabilities(peer_device, 1, vec![descriptor(6)], NOW + 2, &mut rng)
+            .unwrap();
+        assert_eq!(sender.store.queue_all().unwrap().len(), queue_len);
+        assert!(matches!(
+            sender.publish_wake_capabilities(
+                peer_device,
+                1,
+                vec![descriptor(7)],
+                NOW + 2,
+                &mut rng,
+            ),
+            Err(NodeError::WakeConflict)
+        ));
+
+        sender
+            .publish_wake_capabilities(peer_device, 2, Vec::new(), NOW + 3, &mut rng)
+            .unwrap();
+        let revoked = sender
+            .store
+            .get_wake_service_state(&peer_device)
+            .unwrap()
+            .unwrap();
+        assert_eq!(revoked.issued_generation, 2);
+        assert_eq!(revoked.issued().count(), 0);
+        assert_eq!(
+            sender
+                .store
+                .wake_revocations(MAX_WAKE_REVOCATION_ROWS)
+                .unwrap()
+                .len(),
+            1
+        );
+        let delivery_before = sender
+            .messages_with(&account)
+            .unwrap()
+            .into_iter()
+            .find(|candidate| candidate.id == message)
+            .unwrap()
+            .state;
+        sender.maintain_wake(NOW + 4, &mut rng).await.unwrap();
+        assert_eq!(wake.revokes.load(Ordering::SeqCst), 1);
+        assert!(sender
+            .store
+            .wake_revocations(MAX_WAKE_REVOCATION_ROWS)
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            sender
+                .messages_with(&account)
+                .unwrap()
+                .into_iter()
+                .find(|candidate| candidate.id == message)
+                .unwrap()
+                .state,
+            delivery_before
+        );
+        sender
+            .configure_wake(DiscoveryMode::Sovereign, None)
+            .unwrap();
+        assert!(matches!(
+            sender.publish_wake_capabilities(
+                peer_device,
+                3,
+                vec![descriptor(8)],
+                NOW + 5,
+                &mut rng,
+            ),
+            Err(NodeError::WakeUnavailable)
+        ));
+        sender
+            .publish_wake_capabilities(peer_device, 3, Vec::new(), NOW + 5, &mut rng)
+            .unwrap();
+        assert_eq!(
+            sender
+                .store
+                .get_wake_service_state(&peer_device)
+                .unwrap()
+                .unwrap()
+                .issued_generation,
+            3
+        );
+        assert!(sender
+            .configure_wake(
+                DiscoveryMode::Sovereign,
+                Some(Arc::new(RecordingWakeClient::default()) as Arc<dyn WakeClient>),
+            )
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn native_token_registration_rotates_and_permission_revocation_is_complete() {
+        let mut rng = StdRng::seed_from_u64(0x1901_0015);
+        let directory = tempfile::tempdir().unwrap();
+        let (mut sender, account, peer_device) = add_sender_contact(&directory, &mut rng);
+        sender
+            .send_message(&account, b"establish session", NOW, &mut rng)
+            .unwrap();
+        let wake = Arc::new(RecordingWakeClient::default());
+        wake.issue_registrations.store(true, Ordering::SeqCst);
+        sender
+            .configure_wake(
+                DiscoveryMode::Standard,
+                Some(Arc::clone(&wake) as Arc<dyn WakeClient>),
+            )
+            .unwrap();
+        let provider = WakeProvider::new("https://wake.example".into(), [5u8; 32]).unwrap();
+
+        let first = sender
+            .register_native_wake_destination(
+                NativeWakeDestinationRegistration {
+                    platform: WakePlatform::Fcm,
+                    environment: WakeEnvironment::Production,
+                    profile: WakeProfile::GenericVisible,
+                    provider_token: b"fcm-registration-token",
+                    app_topic: b"is.andri.komms",
+                    providers: core::slice::from_ref(&provider),
+                    now: NOW,
+                },
+                &mut rng,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            first,
+            NativeWakeRegistrationResult {
+                updated: 1,
+                remaining: false
+            }
+        );
+        let first_state = sender
+            .store
+            .get_wake_service_state(&peer_device)
+            .unwrap()
+            .unwrap();
+        assert_eq!(first_state.issued_generation, 1);
+        assert_eq!(first_state.issued().count(), 1);
+
+        let second = sender
+            .register_native_wake_destination(
+                NativeWakeDestinationRegistration {
+                    platform: WakePlatform::Fcm,
+                    environment: WakeEnvironment::Production,
+                    profile: WakeProfile::GenericVisible,
+                    provider_token: b"rotated-fcm-registration-token",
+                    app_topic: b"is.andri.komms",
+                    providers: core::slice::from_ref(&provider),
+                    now: NOW + 1,
+                },
+                &mut rng,
+            )
+            .await
+            .unwrap();
+        assert_eq!(second.updated, 1);
+        let second_state = sender
+            .store
+            .get_wake_service_state(&peer_device)
+            .unwrap()
+            .unwrap();
+        assert_eq!(second_state.issued_generation, 2);
+        assert_eq!(second_state.issued().count(), 1);
+        assert_eq!(
+            sender
+                .store
+                .wake_revocations(MAX_WAKE_REVOCATION_ROWS)
+                .unwrap()
+                .len(),
+            1
+        );
+
+        assert_eq!(
+            sender
+                .revoke_native_wake_capabilities(NOW + 2, &mut rng)
+                .unwrap(),
+            1
+        );
+        let revoked = sender
+            .store
+            .get_wake_service_state(&peer_device)
+            .unwrap()
+            .unwrap();
+        assert_eq!(revoked.issued_generation, 3);
+        assert_eq!(revoked.issued().count(), 0);
+    }
+
+    #[test]
+    fn native_wake_revocation_skips_a_legacy_session_without_service_state() {
+        let mut rng = StdRng::seed_from_u64(0x1901_0018);
+        let directory = tempfile::tempdir().unwrap();
+        let (mut sender, account, peer_device) = add_sender_contact(&directory, &mut rng);
+        sender
+            .send_message(&account, b"establish session", NOW, &mut rng)
+            .unwrap();
+        sender.store.delete_session(&peer_device).unwrap();
+
+        assert_eq!(
+            sender
+                .revoke_native_wake_capabilities(NOW + 1, &mut rng)
+                .unwrap(),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn partial_gateway_registration_preserves_prior_complete_set() {
+        struct PartialRegistrationClient {
+            calls: AtomicUsize,
+        }
+
+        #[async_trait]
+        impl WakeClient for PartialRegistrationClient {
+            async fn register(
+                &self,
+                _provider: &WakeProvider,
+                _request: &WakeRegisterRequest,
+            ) -> TransportResult<WakeRegisterResponse> {
+                let call = self.calls.fetch_add(1, Ordering::SeqCst);
+                if call % 2 == 1 {
+                    return Ok(WakeRegisterResponse::refused());
+                }
+                WakeRegisterResponse::issued(
+                    NOW + 3_600,
+                    WakeCapability::from_parts(
+                        1,
+                        [31u8; 24],
+                        &[32u8; WAKE_CAPABILITY_PLAINTEXT_LEN + 16],
+                    )
+                    .map_err(TransportError::Protocol)?,
+                )
+                .map_err(TransportError::Protocol)
+            }
+
+            async fn trigger(
+                &self,
+                _provider: &WakeProvider,
+                _request: &WakeTriggerRequest,
+            ) -> TransportResult<()> {
+                Ok(())
+            }
+
+            async fn revoke(
+                &self,
+                _provider: &WakeProvider,
+                _request: &WakeTriggerRequest,
+            ) -> TransportResult<()> {
+                Ok(())
+            }
+        }
+
+        let mut rng = StdRng::seed_from_u64(0x1901_0016);
+        let directory = tempfile::tempdir().unwrap();
+        let (mut sender, account, peer_device) = add_sender_contact(&directory, &mut rng);
+        sender
+            .send_message(&account, b"establish session", NOW, &mut rng)
+            .unwrap();
+        let client = Arc::new(PartialRegistrationClient {
+            calls: AtomicUsize::new(0),
+        });
+        sender
+            .configure_wake(DiscoveryMode::Standard, Some(client as Arc<dyn WakeClient>))
+            .unwrap();
+        let existing = WakeCapabilityDescriptor {
+            origin: "https://wake-a.example".into(),
+            static_key: [41u8; 32],
+            expires_at: NOW + 3_600,
+            capability: WakeCapability::from_parts(
+                1,
+                [42u8; 24],
+                &[43u8; WAKE_CAPABILITY_PLAINTEXT_LEN + 16],
+            )
+            .unwrap(),
+        };
+        sender
+            .publish_wake_capabilities(peer_device, 1, vec![existing], NOW, &mut rng)
+            .unwrap();
+        let providers = vec![
+            WakeProvider::new("https://wake-a.example".into(), [41u8; 32]).unwrap(),
+            WakeProvider::new("https://wake-b.example".into(), [44u8; 32]).unwrap(),
+        ];
+
+        let result = sender
+            .register_native_wake_destination(
+                NativeWakeDestinationRegistration {
+                    platform: WakePlatform::Apns,
+                    environment: WakeEnvironment::Development,
+                    profile: WakeProfile::BackgroundOnly,
+                    provider_token: &[9u8; 32],
+                    app_topic: b"is.andri.komms",
+                    providers: &providers,
+                    now: NOW + 1,
+                },
+                &mut rng,
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.updated, 0);
+        let after = sender
+            .store
+            .get_wake_service_state(&peer_device)
+            .unwrap()
+            .unwrap();
+        assert_eq!(after.issued_generation, 1);
+        assert_eq!(after.issued().count(), 1);
+    }
+
+    #[tokio::test]
+    async fn failed_gateway_revocation_survives_restart_and_retries() {
+        let mut rng = StdRng::seed_from_u64(0x1901_0004);
+        let directory = tempfile::tempdir().unwrap();
+        let sender_path = directory.path().join("sender.db");
+        let (mut sender, account, peer_device) = add_sender_contact(&directory, &mut rng);
+        let message = sender
+            .send_message(&account, b"retain delivery state", NOW + 1, &mut rng)
+            .unwrap();
+        let failing = Arc::new(RecordingWakeClient::default());
+        failing.fail_revokes.store(true, Ordering::SeqCst);
+        sender
+            .configure_wake(
+                DiscoveryMode::Standard,
+                Some(Arc::clone(&failing) as Arc<dyn WakeClient>),
+            )
+            .unwrap();
+        let descriptor = WakeCapabilityDescriptor {
+            origin: "https://wake.example".into(),
+            static_key: [5u8; 32],
+            expires_at: NOW + 3_600,
+            capability: WakeCapability::from_parts(
+                1,
+                [12u8; 24],
+                &[13u8; WAKE_CAPABILITY_PLAINTEXT_LEN + 16],
+            )
+            .unwrap(),
+        };
+        sender
+            .publish_wake_capabilities(peer_device, 1, vec![descriptor], NOW + 2, &mut rng)
+            .unwrap();
+        sender
+            .publish_wake_capabilities(peer_device, 2, Vec::new(), NOW + 3, &mut rng)
+            .unwrap();
+        let delivery_before = sender
+            .messages_with(&account)
+            .unwrap()
+            .into_iter()
+            .find(|candidate| candidate.id == message)
+            .unwrap()
+            .state;
+        sender.maintain_wake(NOW + 4, &mut rng).await.unwrap();
+        assert_eq!(failing.revokes.load(Ordering::SeqCst), 1);
+        let retry = sender
+            .store
+            .wake_revocations(MAX_WAKE_REVOCATION_ROWS)
+            .unwrap()
+            .pop()
+            .unwrap();
+        assert_eq!(retry.consecutive_failures, 1);
+        drop(sender);
+
+        let mut reopened = Node::open(&sender_path, b"sender").unwrap();
+        let succeeding = Arc::new(RecordingWakeClient::default());
+        reopened
+            .configure_wake(
+                DiscoveryMode::Standard,
+                Some(Arc::clone(&succeeding) as Arc<dyn WakeClient>),
+            )
+            .unwrap();
+        reopened
+            .maintain_wake(retry.next_attempt_at, &mut rng)
+            .await
+            .unwrap();
+        assert_eq!(succeeding.revokes.load(Ordering::SeqCst), 1);
+        assert!(reopened
+            .store
+            .wake_revocations(MAX_WAKE_REVOCATION_ROWS)
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            reopened
+                .messages_with(&account)
+                .unwrap()
+                .into_iter()
+                .find(|candidate| candidate.id == message)
+                .unwrap()
+                .state,
+            delivery_before
+        );
+    }
+
+    #[tokio::test]
+    async fn revocation_backlog_cannot_starve_an_eligible_wake_trigger() {
+        let mut rng = StdRng::seed_from_u64(0x1901_0005);
+        let directory = tempfile::tempdir().unwrap();
+        let (mut sender, account, peer_device) = add_sender_contact(&directory, &mut rng);
+        sender
+            .send_message(&account, b"create session", NOW + 1, &mut rng)
+            .unwrap();
+        let wake = Arc::new(RecordingWakeClient::default());
+        sender
+            .configure_wake(
+                DiscoveryMode::Standard,
+                Some(Arc::clone(&wake) as Arc<dyn WakeClient>),
+            )
+            .unwrap();
+        let descriptors = |generation: u8| {
+            (0..4u8)
+                .map(|provider| WakeCapabilityDescriptor {
+                    origin: format!("https://wake-{provider}.example"),
+                    static_key: [provider + 20; 32],
+                    expires_at: NOW + 3_600,
+                    capability: WakeCapability::from_parts(
+                        1,
+                        [generation.saturating_mul(8).saturating_add(provider); 24],
+                        &[generation.saturating_add(provider); WAKE_CAPABILITY_PLAINTEXT_LEN + 16],
+                    )
+                    .unwrap(),
+                })
+                .collect::<Vec<_>>()
+        };
+        sender
+            .publish_wake_capabilities(peer_device, 1, descriptors(1), NOW + 2, &mut rng)
+            .unwrap();
+        sender
+            .publish_wake_capabilities(peer_device, 2, descriptors(2), NOW + 3, &mut rng)
+            .unwrap();
+        sender
+            .publish_wake_capabilities(peer_device, 3, descriptors(3), NOW + 4, &mut rng)
+            .unwrap();
+        assert_eq!(
+            sender
+                .store
+                .wake_revocations(MAX_WAKE_REVOCATION_ROWS)
+                .unwrap()
+                .len(),
+            8
+        );
+        install_remote_wake(&mut sender, peer_device, &mut rng);
+        let mut state = sender
+            .store
+            .get_wake_service_state(&peer_device)
+            .unwrap()
+            .unwrap();
+        state
+            .remote_mut()
+            .next()
+            .unwrap()
+            .mark_pending(NOW + 5)
+            .unwrap();
+        sender
+            .store
+            .put_wake_service_state(&peer_device, &state, &mut rng)
+            .unwrap();
+
+        sender.maintain_wake(NOW + 5, &mut rng).await.unwrap();
+        assert_eq!(
+            wake.revokes.load(Ordering::SeqCst),
+            MAX_WAKE_REVOCATIONS_PER_TICK
+        );
+        assert_eq!(wake.triggers.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            sender
+                .store
+                .wake_revocations(MAX_WAKE_REVOCATION_ROWS)
+                .unwrap()
+                .len(),
+            4
+        );
+    }
+}
+
+#[cfg(test)]
+mod authority_migration_tests {
+    use rand::{rngs::StdRng, RngCore, SeedableRng};
+
+    use kult_crypto::{
+        derive_kek, mnemonic_from_entropy, DeviceCertificate, DeviceManifest, DeviceManifestEntry,
+        StorageKey,
+    };
+    use kult_store::{
+        ContactRecord, DeliveryState, DeviceStateRecord, Direction, MessageRecord,
+        NoteMessageRecord,
+    };
+
+    use super::*;
+
+    const TEST_KDF: KdfProfile = KdfProfile {
+        m_cost_kib: 8,
+        t_cost: 1,
+        p_cost: 1,
+    };
+
+    fn legacy_backup_v1_fixture(
+        identity: &Identity,
+        contacts: Vec<ContactRecord>,
+        messages: Vec<MessageRecord>,
+        created_at: u64,
+        rng: &mut StdRng,
+    ) -> (Vec<u8>, String) {
+        let reset_peers = Vec::<[u8; 32]>::new();
+        let payload = postcard::to_allocvec(&(
+            created_at,
+            identity.to_bytes().to_vec(),
+            contacts,
+            messages,
+            reset_peers,
+        ))
+        .unwrap();
+        let mut entropy = [0u8; 32];
+        rng.fill_bytes(&mut entropy);
+        let mnemonic = mnemonic_from_entropy(&entropy);
+        let mut salt = [0u8; 16];
+        rng.fill_bytes(&mut salt);
+        let key =
+            StorageKey::from_bytes(*derive_kek(&entropy, &salt, TEST_KDF).expect("fixture KDF"));
+        let mut backup = Vec::new();
+        backup.extend_from_slice(b"KKR1");
+        backup.extend_from_slice(&TEST_KDF.m_cost_kib.to_le_bytes());
+        backup.extend_from_slice(&TEST_KDF.t_cost.to_le_bytes());
+        backup.extend_from_slice(&TEST_KDF.p_cost.to_le_bytes());
+        backup.extend_from_slice(&salt);
+        backup.extend_from_slice(&key.seal(b"KK-backup-v1", &payload, rng));
+        (backup, (*mnemonic).clone())
+    }
+
+    fn create_legacy_profile(
+        path: &std::path::Path,
+        copied_root: bool,
+        rng: &mut StdRng,
+    ) -> (Identity, [u8; 32], ContactRecord) {
+        let root = Identity::generate(rng);
+        let device = Identity::generate(rng);
+        let certificate = DeviceCertificate::issue(&root, &device, 10, rng);
+        let mut manifest =
+            DeviceManifest::initial(&root, certificate.clone(), "Original phone".into(), 10)
+                .unwrap();
+        if copied_root {
+            let copied_device = Identity::generate(rng);
+            let copied_certificate = DeviceCertificate::issue(&root, &copied_device, 11, rng);
+            manifest
+                .add_device(
+                    &root,
+                    DeviceManifestEntry {
+                        certificate: copied_certificate,
+                        name: "Former laptop".into(),
+                        last_seen: 11,
+                        revoked_at: None,
+                        revoked_after_counter: None,
+                    },
+                )
+                .unwrap();
+            manifest
+                .revoke_device(&root, &copied_device.public().ed, 12, 0)
+                .unwrap();
+        }
+        let state = DeviceStateRecord {
+            local_device_secret: device.to_bytes().to_vec(),
+            local_certificate: certificate,
+            manifest,
+            sync_counter: 7,
+            channels: Vec::new(),
+        };
+        let prekeys = PrekeyVault::generate(rng).encode();
+        let store = Store::create_legacy_profile_fixture(
+            path, b"legacy", TEST_KDF, &root, &state, &prekeys, rng,
+        )
+        .unwrap();
+        let contact_identity = Identity::generate(rng).public();
+        let contact = ContactRecord {
+            peer: contact_identity.ed,
+            identity: postcard::to_allocvec(&contact_identity).unwrap(),
+            name: "Preserved petname".into(),
+            bundle: Vec::new(),
+            hints: Vec::new(),
+            verified: true,
+        };
+        store.put_contact(&contact, rng).unwrap();
+        drop(store);
+        (root, device.public().ed, contact)
+    }
+
+    #[test]
+    fn single_device_alpha_migration_is_explicit_atomic_and_root_free() {
+        let mut rng = StdRng::seed_from_u64(0x2600_6001);
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("legacy.db");
+        let recovery_path = directory.path().join("offline.kra");
+        let (root, old_device, contact) = create_legacy_profile(&path, false, &mut rng);
+
+        assert!(matches!(
+            Node::open(&path, b"legacy"),
+            Err(NodeError::AuthorityMigrationRequired)
+        ));
+        let mnemonic =
+            Node::prepare_authority_migration(&path, b"legacy", &recovery_path, &mut rng).unwrap();
+        assert!(recovery_path.is_file());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&recovery_path)
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+        }
+
+        // Preparing the protected package never mutates the live database.
+        let store = Store::open(&path, b"legacy").unwrap();
+        assert_eq!(
+            store.get_identity().unwrap().unwrap().public(),
+            root.public()
+        );
+        assert!(store.get_account_identity().unwrap().is_none());
+        drop(store);
+
+        // An unrelated valid authority cannot authorize the conversion.
+        let unrelated = Identity::generate(&mut rng);
+        let (wrong_package, wrong_words) =
+            seal_account_recovery_authority(&unrelated, &mut rng).unwrap();
+        assert!(matches!(
+            Node::complete_authority_migration(
+                &path,
+                b"legacy",
+                &wrong_package,
+                &wrong_words,
+                20,
+                &mut rng,
+            ),
+            Err(NodeError::RecoveryAuthorityRequired)
+        ));
+        let store = Store::open(&path, b"legacy").unwrap();
+        assert!(store.contains_legacy_account_root().unwrap());
+        drop(store);
+
+        let package = std::fs::read(&recovery_path).unwrap();
+        let mut node =
+            Node::complete_authority_migration(&path, b"legacy", &package, &mnemonic, 20, &mut rng)
+                .unwrap();
+        assert_eq!(node.peer_id(), root.public().ed);
+        assert_eq!(node.device_id(), old_device);
+        assert_eq!(node.linked_devices().len(), 1);
+        assert_eq!(node.linked_devices()[0].name, "Original phone");
+        assert!(matches!(
+            node.export_account_recovery_authority(
+                &directory.path().join("unexpected-second-authority.kra")
+            ),
+            Err(NodeError::RecoveryAuthorityUnavailable)
+        ));
+        drop(node);
+
+        let store = Store::open(&path, b"legacy").unwrap();
+        assert!(!store.contains_legacy_account_root().unwrap());
+        assert!(store.get_identity().unwrap().is_none());
+        assert_eq!(store.get_account_identity().unwrap(), Some(root.public()));
+        assert_eq!(store.get_contact(&contact.peer).unwrap(), Some(contact));
+        assert_eq!(
+            store
+                .get_device_authority_state()
+                .unwrap()
+                .unwrap()
+                .sync_counter,
+            7
+        );
+        drop(store);
+
+        let reopened = Node::open(&path, b"legacy").unwrap();
+        assert_eq!(reopened.peer_id(), root.public().ed);
+        assert_eq!(reopened.device_id(), old_device);
+        drop(reopened);
+
+        // A retry after an AfterCommit-style interruption is idempotent.
+        let reopened =
+            Node::complete_authority_migration(&path, b"legacy", &package, &mnemonic, 21, &mut rng)
+                .unwrap();
+        assert_eq!(reopened.peer_id(), root.public().ed);
+        assert_eq!(reopened.device_id(), old_device);
+    }
+
+    #[test]
+    fn any_durable_evidence_of_a_copied_alpha_root_requires_new_identity_reset() {
+        let mut rng = StdRng::seed_from_u64(0x2600_6002);
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("copied-root.db");
+        let recovery_path = directory.path().join("must-not-exist.kra");
+        create_legacy_profile(&path, true, &mut rng);
+
+        assert!(matches!(
+            Node::open(&path, b"legacy"),
+            Err(NodeError::AuthorityResetRequired)
+        ));
+        assert!(matches!(
+            Node::prepare_authority_migration(&path, b"legacy", &recovery_path, &mut rng),
+            Err(NodeError::AuthorityResetRequired)
+        ));
+        assert!(!recovery_path.exists());
+    }
+
+    #[test]
+    fn copied_root_reset_creates_new_identity_and_preserves_only_local_archive() {
+        let mut rng = StdRng::seed_from_u64(0x2600_6003);
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("copied-root.db");
+        let recovery_path = directory.path().join("new-offline-authority.kra");
+        let (former_root, former_device, contact) = create_legacy_profile(&path, true, &mut rng);
+        let message = MessageRecord {
+            id: [0x61; 16],
+            peer: contact.peer,
+            direction: Direction::Outbound,
+            state: DeliveryState::Queued,
+            timestamp: 13,
+            body: b"local history from the former identity".to_vec(),
+            wire_id: Some([0x62; 16]),
+        };
+        let note = NoteMessageRecord {
+            id: [0x63; 16],
+            timestamp: 14,
+            body: "device-local note".into(),
+        };
+        let store = Store::open(&path, b"legacy").unwrap();
+        store.put_message(&message, &mut rng).unwrap();
+        store.put_note_message(&note, &mut rng).unwrap();
+        drop(store);
+
+        let prepared =
+            Node::prepare_authority_reset(&path, b"legacy", &recovery_path, &mut rng).unwrap();
+        assert_ne!(prepared.new_account, former_root.public());
+        assert_eq!(prepared.new_address, prepared.new_account.address());
+        assert!(recovery_path.is_file());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&recovery_path)
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+        }
+
+        // Preparation never changes the copied-root source.
+        let store = Store::open(&path, b"legacy").unwrap();
+        assert_eq!(
+            store.get_identity().unwrap().unwrap().public(),
+            former_root.public()
+        );
+        assert!(store.get_account_identity().unwrap().is_none());
+        drop(store);
+
+        let package = std::fs::read(&recovery_path).unwrap();
+        let node = Node::complete_authority_reset(
+            &path,
+            b"legacy",
+            &package,
+            &prepared.mnemonic,
+            20,
+            &mut rng,
+        )
+        .unwrap();
+        assert_eq!(node.peer_id(), prepared.new_account.ed);
+        assert_ne!(node.peer_id(), former_root.public().ed);
+        assert_ne!(node.device_id(), former_device);
+        assert_eq!(node.linked_devices().len(), 1);
+        let reset = node.authority_reset_history().unwrap().unwrap();
+        assert_eq!(reset.former_account, former_root.public().ed);
+        assert_eq!(reset.new_account, node.peer_id());
+        assert_eq!(reset.preserved_contacts, 1);
+        assert_eq!(reset.preserved_pairwise_messages, 1);
+        assert_eq!(reset.preserved_note_messages, 1);
+        assert_eq!(reset.pending_reverification, vec![contact.peer]);
+        drop(node);
+
+        let store = Store::open(&path, b"legacy").unwrap();
+        assert!(!store.contains_legacy_account_root().unwrap());
+        assert!(store.get_identity().unwrap().is_none());
+        let preserved = store.get_contact(&contact.peer).unwrap().unwrap();
+        assert_eq!(preserved.name, contact.name);
+        assert_eq!(preserved.identity, contact.identity);
+        assert!(preserved.bundle.is_empty());
+        assert!(preserved.hints.is_empty());
+        assert!(!preserved.verified);
+        let archived = store.messages_with(&contact.peer).unwrap();
+        assert_eq!(archived.len(), 1);
+        assert_eq!(archived[0].body, message.body);
+        assert_eq!(archived[0].state, DeliveryState::Failed);
+        assert_eq!(archived[0].wire_id, None);
+        assert_eq!(store.note_messages().unwrap(), vec![note]);
+        assert!(store.groups().unwrap().is_empty());
+        assert!(store.contact_devices().unwrap().is_empty());
+        assert!(store.queue_all().unwrap().is_empty());
+        drop(store);
+
+        let mut node = Node::open(&path, b"legacy").unwrap();
+        assert!(matches!(
+            node.send_message(&contact.peer, b"must re-verify first", 21, &mut rng),
+            Err(NodeError::ContactReverificationRequired)
+        ));
+        node.mark_verified(&contact.peer, &mut rng).unwrap();
+        let reset = node.authority_reset_history().unwrap().unwrap();
+        assert!(reset.pending_reverification.is_empty());
+        assert!(node.contacts().unwrap()[0].verified);
+        assert!(matches!(
+            node.send_message(&contact.peer, b"still needs a fresh route", 22, &mut rng),
+            Err(NodeError::NoSession)
+        ));
+        drop(node);
+
+        // Retrying after the atomic replacement returns the same new profile.
+        let reopened = Node::complete_authority_reset(
+            &path,
+            b"legacy",
+            &package,
+            &prepared.mnemonic,
+            23,
+            &mut rng,
+        )
+        .unwrap();
+        assert_eq!(reopened.peer_id(), prepared.new_account.ed);
+        assert!(reopened
+            .authority_reset_history()
+            .unwrap()
+            .unwrap()
+            .pending_reverification
+            .is_empty());
+    }
+
+    #[test]
+    fn single_device_profile_can_choose_conservative_new_identity_reset() {
+        let mut rng = StdRng::seed_from_u64(0x2600_6004);
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("single-device.db");
+        let recovery_path = directory.path().join("conservative-reset.kra");
+        let (former_root, _, contact) = create_legacy_profile(&path, false, &mut rng);
+        let prepared =
+            Node::prepare_authority_reset(&path, b"legacy", &recovery_path, &mut rng).unwrap();
+        assert_ne!(prepared.new_account, former_root.public());
+        let package = std::fs::read(&recovery_path).unwrap();
+        let node = Node::complete_authority_reset(
+            &path,
+            b"legacy",
+            &package,
+            &prepared.mnemonic,
+            20,
+            &mut rng,
+        )
+        .unwrap();
+        let reset = node.authority_reset_history().unwrap().unwrap();
+        assert_eq!(reset.former_account, former_root.public().ed);
+        assert_eq!(reset.new_account, prepared.new_account.ed);
+        assert_eq!(reset.pending_reverification, vec![contact.peer]);
+    }
+
+    #[test]
+    fn legacy_backup_recovers_only_as_a_visible_new_identity_archive() {
+        let mut rng = StdRng::seed_from_u64(0x2600_6005);
+        let directory = tempfile::tempdir().unwrap();
+        let source_path = directory.path().join("legacy-source.db");
+        let target_path = directory.path().join("fresh-target.db");
+        let recovery_path = directory.path().join("fresh-authority.kra");
+        let (former_root, former_device, contact) =
+            create_legacy_profile(&source_path, true, &mut rng);
+        let message = MessageRecord {
+            id: [0x81; 16],
+            peer: contact.peer,
+            direction: Direction::Outbound,
+            state: DeliveryState::Sent,
+            timestamp: 15,
+            body: b"legacy backup archive".to_vec(),
+            wire_id: Some([0x82; 16]),
+        };
+        let source = Store::open(&source_path, b"legacy").unwrap();
+        source.put_message(&message, &mut rng).unwrap();
+        let (backup, backup_mnemonic) = legacy_backup_v1_fixture(
+            &former_root,
+            vec![contact.clone()],
+            vec![message.clone()],
+            16,
+            &mut rng,
+        );
+        drop(source);
+
+        let prepared =
+            Node::prepare_legacy_backup_authority_reset(&recovery_path, &mut rng).unwrap();
+        assert_ne!(prepared.new_account, former_root.public());
+        assert_eq!(prepared.new_address, prepared.new_account.address());
+        let package = std::fs::read(&recovery_path).unwrap();
+        let node = Node::restore_legacy_backup_with_authority_reset(
+            &target_path,
+            &backup,
+            &backup_mnemonic,
+            &package,
+            &prepared.mnemonic,
+            17,
+            b"fresh-pass",
+            TEST_KDF,
+            &mut rng,
+        )
+        .unwrap();
+
+        assert_eq!(node.peer_id(), prepared.new_account.ed);
+        assert_ne!(node.peer_id(), former_root.public().ed);
+        assert_ne!(node.device_id(), former_device);
+        let reset = node.authority_reset_history().unwrap().unwrap();
+        assert_eq!(reset.former_account, former_root.public().ed);
+        assert_eq!(reset.new_account, prepared.new_account.ed);
+        assert_eq!(reset.pending_reverification, vec![contact.peer]);
+        drop(node);
+
+        let store = Store::open(&target_path, b"fresh-pass").unwrap();
+        assert!(!store.contains_legacy_account_root().unwrap());
+        assert!(store.get_identity().unwrap().is_none());
+        let archived = store.messages_with(&contact.peer).unwrap();
+        assert_eq!(archived.len(), 1);
+        assert_eq!(archived[0].state, DeliveryState::Failed);
+        assert_eq!(archived[0].wire_id, None);
+        assert!(!store.get_contact(&contact.peer).unwrap().unwrap().verified);
+    }
+
+    #[test]
+    fn offline_recovery_attempts_are_locally_bounded() {
+        let mut rng = StdRng::seed_from_u64(0x2600_6006);
+        let root = Identity::generate(&mut rng);
+        let other = Identity::generate(&mut rng);
+        let (package, correct_mnemonic) = seal_account_recovery_authority(&root, &mut rng).unwrap();
+        let (_, wrong_mnemonic) = seal_account_recovery_authority(&other, &mut rng).unwrap();
+        for _ in 0..MAX_RECOVERY_ATTEMPTS_PER_WINDOW {
+            assert!(matches!(
+                open_account_recovery_authority_throttled(&package, &wrong_mnemonic),
+                Err(NodeError::Crypto(_))
+            ));
+        }
+        assert!(matches!(
+            open_account_recovery_authority_throttled(&package, &wrong_mnemonic),
+            Err(NodeError::RecoveryAttemptLimited)
+        ));
+        assert!(matches!(
+            open_account_recovery_authority_throttled(&package, &correct_mnemonic),
+            Err(NodeError::RecoveryAttemptLimited)
         ));
     }
 }

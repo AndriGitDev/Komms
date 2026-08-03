@@ -44,6 +44,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use rand::rngs::OsRng;
 use tokio::sync::oneshot;
 
 use kult_transport::DeliveryHint;
@@ -213,6 +214,107 @@ pub enum KdfChoice {
     Mobile,
 }
 
+/// User-selected ADR-0017 operating mode.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, uniffi::Enum)]
+pub enum NetworkMode {
+    /// Disclosed, replaceable convenience providers.
+    #[default]
+    Standard,
+    /// Optional rendezvous is reachable only through configured Tor ingress.
+    Private,
+    /// Directory defaults and optional rendezvous are disabled.
+    Sovereign,
+}
+
+/// One user-selected rendezvous provider.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct RendezvousProviderConfig {
+    /// Canonical HTTPS origin with no path.
+    pub origin: String,
+    /// SHA-256 of the leaf TLS certificate, lowercase hexadecimal.
+    pub static_key: String,
+    /// Whether direct Standard-mode access is allowed.
+    pub standard: bool,
+    /// Whether Private mode may reach it through Tor.
+    pub private_via_tor: bool,
+}
+
+/// One user-selected native-wake gateway, separately keyed from rendezvous.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct WakeProviderConfig {
+    /// Canonical HTTPS origin with no path.
+    pub origin: String,
+    /// SHA-256 of the leaf TLS certificate, lowercase hexadecimal.
+    pub static_key: String,
+    /// Whether direct Standard-mode access is allowed.
+    pub standard: bool,
+    /// Whether Private mode may reach it through Tor.
+    pub private_via_tor: bool,
+}
+
+/// Native notification provider owning the current platform token.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum NativeWakePlatform {
+    /// Apple Push Notification service.
+    Apns,
+    /// Firebase Cloud Messaging in the Google Play Android flavor.
+    Fcm,
+}
+
+/// Native provider environment selected by the signed application build.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum NativeWakeEnvironment {
+    /// Development or sandbox provider environment.
+    Development,
+    /// Production provider environment.
+    Production,
+}
+
+/// Static content-free notification profile selected by the recipient.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum NativeWakeProfile {
+    /// Best-effort background hint with no visible content.
+    BackgroundOnly,
+    /// Static visible “New activity” notice plus bounded collection.
+    GenericVisible,
+}
+
+/// Bounded progress from one native-token registration call.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct NativeWakeRegistration {
+    /// Contact-device capability sets replaced atomically in this call.
+    pub updated: u32,
+    /// More relationships remain for a later platform-scheduled continuation.
+    pub remaining: bool,
+}
+
+impl NativeWakePlatform {
+    fn protocol(self) -> kult_protocol::WakePlatform {
+        match self {
+            Self::Apns => kult_protocol::WakePlatform::Apns,
+            Self::Fcm => kult_protocol::WakePlatform::Fcm,
+        }
+    }
+}
+
+impl NativeWakeEnvironment {
+    fn protocol(self) -> kult_protocol::WakeEnvironment {
+        match self {
+            Self::Development => kult_protocol::WakeEnvironment::Development,
+            Self::Production => kult_protocol::WakeEnvironment::Production,
+        }
+    }
+}
+
+impl NativeWakeProfile {
+    fn protocol(self) -> kult_protocol::WakeProfile {
+        match self {
+            Self::BackgroundOnly => kult_protocol::WakeProfile::BackgroundOnly,
+            Self::GenericVisible => kult_protocol::WakeProfile::GenericVisible,
+        }
+    }
+}
+
 /// One inert inline presentation token produced by the shared formatter.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
 pub enum TextFormatStyle {
@@ -346,6 +448,27 @@ pub struct Config {
     pub passphrase: String,
     /// Argon2id cost profile for store creation.
     pub kdf: KdfChoice,
+    /// Standard, Private, or Sovereign behavior.
+    pub mode: NetworkMode,
+    /// User confirmed the Standard provider disclosure before first use.
+    pub standard_disclosure_confirmed: bool,
+    /// Advanced acknowledgement for publishing direct routes in Sovereign
+    /// capability records. Ignored in every other mode.
+    pub sovereign_publish_direct_routes: bool,
+    /// Candidate signed provider-directory JSON. The last valid generation
+    /// is retained separately inside `data_dir`.
+    pub provider_directory: Option<String>,
+    /// Trusted offline provider-directory Ed25519 keys, lowercase hex.
+    pub provider_directory_roots: Vec<String>,
+    /// User-selected rendezvous providers retained independently of the
+    /// signed directory.
+    pub rendezvous: Vec<RendezvousProviderConfig>,
+    /// User-selected native-wake gateways. These use distinct service keys
+    /// and are never inferred from rendezvous configuration.
+    pub wake: Vec<WakeProviderConfig>,
+    /// Loopback Tor SOCKS5 address for Private rendezvous, such as
+    /// `127.0.0.1:9050`.
+    pub tor_proxy: Option<String>,
     /// Multiaddrs to listen on.
     pub listen: Vec<String>,
     /// DHT bootstrap peers (multiaddrs with `/p2p/…`). Empty is fine —
@@ -389,6 +512,14 @@ pub fn default_config(data_dir: String, passphrase: String) -> Config {
         data_dir,
         passphrase,
         kdf: KdfChoice::Desktop,
+        mode: NetworkMode::Standard,
+        standard_disclosure_confirmed: false,
+        sovereign_publish_direct_routes: false,
+        provider_directory: None,
+        provider_directory_roots: Vec::new(),
+        rendezvous: Vec::new(),
+        wake: Vec::new(),
+        tor_proxy: None,
         listen: vec![
             "/ip4/0.0.0.0/udp/0/quic-v1".to_owned(),
             "/ip4/0.0.0.0/tcp/0".to_owned(),
@@ -406,6 +537,138 @@ pub fn default_config(data_dir: String, passphrase: String) -> Config {
         checkin_secs: 300,
         nat_secs: 30,
     }
+}
+
+/// Prepare a pre-ADR-0026 single-device profile for explicit migration.
+///
+/// This writes a new protected `.kra` file but deliberately leaves the live
+/// database unchanged. The returned words must be shown and confirmed before
+/// starting [`KultNode::migrate_authority`].
+#[uniffi::export]
+pub fn prepare_authority_migration(
+    data_dir: String,
+    passphrase: String,
+    recovery_path: String,
+) -> Result<String, FfiError> {
+    let db_path = PathBuf::from(data_dir).join("node.db");
+    kult_node::Node::prepare_authority_migration(
+        &db_path,
+        passphrase.as_bytes(),
+        &PathBuf::from(recovery_path),
+        &mut OsRng,
+    )
+    .map(|mnemonic| mnemonic.to_string())
+    .map_err(|error| FfiError::Startup {
+        reason: format!("store: {error}"),
+    })
+}
+
+/// User-reviewed output of a copied-root Alpha reset preparation.
+#[derive(Clone, Debug, uniffi::Record)]
+pub struct AuthorityResetPreparation {
+    /// Fresh human-shareable account address.
+    pub new_address: String,
+    /// Fresh account public id in lowercase hex.
+    pub new_peer: String,
+    /// One-time phrase opening the separately written recovery authority.
+    pub recovery_mnemonic: String,
+}
+
+/// Local-only evidence and remaining contact work after a copied-root reset.
+#[derive(Clone, Debug, uniffi::Record)]
+pub struct AuthorityResetHistory {
+    /// Former account id in lowercase hex.
+    pub former_peer: String,
+    /// Fresh account id in lowercase hex.
+    pub new_peer: String,
+    /// Display-only Unix time at which the reset was confirmed.
+    pub reset_at: u64,
+    /// Petnames/public identities copied with routes and trust cleared.
+    pub preserved_contacts: u32,
+    /// Pairwise rows retained as former-identity local archive.
+    pub preserved_pairwise_messages: u64,
+    /// Device-local notes retained.
+    pub preserved_note_messages: u64,
+    /// Active group records deliberately omitted.
+    pub omitted_groups: u64,
+    /// Group history rows deliberately omitted.
+    pub omitted_group_messages: u64,
+    /// Preserved contacts still needing new safety-number comparison.
+    pub pending_reverification: Vec<String>,
+}
+
+impl AuthorityResetHistory {
+    fn from_node(record: kult_node::AuthorityResetHistoryRecord) -> Self {
+        Self {
+            former_peer: hex_encode(&record.former_account),
+            new_peer: hex_encode(&record.new_account),
+            reset_at: record.reset_at,
+            preserved_contacts: record.preserved_contacts,
+            preserved_pairwise_messages: record.preserved_pairwise_messages,
+            preserved_note_messages: record.preserved_note_messages,
+            omitted_groups: record.omitted_groups,
+            omitted_group_messages: record.omitted_group_messages,
+            pending_reverification: record
+                .pending_reverification
+                .iter()
+                .map(|peer| hex_encode(peer))
+                .collect(),
+        }
+    }
+}
+
+/// Prepare a copied-root Alpha profile for a visible new-identity reset.
+///
+/// The new protected `.kra` file is created without changing the live
+/// database. Shells must disclose that the address and every safety number
+/// change and confirm the returned phrase before starting
+/// [`KultNode::reset_authority`].
+#[uniffi::export]
+pub fn prepare_authority_reset(
+    data_dir: String,
+    passphrase: String,
+    recovery_path: String,
+) -> Result<AuthorityResetPreparation, FfiError> {
+    let db_path = PathBuf::from(data_dir).join("node.db");
+    kult_node::Node::prepare_authority_reset(
+        &db_path,
+        passphrase.as_bytes(),
+        &PathBuf::from(recovery_path),
+        &mut OsRng,
+    )
+    .map(|prepared| AuthorityResetPreparation {
+        new_address: prepared.new_address,
+        new_peer: hex_encode(&prepared.new_account.ed),
+        recovery_mnemonic: prepared.mnemonic.to_string(),
+    })
+    .map_err(|error| FfiError::Startup {
+        reason: format!("store: {error}"),
+    })
+}
+
+/// Prepare a fresh account authority for importing a copied-root legacy
+/// backup as a visible former-identity local archive.
+///
+/// Shells must display the returned new address, disclose that all former
+/// safety numbers and live capabilities are abandoned, and obtain explicit
+/// confirmation before calling [`KultNode::restore`] with a `KKR1` through
+/// `KKR7` file and this newly written authority.
+#[uniffi::export]
+pub fn prepare_legacy_backup_authority_reset(
+    recovery_path: String,
+) -> Result<AuthorityResetPreparation, FfiError> {
+    kult_node::Node::prepare_legacy_backup_authority_reset(
+        &PathBuf::from(recovery_path),
+        &mut OsRng,
+    )
+    .map(|prepared| AuthorityResetPreparation {
+        new_address: prepared.new_address,
+        new_peer: hex_encode(&prepared.new_account.ed),
+        recovery_mnemonic: prepared.mnemonic.to_string(),
+    })
+    .map_err(|error| FfiError::Startup {
+        reason: format!("store: {error}"),
+    })
 }
 
 /// How to reach a contact, per transport (docs/05-transports.md).
@@ -771,6 +1034,72 @@ pub struct Contact {
     pub name: String,
     /// Whether safety numbers were verified out-of-band.
     pub verified: bool,
+}
+
+/// Coarse ingress class shown for a sealed message request.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum MessageRequestTransport {
+    /// The carrier did not provide a safe classification.
+    Unknown,
+    /// Authenticated direct transport.
+    Direct,
+    /// Durable mailbox collection.
+    Mailbox,
+    /// Authenticated local mesh carrier.
+    Mesh,
+    /// Another bounded delayed carrier.
+    Delayed,
+    /// A configured bridge carrier.
+    Bridge,
+}
+
+impl From<kult_store::AdmissionTransportClass> for MessageRequestTransport {
+    fn from(value: kult_store::AdmissionTransportClass) -> Self {
+        match value {
+            kult_store::AdmissionTransportClass::Unknown => Self::Unknown,
+            kult_store::AdmissionTransportClass::Direct => Self::Direct,
+            kult_store::AdmissionTransportClass::Mailbox => Self::Mailbox,
+            kult_store::AdmissionTransportClass::Mesh => Self::Mesh,
+            kult_store::AdmissionTransportClass::Delayed => Self::Delayed,
+            kult_store::AdmissionTransportClass::Bridge => Self::Bridge,
+        }
+    }
+}
+
+/// Render-safe entry in the sealed first-contact request inbox.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct MessageRequest {
+    /// Stable opaque request id (hex).
+    pub id: String,
+    /// Verified stable sender account (hex).
+    pub account: String,
+    /// Verified exact sender device (hex).
+    pub device: String,
+    /// Bounded UTF-8 first-message preview.
+    pub preview: String,
+    /// Symmetric safety number grouped for display.
+    pub safety_number: String,
+    /// Local arrival time (Unix seconds).
+    pub arrived_at: u64,
+    /// Local expiry time (Unix seconds).
+    pub expires_at: u64,
+    /// Privacy-preserving carrier class.
+    pub transport: MessageRequestTransport,
+}
+
+impl From<kult_node::MessageRequestInfo> for MessageRequest {
+    fn from(request: kult_node::MessageRequestInfo) -> Self {
+        Self {
+            id: hex_encode(&request.id),
+            account: hex_encode(&request.account),
+            device: hex_encode(&request.device),
+            preview: request.preview,
+            safety_number: request.safety_number,
+            arrived_at: request.arrived_at,
+            expires_at: request.expires_at,
+            transport: request.transport.into(),
+        }
+    }
 }
 
 /// One deterministic local warning for a proposed contact petname.
@@ -1611,6 +1940,120 @@ pub struct Group {
     pub creator: String,
     /// Full roster, this node included (hex peer ids).
     pub members: Vec<String>,
+    /// Honest security state for newly authored group content.
+    pub security: GroupSecurityLevel,
+}
+
+/// Render-safe entry in the sealed group-invitation inbox.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct GroupInvitation {
+    /// Stable opaque invitation id (hex).
+    pub id: String,
+    /// Proposed group id (hex).
+    pub group: String,
+    /// Pairwise-authenticated inviting account (hex).
+    pub inviter: String,
+    /// Pairwise-authenticated inviting physical device (hex).
+    pub inviter_device: String,
+    /// Bounded authenticated group name.
+    pub name: String,
+    /// Proposed managing account (hex).
+    pub creator: String,
+    /// Complete proposed roster size.
+    pub member_count: u32,
+    /// Proposed group generation.
+    pub generation: u64,
+    /// Whether the sender-chain capability is scoped to this device.
+    pub recipient_scoped: bool,
+    /// Whether signed group authority was supplied.
+    pub signed_authority: bool,
+    /// Local arrival time (Unix seconds).
+    pub arrived_at: u64,
+    /// Local expiry time (Unix seconds).
+    pub expires_at: u64,
+}
+
+impl From<kult_node::GroupInvitationInfo> for GroupInvitation {
+    fn from(invitation: kult_node::GroupInvitationInfo) -> Self {
+        Self {
+            id: hex_encode(&invitation.id),
+            group: hex_encode(&invitation.group),
+            inviter: hex_encode(&invitation.inviter),
+            inviter_device: hex_encode(&invitation.inviter_device),
+            name: invitation.name,
+            creator: hex_encode(&invitation.creator),
+            member_count: invitation.member_count,
+            generation: invitation.generation,
+            recipient_scoped: invitation.recipient_scoped,
+            signed_authority: invitation.signed_authority,
+            arrived_at: invitation.arrived_at,
+            expires_at: invitation.expires_at,
+        }
+    }
+}
+
+/// Recipient-origin security state for one sender-key group.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum GroupSecurityLevel {
+    /// Legacy history is readable, but new content waits for an explicit
+    /// upgrade.
+    UpgradeRequired,
+    /// Fresh per-recipient origin capabilities are still being exchanged.
+    Upgrading,
+    /// Every current exact recipient device has acknowledged the fresh
+    /// origin capability.
+    RecipientAuthenticated,
+}
+
+impl From<kult_node::GroupSecurityLevel> for GroupSecurityLevel {
+    fn from(level: kult_node::GroupSecurityLevel) -> Self {
+        match level {
+            kult_node::GroupSecurityLevel::UpgradeRequired => Self::UpgradeRequired,
+            kult_node::GroupSecurityLevel::Upgrading => Self::Upgrading,
+            kult_node::GroupSecurityLevel::RecipientAuthenticated => Self::RecipientAuthenticated,
+        }
+    }
+}
+
+/// Render-safe details for the visible group-security upgrade.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct GroupSecurity {
+    /// Group id (hex).
+    pub group: String,
+    /// Current local security state.
+    pub level: GroupSecurityLevel,
+    /// Exact current devices whose origin exchange is incomplete (hex).
+    pub pending_devices: Vec<String>,
+    /// Retained history rows accurately labelled membership-authenticated.
+    pub legacy_history_rows: u64,
+}
+
+impl GroupSecurity {
+    fn from_node(security: kult_node::GroupSecurityInfo) -> Self {
+        Self {
+            group: hex_encode(&security.group),
+            level: security.level.into(),
+            pending_devices: security
+                .pending_devices
+                .iter()
+                .map(|device| hex_encode(device))
+                .collect(),
+            legacy_history_rows: security.legacy_history_rows as u64,
+        }
+    }
+}
+
+/// Authentication level retained with one group-history row.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum GroupMessageAuthentication {
+    /// Any member holding the legacy sender chain could have produced it.
+    LegacyMembership,
+    /// Local attachment content is staged but has not entered a tagged
+    /// recipient wrapper or transport queue yet.
+    PendingRecipientAuthentication,
+    /// A recipient-device origin tag was verified, or this device authored
+    /// every recipient's tagged wrapper.
+    RecipientAuthenticated,
 }
 
 /// Fixed C6 group role.
@@ -1876,6 +2319,9 @@ pub struct GroupMessage {
     pub timestamp: u64,
     /// Message body (UTF-8 text).
     pub body: String,
+    /// Whether this immutable row has individual recipient-origin
+    /// authentication or only legacy membership authentication.
+    pub authentication: GroupMessageAuthentication,
     /// Explicit content interpretation.
     pub content_kind: ContentKind,
     /// Exact authenticated local expiry for ephemeral content.
@@ -1915,11 +2361,44 @@ pub enum NatVerdict {
     Unknown,
 }
 
+/// Visible signed-directory freshness state.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum ProviderDirectoryVerdict {
+    /// No signed default was configured; manual/core routes remain available.
+    NotConfigured,
+    /// A current signed generation is active.
+    Current,
+    /// A bad or unavailable candidate was ignored in favor of last-valid.
+    RetainedLastValid,
+    /// The last-valid generation is expired but within bounded outage grace.
+    Stale,
+    /// Retained and candidate state conflict; defaults are disabled.
+    Conflict,
+    /// No safely usable signed generation remains.
+    Unavailable,
+}
+
+/// Familiar, honest aggregate connectivity language for shells.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum ConnectionVerdict {
+    /// At least one transport pseudonym currently has a live connection.
+    Connected,
+    /// No live connection exists, but a mailbox, relay, LAN, mesh, or file
+    /// fallback is configured.
+    FallbackReady,
+    /// No fresh route is currently visible.
+    WaitingForRoute,
+}
+
 /// A point-in-time snapshot of the node.
 #[derive(Clone, Debug, uniffi::Record)]
 pub struct Status {
-    /// This node's human-shareable kult address.
+    /// Stable account fingerprint retained for verification and compatibility.
     pub address: String,
+    /// Ordinary capability-scoped share artifact.
+    pub connect_code: String,
+    /// Whether mailbox-only stable-address compatibility remains enabled.
+    pub legacy_discovery: bool,
     /// This node's peer id (hex).
     pub peer: String,
     /// Live listen addresses (circuit addresses included once reserved).
@@ -1928,6 +2407,14 @@ pub struct Status {
     pub lan_peers: Vec<String>,
     /// NAT reachability as last probed.
     pub nat: NatVerdict,
+    /// Current ADR-0017 operating mode.
+    pub mode: NetworkMode,
+    /// Signed provider-directory freshness/fallback state.
+    pub provider_directory: ProviderDirectoryVerdict,
+    /// Familiar aggregate route status; never a delivery receipt.
+    pub connection: ConnectionVerdict,
+    /// Transport pseudonyms with at least one live connection.
+    pub connected_peers: u64,
     /// Outbound messages not yet delivered.
     pub queued: u64,
     /// Plaintext messages sealed locally until a future UTC instant.
@@ -1961,6 +2448,82 @@ impl From<kult_node::LinkedDeviceInfo> for LinkedDevice {
             last_seen: device.last_seen,
             revoked_at: device.revoked_at,
             current: device.current,
+        }
+    }
+}
+
+/// Render-safe category for a fail-closed account device-authority conflict.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum DeviceAuthorityConflictKind {
+    /// Concurrent valid ordinary transitions diverged from one parent.
+    Fork,
+    /// Different root-authorized transitions claimed the same recovery epoch.
+    Recovery,
+}
+
+/// Durable authority conflict that remains visible across restart.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct DeviceAuthorityConflict {
+    /// Conflict category.
+    pub kind: DeviceAuthorityConflictKind,
+    /// Locally retained branch tip (hex).
+    pub accepted: String,
+    /// Rejected conflicting branch tip (hex).
+    pub conflicting: String,
+    /// Recovery epoch shared by both claims.
+    pub recovery_epoch: u64,
+    /// Coarse local observation time, or zero when unavailable.
+    pub observed_at: u64,
+}
+
+impl From<kult_node::DeviceAuthorityConflictInfo> for DeviceAuthorityConflict {
+    fn from(conflict: kult_node::DeviceAuthorityConflictInfo) -> Self {
+        Self {
+            kind: match conflict.kind {
+                kult_node::DeviceAuthorityConflictType::Fork => DeviceAuthorityConflictKind::Fork,
+                kult_node::DeviceAuthorityConflictType::Recovery => {
+                    DeviceAuthorityConflictKind::Recovery
+                }
+            },
+            accepted: hex_encode(&conflict.accepted),
+            conflicting: hex_encode(&conflict.conflicting),
+            recovery_epoch: conflict.recovery_epoch,
+            observed_at: conflict.observed_at,
+        }
+    }
+}
+
+/// Durable contact-authority conflict that remains visible across restart.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct ContactAuthorityConflict {
+    /// Stable affected contact account (hex).
+    pub account: String,
+    /// Conflict category.
+    pub kind: DeviceAuthorityConflictKind,
+    /// Locally retained branch tip (hex).
+    pub accepted: String,
+    /// Rejected conflicting branch tip (hex).
+    pub conflicting: String,
+    /// Recovery epoch shared by both claims.
+    pub recovery_epoch: u64,
+    /// Coarse local observation time.
+    pub observed_at: u64,
+}
+
+impl From<kult_node::ContactAuthorityConflictInfo> for ContactAuthorityConflict {
+    fn from(conflict: kult_node::ContactAuthorityConflictInfo) -> Self {
+        Self {
+            account: hex_encode(&conflict.account),
+            kind: match conflict.kind {
+                kult_node::DeviceAuthorityConflictType::Fork => DeviceAuthorityConflictKind::Fork,
+                kult_node::DeviceAuthorityConflictType::Recovery => {
+                    DeviceAuthorityConflictKind::Recovery
+                }
+            },
+            accepted: hex_encode(&conflict.accepted),
+            conflicting: hex_encode(&conflict.conflicting),
+            recovery_epoch: conflict.recovery_epoch,
+            observed_at: conflict.observed_at,
         }
     }
 }
@@ -2015,12 +2578,48 @@ pub enum Event {
     StateResyncRequired,
     /// Account-authorized device list, name, or revocation changed.
     DevicesChanged,
+    /// Concurrent valid ordinary authority branches were detected.
+    DeviceAuthorityFork {
+        /// Locally retained branch tip (hex).
+        accepted: String,
+        /// Rejected conflicting branch tip (hex).
+        conflicting: String,
+        /// Recovery epoch shared by both branches.
+        recovery_epoch: u64,
+    },
+    /// Different root-authorized transitions claimed one recovery epoch.
+    DeviceRecoveryConflict {
+        /// Locally retained recovery branch (hex).
+        accepted: String,
+        /// Rejected conflicting recovery branch (hex).
+        conflicting: String,
+        /// Conflicting recovery epoch.
+        recovery_epoch: u64,
+    },
     /// This pristine installation completed a confirmed device link.
     DeviceLinkCompleted {
         /// Stable account id (hex).
         account: String,
         /// Exact new physical-device id (hex).
         device: String,
+    },
+    /// Authenticated rendezvous state forked at one generation.
+    RendezvousConflict {
+        /// Stable contact account id (hex).
+        peer: String,
+        /// Exact contact device id (hex).
+        device: String,
+        /// Provider-separation id, or zeroes for a provider-set conflict (hex).
+        provider: String,
+    },
+    /// Authenticated native-wake capability state forked at one generation.
+    WakeConflict {
+        /// Stable contact account id (hex).
+        peer: String,
+        /// Exact contact device id (hex).
+        device: String,
+        /// Conflicting complete-set generation.
+        generation: u64,
     },
     /// Private local custom icons changed; shells re-read visible targets.
     CustomIconsChanged,
@@ -2077,6 +2676,33 @@ pub enum Event {
         /// Original canonical Text content id (hex).
         target_content_id: String,
     },
+    /// A valid unknown sender entered the sealed request inbox.
+    MessageRequestReceived {
+        /// Stable opaque request id (hex).
+        request: String,
+    },
+    /// A request was explicitly accepted and promoted.
+    MessageRequestAccepted {
+        /// Stable opaque request id (hex).
+        request: String,
+        /// Verified stable sender account now present as a contact (hex).
+        peer: String,
+    },
+    /// A request was explicitly deleted locally.
+    MessageRequestDeleted {
+        /// Stable opaque request id (hex).
+        request: String,
+    },
+    /// A request sender was blocked locally.
+    MessageRequestBlocked {
+        /// Stable opaque request id (hex).
+        request: String,
+    },
+    /// A provisional request and its isolated keys expired locally.
+    MessageRequestExpired {
+        /// Stable opaque request id (hex).
+        request: String,
+    },
     /// Text was appended to the reserved local note-to-self conversation.
     NoteToSelfMessageAdded {
         /// Stable reserved identity: `note_to_self`.
@@ -2124,6 +2750,32 @@ pub enum Event {
     CallUpdated {
         /// Current render-safe call snapshot.
         call: Call,
+    },
+    /// An authenticated group proposal entered the invitation inbox.
+    GroupInvitationReceived {
+        /// Stable opaque invitation id (hex).
+        invitation: String,
+        /// Proposed group id (hex).
+        group: String,
+        /// Pairwise-authenticated inviter (hex).
+        inviter: String,
+    },
+    /// A group invitation was explicitly accepted.
+    GroupInvitationAccepted {
+        /// Stable opaque invitation id (hex).
+        invitation: String,
+        /// Joined group id (hex).
+        group: String,
+    },
+    /// A group invitation was explicitly deleted locally.
+    GroupInvitationDeleted {
+        /// Stable opaque invitation id (hex).
+        invitation: String,
+    },
+    /// A group invitation expired without changing membership.
+    GroupInvitationExpired {
+        /// Stable opaque invitation id (hex).
+        invitation: String,
     },
     /// A group was created, joined, re-keyed, re-rostered, or left.
     GroupUpdated {
@@ -2235,12 +2887,48 @@ impl Event {
         Some(match event {
             kult_node::Event::StateResyncRequired => Self::StateResyncRequired,
             kult_node::Event::DevicesChanged => Self::DevicesChanged,
+            kult_node::Event::DeviceAuthorityFork {
+                accepted,
+                conflicting,
+                recovery_epoch,
+            } => Self::DeviceAuthorityFork {
+                accepted: hex_encode(&accepted),
+                conflicting: hex_encode(&conflicting),
+                recovery_epoch,
+            },
+            kult_node::Event::DeviceRecoveryConflict {
+                accepted,
+                conflicting,
+                recovery_epoch,
+            } => Self::DeviceRecoveryConflict {
+                accepted: hex_encode(&accepted),
+                conflicting: hex_encode(&conflicting),
+                recovery_epoch,
+            },
             kult_node::Event::DeviceLinkCompleted { account, device } => {
                 Self::DeviceLinkCompleted {
                     account: hex_encode(&account),
                     device: hex_encode(&device),
                 }
             }
+            kult_node::Event::RendezvousConflict {
+                peer,
+                device,
+                provider,
+            } => Self::RendezvousConflict {
+                peer: hex_encode(&peer),
+                device: hex_encode(&device),
+                provider: hex_encode(&provider),
+            },
+            kult_node::Event::WakeConflict {
+                peer,
+                device,
+                generation,
+            } => Self::WakeConflict {
+                peer: hex_encode(&peer),
+                device: hex_encode(&device),
+                generation,
+            },
             kult_node::Event::CustomIconsChanged => Self::CustomIconsChanged,
             kult_node::Event::ThemeChanged => Self::ThemeChanged,
             kult_node::Event::FoldersChanged => Self::FoldersChanged,
@@ -2280,6 +2968,24 @@ impl Event {
                 peer: hex_encode(&peer),
                 target_content_id: hex_encode(&target_content_id),
             },
+            kult_node::Event::MessageRequestReceived { request } => Self::MessageRequestReceived {
+                request: hex_encode(&request),
+            },
+            kult_node::Event::MessageRequestAccepted { request, peer } => {
+                Self::MessageRequestAccepted {
+                    request: hex_encode(&request),
+                    peer: hex_encode(&peer),
+                }
+            }
+            kult_node::Event::MessageRequestDeleted { request } => Self::MessageRequestDeleted {
+                request: hex_encode(&request),
+            },
+            kult_node::Event::MessageRequestBlocked { request } => Self::MessageRequestBlocked {
+                request: hex_encode(&request),
+            },
+            kult_node::Event::MessageRequestExpired { request } => Self::MessageRequestExpired {
+                request: hex_encode(&request),
+            },
             kult_node::Event::NoteToSelfMessageAdded {
                 id,
                 timestamp,
@@ -2311,6 +3017,31 @@ impl Event {
             kult_node::Event::CallUpdated { call } => Self::CallUpdated {
                 call: Call::from_node(call),
             },
+            kult_node::Event::GroupInvitationReceived {
+                invitation,
+                group,
+                inviter,
+            } => Self::GroupInvitationReceived {
+                invitation: hex_encode(&invitation),
+                group: hex_encode(&group),
+                inviter: hex_encode(&inviter),
+            },
+            kult_node::Event::GroupInvitationAccepted { invitation, group } => {
+                Self::GroupInvitationAccepted {
+                    invitation: hex_encode(&invitation),
+                    group: hex_encode(&group),
+                }
+            }
+            kult_node::Event::GroupInvitationDeleted { invitation } => {
+                Self::GroupInvitationDeleted {
+                    invitation: hex_encode(&invitation),
+                }
+            }
+            kult_node::Event::GroupInvitationExpired { invitation } => {
+                Self::GroupInvitationExpired {
+                    invitation: hex_encode(&invitation),
+                }
+            }
             kult_node::Event::GroupUpdated { group } => Self::GroupUpdated {
                 group: hex_encode(&group),
             },
@@ -2447,24 +3178,91 @@ impl KultNode {
         Self::boot(runtime_config(config, None)?, listener)
     }
 
-    /// First run only: restore the node from an encrypted backup file
-    /// (docs/07-storage.md §4) instead of creating a fresh identity, then
-    /// start it exactly like [`KultNode::start`]. The exported identity
-    /// resumes with contacts and history intact; every peer that had a
-    /// live session at export time is re-handshaked automatically.
+    /// First run only: restore an encrypted backup with an explicitly opened
+    /// offline authority. A root-free `KKR10` resumes the stable identity in a
+    /// fresh recovery epoch. A copied-root `KKR1` through `KKR7` is accepted
+    /// only with a newly prepared, different authority and publishes a fresh
+    /// identity containing the bounded former-identity local archive.
+    ///
     /// Refused when the data directory already holds a store.
     #[uniffi::constructor]
     pub fn restore(
         config: Config,
         backup_path: String,
         mnemonic: String,
+        recovery_package_path: String,
+        recovery_mnemonic: String,
         listener: Box<dyn EventListener>,
     ) -> Result<Arc<Self>, FfiError> {
         let backup = std::fs::read(&backup_path).map_err(|e| FfiError::Startup {
             reason: format!("backup file: {e}"),
         })?;
-        let restore = RestoreSource { backup, mnemonic };
+        let recovery_package =
+            std::fs::read(&recovery_package_path).map_err(|e| FfiError::Startup {
+                reason: format!("offline recovery authority: {e}"),
+            })?;
+        let restore = RestoreSource {
+            backup,
+            mnemonic,
+            recovery_package,
+            recovery_mnemonic,
+        };
         Self::boot(runtime_config(config, Some(restore))?, listener)
+    }
+
+    /// Complete a prepared single-device Alpha migration and start the node.
+    ///
+    /// The stable account and physical-device ids are retained. The supplied
+    /// `.kra` file and confirmed words must open the exact root still present
+    /// in the legacy store; copied-root profiles are refused and require the
+    /// separate new-identity reset flow.
+    #[uniffi::constructor]
+    pub fn migrate_authority(
+        config: Config,
+        recovery_package_path: String,
+        recovery_mnemonic: String,
+        listener: Box<dyn EventListener>,
+    ) -> Result<Arc<Self>, FfiError> {
+        let recovery_package =
+            std::fs::read(&recovery_package_path).map_err(|e| FfiError::Startup {
+                reason: format!("offline recovery authority: {e}"),
+            })?;
+        let cfg = runtime_config(config, None)?;
+        let sink: Box<dyn Fn(kult_node::Event) + Send> = Box::new(move |event| {
+            if let Some(event) = Event::from_node(event) {
+                listener.on_event(event);
+            }
+        });
+        let rt = Runtime::migrate_authority(cfg, &recovery_package, &recovery_mnemonic, sink)
+            .map_err(|reason| FfiError::Startup { reason })?;
+        Ok(Self::wrap(rt))
+    }
+
+    /// Complete a prepared copied-root Alpha reset and start the fresh account.
+    ///
+    /// This permanently changes the account address and safety numbers. The
+    /// runtime preserves only the explicitly marked local archive and
+    /// petnames; every preserved contact requires re-verification.
+    #[uniffi::constructor]
+    pub fn reset_authority(
+        config: Config,
+        recovery_package_path: String,
+        recovery_mnemonic: String,
+        listener: Box<dyn EventListener>,
+    ) -> Result<Arc<Self>, FfiError> {
+        let recovery_package =
+            std::fs::read(&recovery_package_path).map_err(|e| FfiError::Startup {
+                reason: format!("offline recovery authority: {e}"),
+            })?;
+        let cfg = runtime_config(config, None)?;
+        let sink: Box<dyn Fn(kult_node::Event) + Send> = Box::new(move |event| {
+            if let Some(event) = Event::from_node(event) {
+                listener.on_event(event);
+            }
+        });
+        let rt = Runtime::reset_authority(cfg, &recovery_package, &recovery_mnemonic, sink)
+            .map_err(|reason| FfiError::Startup { reason })?;
+        Ok(Self::wrap(rt))
     }
 
     /// This node's human-shareable kult address.
@@ -2509,6 +3307,7 @@ impl KultNode {
         // tick. Reading them here keeps status responsive even while that
         // actor is legitimately awaiting slow carrier work.
         let counts = rt.counts();
+        let (connect_code, legacy_discovery) = rt.discovery();
         // Status is a UI/health request and must not hang behind a slow or
         // wedged transport command loop. This mirrors kultd's status RPC:
         // a bounded diagnostic miss is honestly "unknown", not an excuse
@@ -2521,17 +3320,55 @@ impl KultNode {
             _ => NatVerdict::Unknown,
         };
         let (address, peer) = self.identity.lock_unpoisoned().clone();
+        let connected_peers = rt.net.connected_peer_count() as u64;
         Ok(Status {
             address,
+            connect_code,
+            legacy_discovery,
             peer,
             listen: rt.net.listen_addrs(),
             lan_peers: rt.net.lan_peers(),
             nat,
+            mode: rt.mode,
+            provider_directory: rt.provider_directory,
+            connection: if connected_peers > 0 {
+                ConnectionVerdict::Connected
+            } else if rt.fallback_ready {
+                ConnectionVerdict::FallbackReady
+            } else {
+                ConnectionVerdict::WaitingForRoute
+            },
+            connected_peers,
             queued: counts.queued,
             scheduled: counts.scheduled,
             transit: counts.transit,
             contacts: counts.contacts,
         })
+    }
+
+    /// Current capability-scoped Connect code for ordinary sharing.
+    pub fn connect_code(&self) -> Result<String, FfiError> {
+        let guard = self.inner.lock_unpoisoned();
+        let rt = guard.as_ref().ok_or(FfiError::Stopped)?;
+        Ok(rt.discovery().0)
+    }
+
+    /// Rotate discovery reachability without changing identity or safety numbers.
+    pub fn rotate_connect_code(&self) -> Result<String, FfiError> {
+        let connect_code = self.call(|resp| Msg::ConnectCodeRotate { resp })?;
+        let guard = self.inner.lock_unpoisoned();
+        let rt = guard.as_ref().ok_or(FfiError::Stopped)?;
+        rt.set_discovery(connect_code.clone(), false);
+        Ok(connect_code)
+    }
+
+    /// Permanently retire the mailbox-only stable-address migration bridge.
+    pub fn retire_legacy_discovery(&self) -> Result<String, FfiError> {
+        let connect_code = self.call(|resp| Msg::ConnectCodeRetireLegacy { resp })?;
+        let guard = self.inner.lock_unpoisoned();
+        let rt = guard.as_ref().ok_or(FfiError::Stopped)?;
+        rt.set_discovery(connect_code.clone(), false);
+        Ok(connect_code)
     }
 
     /// Export a ready signed prekey bundle for out-of-band sharing.
@@ -2555,6 +3392,42 @@ impl KultNode {
     pub fn linked_devices(&self) -> Result<Vec<LinkedDevice>, FfiError> {
         self.call(|resp| Msg::LinkedDevices { resp })
             .map(|devices| devices.into_iter().map(Into::into).collect())
+    }
+
+    /// Unresolved fail-closed authority conflicts retained across restart.
+    pub fn device_authority_conflicts(&self) -> Result<Vec<DeviceAuthorityConflict>, FfiError> {
+        self.call(|resp| Msg::DeviceAuthorityConflicts { resp })
+            .map(|conflicts| conflicts.into_iter().map(Into::into).collect())
+    }
+
+    /// Contact authority forks and recovery conflicts retained across restart.
+    pub fn contact_authority_conflicts(&self) -> Result<Vec<ContactAuthorityConflict>, FfiError> {
+        self.call(|resp| Msg::ContactAuthorityConflicts { resp })
+            .map(|conflicts| conflicts.into_iter().map(Into::into).collect())
+    }
+
+    /// Visible former-identity archive and pending contact re-verification.
+    pub fn authority_reset_history(&self) -> Result<Option<AuthorityResetHistory>, FfiError> {
+        self.call(|resp| Msg::AuthorityResetHistory { resp })
+            .map(|record| record.map(AuthorityResetHistory::from_node))
+    }
+
+    /// Export the exact pending rename/revocation proposal for another active
+    /// device to approve after this device reports that quorum is required.
+    pub fn device_authority_approval_request(&self) -> Result<Vec<u8>, FfiError> {
+        self.call(|resp| Msg::DeviceAuthorityApprovalRequest { resp })
+    }
+
+    /// Verify and sign another active device's exact rename/revocation
+    /// proposal.
+    pub fn approve_device_authority_request(&self, request: Vec<u8>) -> Result<Vec<u8>, FfiError> {
+        self.call(|resp| Msg::DeviceAuthorityApprove { request, resp })
+    }
+
+    /// Merge one detached authority approval. Returns true only when the
+    /// strict-majority transition was atomically committed.
+    pub fn accept_device_authority_approval(&self, approval: Vec<u8>) -> Result<bool, FfiError> {
+        self.call(|resp| Msg::DeviceAuthorityAccept { approval, resp })
     }
 
     /// Honest per-recipient-device delivery state for one message id.
@@ -2623,6 +3496,27 @@ impl KultNode {
             confirmed,
             resp,
         })
+    }
+
+    /// Export the canonical pending add-device proposal when another active
+    /// device's approval is required.
+    pub fn device_link_approval_request(&self) -> Result<Vec<u8>, FfiError> {
+        self.call(|resp| Msg::DeviceLinkApprovalRequest { resp })
+    }
+
+    /// Verify and sign another active device's exact add-device proposal.
+    pub fn approve_device_link_request(&self, request: Vec<u8>) -> Result<Vec<u8>, FfiError> {
+        self.call(|resp| Msg::DeviceLinkApproveRequest { request, resp })
+    }
+
+    /// Merge one detached add-device approval. Returns the final encrypted
+    /// transfer package only once the previous active set's strict majority
+    /// is present.
+    pub fn accept_device_link_approval(
+        &self,
+        approval: Vec<u8>,
+    ) -> Result<Option<Vec<u8>>, FfiError> {
+        self.call(|resp| Msg::DeviceLinkAcceptApproval { approval, resp })
     }
 
     /// Confirm and import one encrypted link package on the pristine target.
@@ -3658,6 +4552,20 @@ impl KultNode {
         .map(|group| hex_encode(&group))
     }
 
+    /// Inspect the visible recipient-origin upgrade state for one group.
+    pub fn group_security(&self, group: String) -> Result<GroupSecurity, FfiError> {
+        let group = parse_group(&group)?;
+        self.call(|resp| Msg::GroupSecurity { group, resp })
+            .map(GroupSecurity::from_node)
+    }
+
+    /// Start the explicit legacy-group security upgrade. Progress continues
+    /// through ordinary ticks and is visible through [`Self::group_security`].
+    pub fn upgrade_group_security(&self, group: String) -> Result<(), FfiError> {
+        let group = parse_group(&group)?;
+        self.call(|resp| Msg::GroupUpgradeSecurity { group, resp })
+    }
+
     /// Queue a message to a group. Returns its record id (hex); per-member
     /// progress arrives as [`Event::GroupDeliveryUpdated`].
     pub fn send_group(&self, group: String, body: String) -> Result<String, FfiError> {
@@ -3928,6 +4836,28 @@ impl KultNode {
         self.call(|resp| Msg::GroupLeave { group, resp })
     }
 
+    /// Authenticated proposals awaiting explicit group-membership consent.
+    pub fn group_invitations(&self) -> Result<Vec<GroupInvitation>, FfiError> {
+        Ok(self
+            .call(|resp| Msg::GroupInvitations { resp })?
+            .into_iter()
+            .map(GroupInvitation::from)
+            .collect())
+    }
+
+    /// Accept one invitation and atomically create its proposed group.
+    pub fn accept_group_invitation(&self, invitation: String) -> Result<String, FfiError> {
+        let invitation = parse_request(&invitation)?;
+        self.call(|resp| Msg::GroupInvitationAccept { invitation, resp })
+            .map(|group| hex_encode(&group))
+    }
+
+    /// Delete one invitation without creating membership or history.
+    pub fn delete_group_invitation(&self, invitation: String) -> Result<(), FfiError> {
+        let invitation = parse_request(&invitation)?;
+        self.call(|resp| Msg::GroupInvitationDelete { invitation, resp })
+    }
+
     /// All stored groups, excluding secrets and sender chains.
     pub fn groups(&self) -> Result<Vec<Group>, FfiError> {
         Ok(self
@@ -3938,6 +4868,7 @@ impl KultNode {
                 name: group.name.clone(),
                 creator: hex_encode(&group.creator),
                 members: group.members.iter().map(|peer| hex_encode(peer)).collect(),
+                security: group.security.into(),
             })
             .collect())
     }
@@ -3963,6 +4894,18 @@ impl KultNode {
                     },
                     timestamp: record.timestamp,
                     body,
+                    authentication: match record.origin {
+                        kult_store::GroupOriginAuthentication::LegacyMembership => {
+                            GroupMessageAuthentication::LegacyMembership
+                        }
+                        kult_store::GroupOriginAuthentication::PendingOutboundV1 { .. } => {
+                            GroupMessageAuthentication::PendingRecipientAuthentication
+                        }
+                        kult_store::GroupOriginAuthentication::RecipientV1 { .. }
+                        | kult_store::GroupOriginAuthentication::OutboundV1 { .. } => {
+                            GroupMessageAuthentication::RecipientAuthenticated
+                        }
+                    },
                     content_kind,
                     expires_at,
                     mention_spans,
@@ -3997,6 +4940,42 @@ impl KultNode {
                 verified: c.verified,
             })
             .collect())
+    }
+
+    /// Sealed first-contact requests, excluding session and route secrets.
+    pub fn message_requests(&self) -> Result<Vec<MessageRequest>, FfiError> {
+        Ok(self
+            .call(|resp| Msg::MessageRequests { resp })?
+            .into_iter()
+            .map(MessageRequest::from)
+            .collect())
+    }
+
+    /// Accept and atomically promote one request to contact and history.
+    pub fn accept_message_request(
+        &self,
+        request: String,
+        name: String,
+    ) -> Result<String, FfiError> {
+        let request = parse_request(&request)?;
+        self.call(|resp| Msg::MessageRequestAccept {
+            request,
+            name,
+            resp,
+        })
+        .map(|peer| hex_encode(&peer))
+    }
+
+    /// Delete one request and retain only its bounded replay tombstone.
+    pub fn delete_message_request(&self, request: String) -> Result<(), FfiError> {
+        let request = parse_request(&request)?;
+        self.call(|resp| Msg::MessageRequestDelete { request, resp })
+    }
+
+    /// Block the verified request sender and remove its local capabilities.
+    pub fn block_message_request(&self, request: String) -> Result<(), FfiError> {
+        let request = parse_request(&request)?;
+        self.call(|resp| Msg::MessageRequestBlock { request, resp })
     }
 
     /// Fresh, safe carrier snapshots for all stored contacts. Expired
@@ -4141,6 +5120,81 @@ impl KultNode {
         self.call(|resp| Msg::SetHints { peer, hints, resp })
     }
 
+    /// Coalesce an on-demand post-pairing route refresh for an active
+    /// conversation. The call schedules bounded maintenance and never implies
+    /// registration, reachability, sent, or delivered.
+    pub fn request_rendezvous_refresh(&self, peer: String) -> Result<(), FfiError> {
+        let peer = parse_peer(&peer)?;
+        self.call(|resp| Msg::RendezvousRefresh { peer, resp })
+    }
+
+    /// Mark or clear one foreground conversation. Active state is runtime-only
+    /// and permits the bounded near-expiry rendezvous schedule; it does not
+    /// imply registration, reachability, sent, or delivered.
+    pub fn set_rendezvous_conversation_active(
+        &self,
+        peer: String,
+        active: bool,
+    ) -> Result<(), FfiError> {
+        let peer = parse_peer(&peer)?;
+        self.call(|resp| Msg::RendezvousConversationActive { peer, active, resp })
+    }
+
+    /// Register the current native provider token and distribute a distinct
+    /// capability to a bounded batch of authenticated contact devices.
+    ///
+    /// The token goes only to the separately configured wake gateways. It is
+    /// not stored in settings, sent to contacts, or included in backups.
+    pub fn register_native_wake(
+        &self,
+        platform: NativeWakePlatform,
+        environment: NativeWakeEnvironment,
+        profile: NativeWakeProfile,
+        provider_token: Vec<u8>,
+        app_topic: String,
+    ) -> Result<NativeWakeRegistration, FfiError> {
+        if provider_token.is_empty() || app_topic.is_empty() {
+            return Err(FfiError::Node {
+                reason: "native wake requires a provider token and application topic".to_owned(),
+            });
+        }
+        self.call(|resp| Msg::WakeRegister {
+            platform: platform.protocol(),
+            environment: environment.protocol(),
+            profile: profile.protocol(),
+            provider_token,
+            app_topic: app_topic.into_bytes(),
+            resp,
+        })
+        .map(|result| NativeWakeRegistration {
+            updated: u32::try_from(result.updated).unwrap_or(u32::MAX),
+            remaining: result.remaining,
+        })
+    }
+
+    /// Publish complete empty generations and durably queue revocation of all
+    /// capabilities this installation previously issued.
+    pub fn revoke_native_wake(&self) -> Result<u32, FfiError> {
+        self.call(|resp| Msg::WakeRevoke { resp })
+            .map(|updated| u32::try_from(updated).unwrap_or(u32::MAX))
+    }
+
+    /// Run one bounded generic collection pass after a native platform wake.
+    ///
+    /// The supplied platform budget is clamped to 25 seconds. Core checks
+    /// configured mailboxes, drains only immediate non-airtime carriers, and
+    /// persists ordinary receive/receipt work without sending messages,
+    /// starting calls, flooding mesh, or exporting sneakernet data. Returns
+    /// the number of application events emitted by the pass.
+    pub fn collect_after_native_wake(&self, budget_ms: u32) -> Result<u32, FfiError> {
+        if budget_ms == 0 {
+            return Err(FfiError::Node {
+                reason: "native-wake collection budget must be positive".to_owned(),
+            });
+        }
+        self.call(|resp| Msg::WakeCollect { budget_ms, resp })
+    }
+
     /// Publish this node's prekey bundle on the DHT now (also done
     /// automatically at startup and after relay reservation).
     pub fn publish(&self) -> Result<(), FfiError> {
@@ -4154,6 +5208,18 @@ impl KultNode {
     /// it is not stored anywhere. Restore with [`KultNode::restore`].
     pub fn export_backup(&self, path: String) -> Result<String, FfiError> {
         self.call(|resp| Msg::Backup {
+            path: PathBuf::from(path),
+            resp,
+        })
+    }
+
+    /// First-run only: write the encrypted offline account authority to a
+    /// new protected file and return its separate one-time 24-word phrase.
+    ///
+    /// This is not a routine backup: anyone holding both parts can take over
+    /// the stable identity and revoke every current device.
+    pub fn export_account_recovery_authority(&self, path: String) -> Result<String, FfiError> {
+        self.call(|resp| Msg::RecoveryAuthorityExport {
             path: PathBuf::from(path),
             resp,
         })
@@ -4177,10 +5243,14 @@ impl KultNode {
             }
         });
         let rt = Runtime::start(cfg, sink).map_err(|reason| FfiError::Startup { reason })?;
-        Ok(Arc::new(Self {
+        Ok(Self::wrap(rt))
+    }
+
+    fn wrap(rt: Runtime) -> Arc<Self> {
+        Arc::new(Self {
             identity: Mutex::new((rt.address.clone(), hex_encode(&rt.peer))),
             inner: Mutex::new(Some(rt)),
-        }))
+        })
     }
 
     /// Send one typed operation to the actor and wait for its reply.
@@ -4694,6 +5764,144 @@ fn runtime_config(
     std::fs::create_dir_all(&data_dir).map_err(|e| FfiError::Startup {
         reason: format!("data dir: {e}"),
     })?;
+    let mode = match config.mode {
+        NetworkMode::Standard => kult_transport::OperatingMode::Standard,
+        NetworkMode::Private => kult_transport::OperatingMode::Private,
+        NetworkMode::Sovereign => kult_transport::OperatingMode::Sovereign,
+    };
+    let roots = config
+        .provider_directory_roots
+        .iter()
+        .map(|value| parse_fixed_lower_hex::<32>(value))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|reason| FfiError::Startup { reason })?;
+    let manual = kult_transport::ManualProviderSet {
+        bootstrap: config.bootstrap,
+        relay: config.relay,
+        mailboxes: config.mailboxes,
+        rendezvous: config
+            .rendezvous
+            .into_iter()
+            .map(|provider| kult_transport::ProviderRendezvous {
+                origin: provider.origin,
+                static_key: provider.static_key,
+                standard: provider.standard,
+                private_via_tor: provider.private_via_tor,
+            })
+            .collect(),
+    };
+    let directory_configured = config.provider_directory.is_some();
+    let resolution = kult_transport::resolve_provider_directory(
+        mode,
+        config
+            .provider_directory
+            .as_deref()
+            .map(std::path::Path::new),
+        &data_dir.join("provider-directory-cache.json"),
+        &roots,
+        &manual,
+        unix_now(),
+    )
+    .map_err(|error| FfiError::Startup {
+        reason: error.to_string(),
+    })?;
+    if mode == kult_transport::OperatingMode::Standard
+        && resolution.directory.is_some()
+        && !config.standard_disclosure_confirmed
+    {
+        return Err(FfiError::Startup {
+            reason: "confirm the Standard provider disclosure before using directory defaults"
+                .to_owned(),
+        });
+    }
+    let mut wake = Vec::new();
+    for provider in config.wake {
+        if !provider.standard && !provider.private_via_tor {
+            return Err(FfiError::Startup {
+                reason: "wake provider must allow Standard, Private, or both".to_owned(),
+            });
+        }
+        let eligible = match mode {
+            kult_transport::OperatingMode::Standard => provider.standard,
+            kult_transport::OperatingMode::Private => provider.private_via_tor,
+            kult_transport::OperatingMode::Sovereign => false,
+        };
+        if !eligible {
+            continue;
+        }
+        let static_key =
+            parse_fixed_lower_hex::<32>(&provider.static_key).map_err(|_| FfiError::Startup {
+                reason: "wake provider TLS pin must be exactly 64 lowercase hex characters"
+                    .to_owned(),
+            })?;
+        wake.push(
+            kult_transport::WakeProvider::new(provider.origin, static_key).map_err(|_| {
+                FfiError::Startup {
+                    reason: "wake provider must use a canonical HTTPS origin and non-zero TLS pin"
+                        .to_owned(),
+                }
+            })?,
+        );
+    }
+    wake.sort_by(|left, right| {
+        (left.origin(), left.static_key()).cmp(&(right.origin(), right.static_key()))
+    });
+    wake.dedup_by(|left, right| left.provider_id() == right.provider_id());
+    if wake.len() > kult_transport::MAX_WAKE_PROVIDERS {
+        return Err(FfiError::Startup {
+            reason: format!(
+                "at most {} native-wake gateways may be configured",
+                kult_transport::MAX_WAKE_PROVIDERS
+            ),
+        });
+    }
+    let tor_proxy = config
+        .tor_proxy
+        .map(|value| {
+            value
+                .parse()
+                .map_err(|_| FfiError::Startup {
+                    reason: "Tor proxy must be a numeric loopback host:port".to_owned(),
+                })
+                .and_then(|proxy| {
+                    kult_transport::HttpsRendezvousClient::tor(proxy)
+                        .map(|_| proxy)
+                        .map_err(|_| FfiError::Startup {
+                            reason: "Tor proxy must be a non-zero loopback host:port".to_owned(),
+                        })
+                })
+        })
+        .transpose()?;
+    if mode == kult_transport::OperatingMode::Private
+        && (!resolution.providers.rendezvous.is_empty() || !wake.is_empty())
+        && tor_proxy.is_none()
+    {
+        return Err(FfiError::Startup {
+            reason: "Private optional providers require an explicit loopback Tor proxy".to_owned(),
+        });
+    }
+    let provider_directory = if !directory_configured {
+        ProviderDirectoryVerdict::NotConfigured
+    } else {
+        match resolution.status {
+            kult_transport::ProviderDirectoryStatus::Current => ProviderDirectoryVerdict::Current,
+            kult_transport::ProviderDirectoryStatus::RetainedLastValid => {
+                ProviderDirectoryVerdict::RetainedLastValid
+            }
+            kult_transport::ProviderDirectoryStatus::Stale => ProviderDirectoryVerdict::Stale,
+            kult_transport::ProviderDirectoryStatus::Conflict => ProviderDirectoryVerdict::Conflict,
+            kult_transport::ProviderDirectoryStatus::Unavailable => {
+                ProviderDirectoryVerdict::Unavailable
+            }
+        }
+    };
+    let effective = resolution.providers;
+    let fallback_ready = !effective.mailboxes.is_empty()
+        || effective.relay.is_some()
+        || config.mdns
+        || config.spool.is_some()
+        || config.meshtastic_serial.is_some()
+        || config.meshtastic_tcp.is_some();
     Ok(RuntimeConfig {
         db_path: data_dir.join("node.db"),
         passphrase: config.passphrase.into_bytes(),
@@ -4702,10 +5910,25 @@ fn runtime_config(
             KdfChoice::Mobile => kult_crypto::KDF_PROFILE_MOBILE,
         },
         restore,
+        mode,
+        public_mode: config.mode,
+        provider_directory,
+        discovery_policy: kult_node::DiscoveryPublicationPolicy {
+            mode: match mode {
+                kult_transport::OperatingMode::Standard => kult_node::DiscoveryMode::Standard,
+                kult_transport::OperatingMode::Private => kult_node::DiscoveryMode::Private,
+                kult_transport::OperatingMode::Sovereign => kult_node::DiscoveryMode::Sovereign,
+            },
+            publish_direct_routes: config.sovereign_publish_direct_routes,
+        },
+        rendezvous: effective.rendezvous,
+        wake,
+        tor_proxy,
+        fallback_ready,
         listen: config.listen,
-        bootstrap: config.bootstrap,
-        relay: config.relay,
-        mailboxes: config.mailboxes,
+        bootstrap: effective.bootstrap,
+        relay: effective.relay,
+        mailboxes: effective.mailboxes,
         serve_mailbox: config.serve_mailbox,
         mdns: config.mdns,
         spool: config.spool.map(PathBuf::from),
@@ -4716,6 +5939,36 @@ fn runtime_config(
         checkin_interval: Duration::from_secs(config.checkin_secs.max(1)),
         nat_interval: Duration::from_secs(config.nat_secs.max(1)),
     })
+}
+
+fn parse_fixed_lower_hex<const N: usize>(value: &str) -> Result<[u8; N], String> {
+    if value.len() != N * 2
+        || value
+            .bytes()
+            .any(|byte| !byte.is_ascii_digit() && !(b'a'..=b'f').contains(&byte))
+    {
+        return Err(format!(
+            "provider-directory keys must be exactly {} lowercase hex characters",
+            N * 2
+        ));
+    }
+    let mut out = [0u8; N];
+    for (index, pair) in value.as_bytes().chunks_exact(2).enumerate() {
+        let nibble = |byte| match byte {
+            b'0'..=b'9' => byte - b'0',
+            b'a'..=b'f' => byte - b'a' + 10,
+            _ => 0,
+        };
+        out[index] = (nibble(pair[0]) << 4) | nibble(pair[1]);
+    }
+    Ok(out)
+}
+
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }
 
 const UNSUPPORTED_MESSAGE: &str = "Unsupported message — update Komms";
@@ -4913,6 +6166,12 @@ fn parse_message(s: &str) -> Result<[u8; 16], FfiError> {
     Ok(out)
 }
 
+fn parse_request(s: &str) -> Result<[u8; 16], FfiError> {
+    parse_message(s).map_err(|_| FfiError::Node {
+        reason: "request id must be 32 hex chars".to_owned(),
+    })
+}
+
 fn parse_call(s: &str) -> Result<[u8; 16], FfiError> {
     parse_message(s).map_err(|_| FfiError::Node {
         reason: "call id must be 32 hex chars".to_owned(),
@@ -5023,6 +6282,38 @@ mod tests {
             }
             other => panic!("wrong variant: {other:?}"),
         }
+
+        let event = Event::from_node(kult_node::Event::RendezvousConflict {
+            peer: [3; 32],
+            device: [4; 32],
+            provider: [5; 32],
+        })
+        .unwrap();
+        assert!(matches!(
+            event,
+            Event::RendezvousConflict {
+                peer,
+                device,
+                provider,
+            } if peer == "03".repeat(32)
+                && device == "04".repeat(32)
+                && provider == "05".repeat(32)
+        ));
+
+        let event = Event::from_node(kult_node::Event::WakeConflict {
+            peer: [6; 32],
+            device: [7; 32],
+            generation: 8,
+        })
+        .unwrap();
+        assert!(matches!(
+            event,
+            Event::WakeConflict {
+                peer,
+                device,
+                generation: 8,
+            } if peer == "06".repeat(32) && device == "07".repeat(32)
+        ));
     }
 
     #[test]
@@ -5113,5 +6404,110 @@ mod tests {
             .runs
             .iter()
             .all(|run| { !run.text.contains("href=") && !run.text.contains("src=https://") })));
+    }
+
+    #[test]
+    fn private_rendezvous_requires_an_explicit_loopback_tor_proxy() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut config = default_config(
+            directory.path().display().to_string(),
+            "test-passphrase".to_owned(),
+        );
+        config.mode = NetworkMode::Private;
+        config.rendezvous = vec![RendezvousProviderConfig {
+            origin: "https://rendezvous.example.org".to_owned(),
+            static_key: "22".repeat(32),
+            standard: false,
+            private_via_tor: true,
+        }];
+
+        assert!(matches!(
+            runtime_config(config.clone(), None),
+            Err(FfiError::Startup { reason }) if reason.contains("loopback Tor proxy")
+        ));
+        config.tor_proxy = Some("192.0.2.1:9050".to_owned());
+        assert!(matches!(
+            runtime_config(config.clone(), None),
+            Err(FfiError::Startup { reason }) if reason.contains("loopback host")
+        ));
+        config.tor_proxy = Some("127.0.0.1:9050".to_owned());
+        let runtime = runtime_config(config, None).unwrap();
+        assert_eq!(runtime.mode, kult_transport::OperatingMode::Private);
+        assert_eq!(runtime.rendezvous.len(), 1);
+        assert_eq!(runtime.tor_proxy, Some("127.0.0.1:9050".parse().unwrap()));
+    }
+
+    #[test]
+    fn native_wake_gateway_is_separately_keyed_and_private_ingress_is_fail_closed() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut config = default_config(
+            directory.path().display().to_string(),
+            "test-passphrase".to_owned(),
+        );
+        config.mode = NetworkMode::Private;
+        config.wake = vec![WakeProviderConfig {
+            origin: "https://wake.example.org".to_owned(),
+            static_key: "33".repeat(32),
+            standard: true,
+            private_via_tor: true,
+        }];
+        assert!(matches!(
+            runtime_config(config.clone(), None),
+            Err(FfiError::Startup { reason }) if reason.contains("loopback Tor proxy")
+        ));
+        config.tor_proxy = Some("127.0.0.1:9050".to_owned());
+        let runtime = runtime_config(config, None).unwrap();
+        assert_eq!(runtime.wake.len(), 1);
+        assert_eq!(runtime.wake[0].origin(), "https://wake.example.org");
+        assert!(runtime.rendezvous.is_empty());
+    }
+
+    #[test]
+    fn sovereign_mode_ignores_configured_wake_gateways() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut config = default_config(
+            directory.path().display().to_string(),
+            "test-passphrase".to_owned(),
+        );
+        config.mode = NetworkMode::Sovereign;
+        config.wake = vec![WakeProviderConfig {
+            origin: "https://wake.example.org".to_owned(),
+            static_key: "33".repeat(32),
+            standard: true,
+            private_via_tor: true,
+        }];
+        let runtime = runtime_config(config, None).unwrap();
+        assert!(runtime.wake.is_empty());
+    }
+
+    #[test]
+    fn sovereign_keeps_manual_core_routes_and_disables_rendezvous() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut config = default_config(
+            directory.path().display().to_string(),
+            "test-passphrase".to_owned(),
+        );
+        config.mode = NetworkMode::Sovereign;
+        config.mdns = false;
+        let bootstrap =
+            "/ip4/192.0.2.1/tcp/443/p2p/12D3KooWLFnPTnPQ7QgWT8CtctinEPduQPqV9F11ycRhPvhsqwH4";
+        let mailbox =
+            "/ip4/192.0.2.2/tcp/443/p2p/12D3KooWLFnPTnPQ7QgWT8CtctinEPduQPqV9F11ycRhPvhsqwH4";
+        config.bootstrap = vec![bootstrap.to_owned()];
+        config.mailboxes = vec![mailbox.to_owned()];
+        config.rendezvous = vec![RendezvousProviderConfig {
+            origin: "https://rendezvous.example.org".to_owned(),
+            static_key: "22".repeat(32),
+            standard: true,
+            private_via_tor: true,
+        }];
+
+        let runtime = runtime_config(config, None).unwrap();
+        assert_eq!(runtime.mode, kult_transport::OperatingMode::Sovereign);
+        assert_eq!(runtime.bootstrap, vec![bootstrap]);
+        assert_eq!(runtime.mailboxes, vec![mailbox]);
+        assert!(runtime.rendezvous.is_empty());
+        assert!(!runtime.discovery_policy.publish_direct_routes);
+        assert!(runtime.fallback_ready);
     }
 }

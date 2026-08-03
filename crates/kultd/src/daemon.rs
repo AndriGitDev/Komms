@@ -18,9 +18,10 @@ use std::fs::{File, OpenOptions};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use rand::rngs::OsRng;
+use rand::RngCore;
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
@@ -30,8 +31,11 @@ use tokio::task::JoinHandle;
 use kult_crypto::KdfProfile;
 use kult_node::{DeviceLinkSelection, FolderSelection, LabelMatchMode, Node, NodeError};
 use kult_transport::{
-    DeliveryHint, Discovery, Libp2pTransport, MailboxConfig, MeshtasticOptions,
-    MeshtasticTransport, NatStatus, Transport, TransportOptions, MAX_MAILBOX_CHECKIN_TOKENS,
+    DeliveryHint, Discovery, HttpsRendezvousClient, HttpsWakeClient, Libp2pTransport,
+    MailboxConfig, MailboxServiceConfig, ManualProviderSet, MeshtasticOptions, MeshtasticStats,
+    MeshtasticTransport, NatStatus, OperatingMode, ProviderDirectoryStatus, ProviderRendezvous,
+    RendezvousClient, RendezvousProvider, Transport, TransportOptions, WakeClient,
+    MAX_MAILBOX_CHECKIN_TOKENS,
 };
 
 use crate::wire::{self, Hint, Op, Request};
@@ -39,6 +43,33 @@ use crate::wire::{self, Hint, Op, Request};
 /// Bound one lifecycle pass even when an operator configures many or hostile
 /// mailbox endpoints. Remaining work waits for the next check-in interval.
 const MAX_MAILBOXES_PER_CHECKIN_TICK: usize = 8;
+const MAX_MAILBOX_BACKOFF: Duration = Duration::from_secs(60 * 60);
+
+#[derive(Clone, Copy)]
+struct MailboxRetry {
+    failures: u8,
+    next_at: Instant,
+}
+
+fn jittered_mailbox_delay(base: Duration, failures: u8, draw: u64) -> Duration {
+    let multiplier = 1u32 << failures.min(6);
+    let backed_off = base.saturating_mul(multiplier).min(MAX_MAILBOX_BACKOFF);
+    let percent = 75u128 + u128::from(draw % 51);
+    let millis = backed_off
+        .as_millis()
+        .saturating_mul(percent)
+        .saturating_div(100)
+        .max(250);
+    Duration::from_millis(u64::try_from(millis).unwrap_or(u64::MAX))
+}
+
+fn log_mailbox_page_collected(count: usize) {
+    tracing::debug!(count, "mailbox page collected");
+}
+
+fn log_mailbox_checkin_failed() {
+    tracing::warn!("mailbox check-in failed");
+}
 
 /// Return one contiguous bounded page and advance a persistent cursor.
 ///
@@ -55,6 +86,42 @@ fn rotating_batch<T: Clone>(items: &[T], cursor: &mut usize, limit: usize) -> Ve
     let batch = items[*cursor..end].to_vec();
     *cursor = if end == items.len() { 0 } else { end };
     batch
+}
+
+/// Explicit one-time Alpha authority upgrade selected at daemon startup.
+#[derive(Clone)]
+pub enum AuthorityStartup {
+    /// Remove an undistributed legacy root in place while retaining identity.
+    Migrate {
+        /// Protected offline authority package prepared from this profile.
+        package: PathBuf,
+        /// Separately confirmed 24-word phrase.
+        mnemonic: zeroize::Zeroizing<String>,
+    },
+    /// Replace a copied-root profile with a fresh identity and local archive.
+    Reset {
+        /// Protected fresh-identity offline authority package.
+        package: PathBuf,
+        /// Separately confirmed 24-word phrase.
+        mnemonic: zeroize::Zeroizing<String>,
+    },
+}
+
+impl std::fmt::Debug for AuthorityStartup {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Migrate { package, .. } => f
+                .debug_struct("Migrate")
+                .field("package", package)
+                .field("mnemonic", &"<redacted>")
+                .finish(),
+            Self::Reset { package, .. } => f
+                .debug_struct("Reset")
+                .field("package", package)
+                .field("mnemonic", &"<redacted>")
+                .finish(),
+        }
+    }
 }
 
 /// Everything the daemon needs to run. Built by the CLI in `bin/kultd.rs`,
@@ -75,6 +142,29 @@ pub struct DaemonConfig {
     pub restore_from: Option<PathBuf>,
     /// The 24-word mnemonic sealing `restore_from`. Zeroized on drop.
     pub restore_mnemonic: Option<zeroize::Zeroizing<String>>,
+    /// Separately held encrypted offline account authority required for a
+    /// stable-identity recovery.
+    pub recovery_authority_from: Option<PathBuf>,
+    /// The separate 24-word phrase opening `recovery_authority_from`.
+    pub recovery_authority_mnemonic: Option<zeroize::Zeroizing<String>>,
+    /// Explicit legacy-root migration or copied-root reset to complete before
+    /// any network service starts.
+    pub authority_startup: Option<AuthorityStartup>,
+    /// Standard, Private, or Sovereign behavior.
+    pub mode: OperatingMode,
+    /// User confirmed the Standard provider disclosure before first use.
+    pub standard_disclosure_confirmed: bool,
+    /// Advanced Sovereign-only acknowledgement for public direct routes.
+    pub sovereign_publish_direct_routes: bool,
+    /// Candidate signed, user-editable provider-directory JSON.
+    pub provider_directory: Option<PathBuf>,
+    /// Trusted offline provider-directory Ed25519 keys.
+    pub provider_directory_roots: Vec<[u8; 32]>,
+    /// User-selected rendezvous providers, independent of directory defaults.
+    pub rendezvous: Vec<ProviderRendezvous>,
+    /// Explicit loopback Tor SOCKS5 ingress for Private rendezvous.
+    pub tor_proxy: Option<std::net::SocketAddr>,
+    provider_directory_status: Option<ProviderDirectoryStatus>,
     /// Multiaddrs to listen on.
     pub listen: Vec<String>,
     /// DHT bootstrap peers (multiaddrs with `/p2p/…`). Empty is fine —
@@ -129,6 +219,32 @@ impl std::fmt::Debug for DaemonConfig {
                 "restore_mnemonic",
                 &self.restore_mnemonic.as_ref().map(|_| "<redacted>"),
             )
+            .field("recovery_authority_from", &self.recovery_authority_from)
+            .field(
+                "recovery_authority_mnemonic",
+                &self
+                    .recovery_authority_mnemonic
+                    .as_ref()
+                    .map(|_| "<redacted>"),
+            )
+            .field("authority_startup", &self.authority_startup)
+            .field("mode", &self.mode)
+            .field(
+                "standard_disclosure_confirmed",
+                &self.standard_disclosure_confirmed,
+            )
+            .field(
+                "sovereign_publish_direct_routes",
+                &self.sovereign_publish_direct_routes,
+            )
+            .field("provider_directory", &self.provider_directory)
+            .field(
+                "provider_directory_roots",
+                &self.provider_directory_roots.len(),
+            )
+            .field("rendezvous", &self.rendezvous)
+            .field("tor_proxy", &self.tor_proxy)
+            .field("provider_directory_status", &self.provider_directory_status)
             .field("listen", &self.listen)
             .field("bootstrap", &self.bootstrap)
             .field("relay", &self.relay)
@@ -162,6 +278,17 @@ impl DaemonConfig {
             kdf: kult_crypto::KDF_PROFILE_DESKTOP,
             restore_from: None,
             restore_mnemonic: None,
+            recovery_authority_from: None,
+            recovery_authority_mnemonic: None,
+            authority_startup: None,
+            mode: OperatingMode::Standard,
+            standard_disclosure_confirmed: false,
+            sovereign_publish_direct_routes: false,
+            provider_directory: None,
+            provider_directory_roots: Vec::new(),
+            rendezvous: Vec::new(),
+            tor_proxy: None,
+            provider_directory_status: None,
             listen: vec![
                 "/ip4/0.0.0.0/udp/0/quic-v1".to_owned(),
                 "/ip4/0.0.0.0/tcp/0".to_owned(),
@@ -243,6 +370,7 @@ pub struct Daemon {
     pub socket_path: PathBuf,
     /// The internet transport (exposed for tests and status).
     pub net: Arc<Libp2pTransport>,
+    meshtastic: Vec<Arc<MeshtasticTransport>>,
     shutdown: watch::Sender<bool>,
     tasks: Vec<JoinHandle<()>>,
     socket_guard: RpcSocketGuard,
@@ -250,12 +378,108 @@ pub struct Daemon {
 
 impl Daemon {
     /// Open (or create) the node and start all daemon tasks.
-    pub async fn start(cfg: DaemonConfig) -> Result<Self, DaemonError> {
+    pub async fn start(mut cfg: DaemonConfig) -> Result<Self, DaemonError> {
+        let directory_configured = cfg.provider_directory.is_some();
+        let directory_cache = cfg
+            .db_path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join("provider-directory-cache.json");
+        let resolution = kult_transport::resolve_provider_directory(
+            cfg.mode,
+            cfg.provider_directory.as_deref(),
+            &directory_cache,
+            &cfg.provider_directory_roots,
+            &ManualProviderSet {
+                bootstrap: cfg.bootstrap.clone(),
+                relay: cfg.relay.clone(),
+                mailboxes: cfg.mailboxes.clone(),
+                rendezvous: cfg.rendezvous.clone(),
+            },
+            now(),
+        )
+        .map_err(|error| DaemonError::Io(io::Error::other(error.to_string())))?;
+        if cfg.mode == OperatingMode::Standard
+            && resolution.directory.is_some()
+            && !cfg.standard_disclosure_confirmed
+        {
+            return Err(DaemonError::Io(io::Error::other(
+                "confirm the Standard provider disclosure before using directory defaults",
+            )));
+        }
+        if cfg.mode == OperatingMode::Private
+            && !resolution.providers.rendezvous.is_empty()
+            && cfg.tor_proxy.is_none()
+        {
+            return Err(DaemonError::Io(io::Error::other(
+                "Private rendezvous requires an explicit loopback Tor proxy",
+            )));
+        }
+        if let Some(proxy) = cfg.tor_proxy {
+            HttpsRendezvousClient::tor(proxy)
+                .map_err(|_| DaemonError::Io(io::Error::other("invalid loopback Tor proxy")))?;
+        }
+        cfg.provider_directory_status = directory_configured.then_some(resolution.status);
+        cfg.bootstrap = resolution.providers.bootstrap;
+        cfg.relay = resolution.providers.relay;
+        cfg.mailboxes = resolution.providers.mailboxes;
+        cfg.rendezvous = resolution
+            .providers
+            .rendezvous
+            .into_iter()
+            .map(|provider| ProviderRendezvous {
+                origin: provider.origin().to_owned(),
+                static_key: lower_hex(&provider.static_key()),
+                standard: true,
+                private_via_tor: true,
+            })
+            .collect();
+
         // Argon2id is deliberately slow — keep it off the async threads.
         let mut node = {
             let cfg = cfg.clone();
             tokio::task::spawn_blocking(move || -> Result<Node, DaemonError> {
-                if let Some(backup_path) = &cfg.restore_from {
+                if cfg.authority_startup.is_some() && cfg.restore_from.is_some() {
+                    return Err(DaemonError::Io(io::Error::other(
+                        "authority upgrade and backup restore are mutually exclusive",
+                    )));
+                }
+                if let Some(authority) = &cfg.authority_startup {
+                    if !cfg.db_path.exists() {
+                        return Err(DaemonError::Io(io::Error::other(format!(
+                            "authority upgrade requires the existing store {}",
+                            cfg.db_path.display()
+                        ))));
+                    }
+                    let (package_path, mnemonic, reset) = match authority {
+                        AuthorityStartup::Migrate { package, mnemonic } => {
+                            (package, mnemonic.as_str(), false)
+                        }
+                        AuthorityStartup::Reset { package, mnemonic } => {
+                            (package, mnemonic.as_str(), true)
+                        }
+                    };
+                    let package = std::fs::read(package_path)?;
+                    if reset {
+                        Ok(Node::complete_authority_reset(
+                            &cfg.db_path,
+                            &cfg.passphrase,
+                            &package,
+                            mnemonic,
+                            now(),
+                            &mut OsRng,
+                        )?)
+                    } else {
+                        Ok(Node::complete_authority_migration(
+                            &cfg.db_path,
+                            &cfg.passphrase,
+                            &package,
+                            mnemonic,
+                            now(),
+                            &mut OsRng,
+                        )?)
+                    }
+                } else if let Some(backup_path) = &cfg.restore_from {
                     // Restore is a first-run operation: an existing store
                     // holds an identity, and silently replacing it would
                     // destroy keys. Refuse; the operator moves it aside.
@@ -269,10 +493,25 @@ impl Daemon {
                         DaemonError::Io(io::Error::other("restore needs its mnemonic"))
                     })?;
                     let backup = std::fs::read(backup_path)?;
-                    Ok(Node::restore(
+                    let recovery_path = cfg.recovery_authority_from.as_ref().ok_or_else(|| {
+                        DaemonError::Io(io::Error::other(
+                            "restore needs the offline recovery authority",
+                        ))
+                    })?;
+                    let recovery_mnemonic =
+                        cfg.recovery_authority_mnemonic.as_deref().ok_or_else(|| {
+                            DaemonError::Io(io::Error::other(
+                                "restore needs the recovery authority mnemonic",
+                            ))
+                        })?;
+                    let recovery_package = std::fs::read(recovery_path)?;
+                    Ok(Node::restore_with_recovery_authority(
                         &cfg.db_path,
                         &backup,
                         mnemonic,
+                        &recovery_package,
+                        recovery_mnemonic,
+                        now(),
                         &cfg.passphrase,
                         cfg.kdf,
                         &mut OsRng,
@@ -298,8 +537,11 @@ impl Daemon {
         let bridging =
             cfg.bridge && (cfg.meshtastic_serial.is_some() || cfg.meshtastic_tcp.is_some());
         let listen: Vec<&str> = cfg.listen.iter().map(String::as_str).collect();
+        let mailbox_dir = cfg.db_path.parent().unwrap_or_else(|| Path::new("."));
         let options = TransportOptions {
-            mailbox: cfg.serve_mailbox.then(MailboxConfig::default),
+            mailbox: cfg
+                .serve_mailbox
+                .then(|| MailboxServiceConfig::in_directory(mailbox_dir, MailboxConfig::default())),
             lan_discovery: cfg.mdns,
             bridge_deposits: bridging,
         };
@@ -309,6 +551,7 @@ impl Daemon {
         let net = Arc::new(net);
         node.add_transport(Arc::clone(&net) as Arc<dyn Transport>);
         node.add_discovery(Arc::clone(&net) as Arc<dyn Discovery>);
+        let mut meshtastic = Vec::new();
         if let Some(spool) = &cfg.spool {
             let sneaker = kult_transport::SneakernetTransport::new(spool)?;
             node.add_transport(Arc::new(sneaker));
@@ -321,15 +564,19 @@ impl Daemon {
                 MeshtasticTransport::connect_serial(port, None, MeshtasticOptions::default())
                     .await
                     .map_err(|e| DaemonError::Io(io::Error::other(e.to_string())))?;
-            tracing::info!("meshtastic radio on {port} is node {}", radio.node_num());
-            node.add_transport(Arc::new(radio));
+            tracing::info!("meshtastic serial radio connected");
+            let radio = Arc::new(radio);
+            node.add_transport(Arc::clone(&radio) as Arc<dyn Transport>);
+            meshtastic.push(radio);
         }
         if let Some(addr) = &cfg.meshtastic_tcp {
             let radio = MeshtasticTransport::connect_tcp(addr, MeshtasticOptions::default())
                 .await
                 .map_err(|e| DaemonError::Io(io::Error::other(e.to_string())))?;
-            tracing::info!("meshtastic radio at {addr} is node {}", radio.node_num());
-            node.add_transport(Arc::new(radio));
+            tracing::info!("meshtastic TCP radio connected");
+            let radio = Arc::new(radio);
+            node.add_transport(Arc::clone(&radio) as Arc<dyn Transport>);
+            meshtastic.push(radio);
         }
         if bridging {
             // Mesh-heard transit is offered to the same relays this node
@@ -338,6 +585,56 @@ impl Daemon {
             node.set_bridge(Some(bridge_relays(&cfg, None)));
             tracing::info!("bridging mesh↔internet (--no-bridge to opt out)");
         }
+        let rendezvous_providers = cfg
+            .rendezvous
+            .iter()
+            .map(|provider| {
+                let key = parse_lower_hex_32(&provider.static_key)
+                    .map_err(|error| DaemonError::Io(io::Error::other(error)))?;
+                RendezvousProvider::new(provider.origin.clone(), key)
+                    .map_err(|error| DaemonError::Io(io::Error::other(error.to_string())))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let rendezvous_client: Option<Arc<dyn RendezvousClient>> =
+            if rendezvous_providers.is_empty() {
+                None
+            } else {
+                Some(match cfg.mode {
+                    OperatingMode::Standard => Arc::new(HttpsRendezvousClient::direct()),
+                    OperatingMode::Private => Arc::new(
+                        HttpsRendezvousClient::tor(cfg.tor_proxy.ok_or_else(|| {
+                            DaemonError::Io(io::Error::other("Private rendezvous has no Tor proxy"))
+                        })?)
+                        .map_err(|error| DaemonError::Io(io::Error::other(error.to_string())))?,
+                    ),
+                    OperatingMode::Sovereign => {
+                        return Err(DaemonError::Io(io::Error::other(
+                            "Sovereign mode cannot configure rendezvous",
+                        )))
+                    }
+                })
+            };
+        node.reconcile_rendezvous(
+            publication_policy(&cfg).mode,
+            rendezvous_client,
+            rendezvous_providers,
+        )?;
+        let wake_client: Option<Arc<dyn WakeClient>> = match cfg.mode {
+            OperatingMode::Standard => Some(Arc::new(HttpsWakeClient::direct())),
+            OperatingMode::Private => match cfg.tor_proxy {
+                Some(proxy) => {
+                    Some(Arc::new(HttpsWakeClient::tor(proxy).map_err(|error| {
+                        DaemonError::Io(io::Error::other(error.to_string()))
+                    })?))
+                }
+                // Native wake is optional. Never fall back to direct ingress
+                // in Private mode, and do not make ordinary delivery depend
+                // on an unavailable anonymizing proxy.
+                None => None,
+            },
+            OperatingMode::Sovereign => None,
+        };
+        node.configure_wake(publication_policy(&cfg).mode, wake_client)?;
 
         let address = node.address();
         let peer = node.peer_id();
@@ -434,10 +731,19 @@ impl Daemon {
             peer,
             socket_path: cfg.socket_path,
             net,
+            meshtastic,
             shutdown,
             tasks,
             socket_guard,
         })
+    }
+
+    /// Content-free aggregate radio snapshots, in configuration order.
+    pub fn meshtastic_stats(&self) -> Vec<MeshtasticStats> {
+        self.meshtastic
+            .iter()
+            .map(|transport| transport.stats())
+            .collect()
     }
 
     /// Stop every task and remove the socket.
@@ -599,6 +905,47 @@ fn now() -> u64 {
         .unwrap_or(0)
 }
 
+fn publication_policy(cfg: &DaemonConfig) -> kult_node::DiscoveryPublicationPolicy {
+    kult_node::DiscoveryPublicationPolicy {
+        mode: match cfg.mode {
+            OperatingMode::Standard => kult_node::DiscoveryMode::Standard,
+            OperatingMode::Private => kult_node::DiscoveryMode::Private,
+            OperatingMode::Sovereign => kult_node::DiscoveryMode::Sovereign,
+        },
+        publish_direct_routes: cfg.sovereign_publish_direct_routes,
+    }
+}
+
+fn parse_lower_hex_32(value: &str) -> Result<[u8; 32], String> {
+    if value.len() != 64
+        || value
+            .bytes()
+            .any(|byte| !byte.is_ascii_digit() && !(b'a'..=b'f').contains(&byte))
+    {
+        return Err("provider key must be exactly 64 lowercase hex characters".to_owned());
+    }
+    let mut out = [0u8; 32];
+    for (index, pair) in value.as_bytes().chunks_exact(2).enumerate() {
+        let nibble = |byte| match byte {
+            b'0'..=b'9' => byte - b'0',
+            b'a'..=b'f' => byte - b'a' + 10,
+            _ => 0,
+        };
+        out[index] = (nibble(pair[0]) << 4) | nibble(pair[1]);
+    }
+    Ok(out)
+}
+
+fn lower_hex(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        out.push(HEX[(byte >> 4) as usize] as char);
+        out.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    out
+}
+
 /// Write a secret-bearing file: created 0600 from the first byte, and an
 /// existing file is never overwritten (pick a new name or remove it first).
 fn write_private(path: &std::path::Path, bytes: &[u8]) -> io::Result<()> {
@@ -690,11 +1037,14 @@ async fn actor(
         Duration::from_millis(20),
     );
     media_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut discovery_retry_at = started;
     let _ = ready.send(());
     loop {
+        let mut check_discovery = false;
         tokio::select! {
             _ = shutdown.changed() => break,
             _ = tick.tick() => {
+                check_discovery = true;
                 match node.tick(now(), &mut OsRng).await {
                     Ok(batch) => {
                         for event in &batch {
@@ -712,25 +1062,49 @@ async fn actor(
                     let _ = events.send(wire::event_line(&event));
                 }
             }
-            msg = rx.recv() => match msg {
-                None => break,
-                Some(NodeMsg::Tokens { resp }) => {
-                    let _ = resp.send(node.mailbox_tokens(now()));
-                }
-                Some(NodeMsg::Publish) => {
-                    let hints = own_hints(&net, &cfg.mailboxes);
-                    if let Err(e) = node.publish_bundle(&hints, now()).await {
-                        tracing::warn!(error = %e, "bundle publish failed");
+            msg = rx.recv() => {
+                match msg {
+                    None => break,
+                    Some(NodeMsg::Tokens { resp }) => {
+                        let _ = resp.send(node.mailbox_tokens(now()));
+                    }
+                    Some(NodeMsg::Publish) => {
+                        let hints = own_hints(&net, &cfg.mailboxes);
+                        if let Err(e) = node
+                            .publish_bundle_with_policy(&hints, publication_policy(&cfg), now())
+                            .await
+                        {
+                            tracing::warn!(error = %e, "bundle publish failed");
+                        }
+                    }
+                    Some(NodeMsg::BridgeRelays(relays)) => {
+                        node.set_bridge(Some(relays));
+                    }
+                    Some(NodeMsg::Op { op, resp }) => {
+                        let result = handle_op(&mut node, &cfg, &net, &events, op).await;
+                        let _ = resp.send(result);
                     }
                 }
-                Some(NodeMsg::BridgeRelays(relays)) => {
-                    node.set_bridge(Some(relays));
+            }
+        }
+        let discovery_now = tokio::time::Instant::now();
+        if check_discovery && discovery_now >= discovery_retry_at {
+            let hints = own_hints(&net, &cfg.mailboxes);
+            if node
+                .discovery_publication_needed_with_policy(&hints, publication_policy(&cfg))
+                .unwrap_or(false)
+            {
+                match node
+                    .publish_bundle_with_policy(&hints, publication_policy(&cfg), now())
+                    .await
+                {
+                    Ok(()) => discovery_retry_at = discovery_now,
+                    Err(error) => {
+                        tracing::warn!(%error, "discovery refresh failed");
+                        discovery_retry_at = discovery_now + Duration::from_secs(60);
+                    }
                 }
-                Some(NodeMsg::Op { op, resp }) => {
-                    let result = handle_op(&mut node, &cfg, &net, op).await;
-                    let _ = resp.send(result);
-                }
-            },
+            }
         }
     }
 }
@@ -740,6 +1114,7 @@ async fn handle_op(
     node: &mut Node,
     cfg: &DaemonConfig,
     net: &Libp2pTransport,
+    events: &broadcast::Sender<String>,
     op: Op,
 ) -> Result<Value, String> {
     let fail = |e: NodeError| e.to_string();
@@ -754,16 +1129,66 @@ async fn handle_op(
                 Ok(Ok(NatStatus::Private)) => "private",
                 _ => "unknown",
             };
+            let mailbox = net.mailbox_metrics().map(|metrics| {
+                json!({
+                    "stored_items": metrics.stored_items,
+                    "stored_bytes": metrics.stored_bytes,
+                    "capacity_items": metrics.capacity_items,
+                    "capacity_bytes": metrics.capacity_bytes,
+                    "retention_secs": metrics.retention_secs,
+                    "request_capacity_per_minute": metrics.request_capacity_per_minute,
+                    "request_capacity_per_client_per_minute": metrics.request_capacity_per_client_per_minute,
+                    "disk_available_bytes": metrics.disk_available_bytes,
+                    "registrations": metrics.registrations,
+                    "live_leases": metrics.live_leases,
+                    "lease_capacity": metrics.lease_capacity,
+                    "oldest_lease_age_secs": metrics.oldest_lease_age_secs,
+                    "rejected_deposits": metrics.rejected_deposits,
+                    "rejected_requests": metrics.rejected_requests,
+                    "expired_rows": metrics.expired_rows,
+                    "schema_version": metrics.schema_version,
+                })
+            });
             Ok(json!({
                 "address": node.address(),
+                "connect_code": node.connect_code().map_err(fail)?,
+                "legacy_discovery": node.legacy_discovery_enabled(),
                 "peer": wire::hex_encode(&node.peer_id()),
                 "listen": net.listen_addrs(),
                 "lan_peers": net.lan_peers(),
                 "nat": nat,
+                "mode": match cfg.mode {
+                    OperatingMode::Standard => "standard",
+                    OperatingMode::Private => "private",
+                    OperatingMode::Sovereign => "sovereign",
+                },
+                "provider_directory": match cfg.provider_directory_status {
+                    None => "not_configured",
+                    Some(ProviderDirectoryStatus::Current) => "current",
+                    Some(ProviderDirectoryStatus::RetainedLastValid) => "retained_last_valid",
+                    Some(ProviderDirectoryStatus::Stale) => "stale",
+                    Some(ProviderDirectoryStatus::Conflict) => "conflict",
+                    Some(ProviderDirectoryStatus::Unavailable) => "unavailable",
+                },
+                "connection": if net.connected_peer_count() > 0 {
+                    "connected"
+                } else if !cfg.mailboxes.is_empty()
+                    || cfg.relay.is_some()
+                    || cfg.mdns
+                    || cfg.spool.is_some()
+                    || cfg.meshtastic_serial.is_some()
+                    || cfg.meshtastic_tcp.is_some()
+                {
+                    "fallback_ready"
+                } else {
+                    "waiting_for_route"
+                },
+                "connected_peers": net.connected_peer_count(),
                 "queued": node.queued().map_err(fail)?,
                 "scheduled": node.scheduled_messages().map_err(fail)?.len(),
                 "transit": node.transit_queued(),
                 "contacts": node.contacts().map_err(fail)?.len(),
+                "mailbox": mailbox,
             }))
         }
         Op::Bundle => {
@@ -772,6 +1197,32 @@ async fn handle_op(
                 .handshake_bundle_with_hints(&hints, now(), &mut OsRng)
                 .map_err(fail)?;
             Ok(json!({ "bundle": wire::hex_encode(&bundle) }))
+        }
+        Op::ConnectCodeRotate => {
+            let connect_code = node.rotate_connect_code(&mut OsRng).map_err(fail)?;
+            let hints = own_hints(net, &cfg.mailboxes);
+            let published = node
+                .publish_bundle_with_policy(&hints, publication_policy(cfg), now())
+                .await
+                .is_ok();
+            Ok(json!({
+                "connect_code": connect_code,
+                "legacy_discovery": false,
+                "published": published,
+            }))
+        }
+        Op::ConnectCodeRetireLegacy => {
+            node.retire_legacy_discovery(&mut OsRng).map_err(fail)?;
+            let hints = own_hints(net, &cfg.mailboxes);
+            let published = node
+                .publish_bundle_with_policy(&hints, publication_policy(cfg), now())
+                .await
+                .is_ok();
+            Ok(json!({
+                "connect_code": node.connect_code().map_err(fail)?,
+                "legacy_discovery": false,
+                "published": published,
+            }))
         }
         Op::DeviceId => Ok(json!({ "device": wire::hex_encode(&node.device_id()) })),
         Op::LinkedDevices => Ok(json!({
@@ -783,6 +1234,65 @@ async fn handle_op(
                 "current": device.current,
             })).collect::<Vec<_>>()
         })),
+        Op::DeviceAuthorityConflicts => Ok(json!({
+            "conflicts": node.device_authority_conflicts().into_iter().map(|conflict| json!({
+                "kind": match conflict.kind {
+                    kult_node::DeviceAuthorityConflictType::Fork => "fork",
+                    kult_node::DeviceAuthorityConflictType::Recovery => "recovery",
+                },
+                "accepted": wire::hex_encode(&conflict.accepted),
+                "conflicting": wire::hex_encode(&conflict.conflicting),
+                "recovery_epoch": conflict.recovery_epoch,
+                "observed_at": conflict.observed_at,
+            })).collect::<Vec<_>>()
+        })),
+        Op::ContactAuthorityConflicts => Ok(json!({
+            "conflicts": node.contact_authority_conflicts().map_err(fail)?.into_iter().map(|conflict| json!({
+                "account": wire::hex_encode(&conflict.account),
+                "kind": match conflict.kind {
+                    kult_node::DeviceAuthorityConflictType::Fork => "fork",
+                    kult_node::DeviceAuthorityConflictType::Recovery => "recovery",
+                },
+                "accepted": wire::hex_encode(&conflict.accepted),
+                "conflicting": wire::hex_encode(&conflict.conflicting),
+                "recovery_epoch": conflict.recovery_epoch,
+                "observed_at": conflict.observed_at,
+            })).collect::<Vec<_>>()
+        })),
+        Op::AuthorityResetHistory => Ok(json!({
+            "history": node.authority_reset_history().map_err(fail)?.map(|history| json!({
+                "former_peer": wire::hex_encode(&history.former_account),
+                "new_peer": wire::hex_encode(&history.new_account),
+                "reset_at": history.reset_at,
+                "preserved_contacts": history.preserved_contacts,
+                "preserved_pairwise_messages": history.preserved_pairwise_messages,
+                "preserved_note_messages": history.preserved_note_messages,
+                "omitted_groups": history.omitted_groups,
+                "omitted_group_messages": history.omitted_group_messages,
+                "pending_reverification": history.pending_reverification
+                    .iter()
+                    .map(|peer| wire::hex_encode(peer))
+                    .collect::<Vec<_>>(),
+            }))
+        })),
+        Op::DeviceAuthorityApprovalRequest => {
+            let request = node.device_authority_approval_request().map_err(fail)?;
+            Ok(json!({ "request": wire::hex_encode(&request) }))
+        }
+        Op::DeviceAuthorityApprove { request } => {
+            let request = wire::hex_decode(&request).ok_or("request must be hex")?;
+            let approval = node
+                .approve_device_authority_request(&request)
+                .map_err(fail)?;
+            Ok(json!({ "approval": wire::hex_encode(&approval) }))
+        }
+        Op::DeviceAuthorityAccept { approval } => {
+            let approval = wire::hex_decode(&approval).ok_or("approval must be hex")?;
+            let committed = node
+                .accept_device_authority_approval(&approval, &mut OsRng)
+                .map_err(fail)?;
+            Ok(json!({ "committed": committed }))
+        }
         Op::MessageDeviceDeliveries { message } => {
             let message = wire::parse_message(&message)?;
             let deliveries = node
@@ -856,6 +1366,25 @@ async fn handle_op(
                 .map_err(fail)?;
             Ok(json!({ "package": wire::hex_encode(&package) }))
         }
+        Op::DeviceLinkApprovalRequest => {
+            let request = node.device_link_approval_request().map_err(fail)?;
+            Ok(json!({ "request": wire::hex_encode(&request) }))
+        }
+        Op::DeviceLinkApproveRequest { request } => {
+            let request = wire::hex_decode(&request).ok_or("request must be hex")?;
+            let approval = node.approve_device_link_request(&request).map_err(fail)?;
+            Ok(json!({ "approval": wire::hex_encode(&approval) }))
+        }
+        Op::DeviceLinkAcceptApproval { approval } => {
+            let approval = wire::hex_decode(&approval).ok_or("approval must be hex")?;
+            let package = node
+                .accept_device_link_approval(&approval, now(), &mut OsRng)
+                .map_err(fail)?;
+            Ok(json!({
+                "complete": package.is_some(),
+                "package": package.map(|bytes| wire::hex_encode(&bytes)),
+            }))
+        }
         Op::DeviceLinkComplete { package, confirmed } => {
             let package = wire::hex_decode(&package).ok_or("package must be hex")?;
             node.complete_device_link(&package, confirmed, now(), &mut OsRng)
@@ -904,6 +1433,54 @@ async fn handle_op(
                 .await
                 .map_err(fail)?;
             Ok(json!({ "peer": wire::hex_encode(&peer) }))
+        }
+        Op::MessageRequests => Ok(json!({
+            "requests": node
+                .message_requests()
+                .map_err(fail)?
+                .iter()
+                .map(wire::message_request_json)
+                .collect::<Vec<_>>()
+        })),
+        Op::MessageRequestAccept { request, name } => {
+            let request = wire::parse_request_id(&request)?;
+            let peer = node
+                .accept_message_request(&request, &name, now(), &mut OsRng)
+                .map_err(fail)?;
+            Ok(json!({ "peer": wire::hex_encode(&peer) }))
+        }
+        Op::MessageRequestDelete { request } => {
+            let request = wire::parse_request_id(&request)?;
+            node.delete_message_request(&request, now(), &mut OsRng)
+                .map_err(fail)?;
+            Ok(json!({}))
+        }
+        Op::MessageRequestBlock { request } => {
+            let request = wire::parse_request_id(&request)?;
+            node.block_message_request(&request, now(), &mut OsRng)
+                .map_err(fail)?;
+            Ok(json!({}))
+        }
+        Op::GroupInvitations => Ok(json!({
+            "invitations": node
+                .group_invitations()
+                .map_err(fail)?
+                .iter()
+                .map(wire::group_invitation_json)
+                .collect::<Vec<_>>()
+        })),
+        Op::GroupInvitationAccept { invitation } => {
+            let invitation = wire::parse_request_id(&invitation)?;
+            let group = node
+                .accept_group_invitation(&invitation, now(), &mut OsRng)
+                .map_err(fail)?;
+            Ok(json!({ "group": wire::hex_encode(&group) }))
+        }
+        Op::GroupInvitationDelete { invitation } => {
+            let invitation = wire::parse_request_id(&invitation)?;
+            node.delete_group_invitation(&invitation, &mut OsRng)
+                .map_err(fail)?;
+            Ok(json!({}))
         }
         Op::ContactNameAssessment { peer, name } => {
             let peer = wire::parse_peer(&peer)?;
@@ -1627,6 +2204,20 @@ async fn handle_op(
                 .map_err(fail)?;
             Ok(json!({ "group": wire::hex_encode(&group) }))
         }
+        Op::GroupSecurity { group } => {
+            let group = wire::parse_group(&group)?;
+            Ok(wire::group_security_json(
+                &node.group_security_info(&group).map_err(fail)?,
+            ))
+        }
+        Op::GroupUpgradeSecurity { group } => {
+            let group = wire::parse_group(&group)?;
+            node.group_upgrade_security(&group, &mut OsRng)
+                .map_err(fail)?;
+            Ok(wire::group_security_json(
+                &node.group_security_info(&group).map_err(fail)?,
+            ))
+        }
         Op::GroupSend { group, body } => {
             let group = wire::parse_group(&group)?;
             let id = node
@@ -1931,15 +2522,69 @@ async fn handle_op(
             node.set_hints(&peer, &hints, &mut OsRng).map_err(fail)?;
             Ok(json!({}))
         }
+        Op::RendezvousRefresh { peer } => {
+            let peer = wire::parse_peer(&peer)?;
+            node.request_rendezvous_refresh(&peer).map_err(fail)?;
+            Ok(json!({}))
+        }
+        Op::RendezvousConversationActive { peer, active } => {
+            let peer = wire::parse_peer(&peer)?;
+            node.set_rendezvous_conversation_active(&peer, active)
+                .map_err(fail)?;
+            Ok(json!({}))
+        }
+        Op::WakeCollect { budget_ms } => {
+            if budget_ms == 0 {
+                return Err("native-wake collection budget must be positive".to_owned());
+            }
+            let started = Instant::now();
+            let budget = Duration::from_millis(u64::from(budget_ms))
+                .min(kult_node::MAX_WAKE_COLLECTION_DURATION);
+            let tokens = node.mailbox_tokens(now());
+            for mailbox in cfg.mailboxes.iter().take(MAX_MAILBOXES_PER_CHECKIN_TICK) {
+                let remaining = budget.saturating_sub(started.elapsed());
+                if remaining.is_zero() {
+                    break;
+                }
+                let _ = tokio::time::timeout(
+                    remaining,
+                    net.mailbox_checkin(
+                        mailbox,
+                        &tokens[..tokens.len().min(MAX_MAILBOX_CHECKIN_TOKENS)],
+                    ),
+                )
+                .await;
+            }
+            let remaining = budget.saturating_sub(started.elapsed());
+            if remaining.is_zero() {
+                return Ok(json!({ "events": 0 }));
+            }
+            let batch = node
+                .wake_tick(now(), remaining, &mut OsRng)
+                .await
+                .map_err(fail)?;
+            for event in &batch {
+                let _ = events.send(wire::event_line(event));
+            }
+            Ok(json!({ "events": batch.len() }))
+        }
         Op::Publish => {
             let hints = own_hints(net, &cfg.mailboxes);
-            node.publish_bundle(&hints, now()).await.map_err(fail)?;
+            node.publish_bundle_with_policy(&hints, publication_policy(cfg), now())
+                .await
+                .map_err(fail)?;
             Ok(json!({}))
         }
         Op::Backup { path } => {
             let (file, mnemonic) = node.export_backup(now(), &mut OsRng).map_err(fail)?;
             write_private(std::path::Path::new(&path), &file)
                 .map_err(|e| format!("backup write: {e}"))?;
+            Ok(json!({ "path": path, "mnemonic": &*mnemonic }))
+        }
+        Op::RecoveryAuthorityExport { path } => {
+            let mnemonic = node
+                .export_account_recovery_authority(std::path::Path::new(&path))
+                .map_err(fail)?;
             Ok(json!({ "path": path, "mnemonic": &*mnemonic }))
         }
         // Handled at the connection layer; reaching the actor is a bug.
@@ -2004,10 +2649,23 @@ async fn lifecycle(
     let mut mailbox_cursor = 0usize;
     let mut mailbox_token_cursors: std::collections::HashMap<String, usize> =
         std::collections::HashMap::new();
+    let mut mailbox_retry: std::collections::HashMap<String, MailboxRetry> =
+        std::collections::HashMap::new();
+    let mut jitter_rng = OsRng;
+    let discovery_day = Duration::from_secs(24 * 60 * 60);
+    let discovery_offset = Duration::from_secs(jitter_rng.next_u64() % discovery_day.as_secs());
+    let mut discovery_tick = tokio::time::interval_at(
+        tokio::time::Instant::now() + discovery_offset,
+        discovery_day,
+    );
+    discovery_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
     loop {
         tokio::select! {
             _ = shutdown.changed() => break,
+            _ = discovery_tick.tick() => {
+                let _ = node_tx.send(NodeMsg::Publish).await;
+            }
             _ = lan_tick.tick() => {
                 let peers: std::collections::HashSet<String> =
                     net.lan_peers().into_iter().collect();
@@ -2048,6 +2706,12 @@ async fn lifecycle(
                     MAX_MAILBOXES_PER_CHECKIN_TICK,
                 );
                 for mailbox in mailboxes {
+                    if mailbox_retry
+                        .get(&mailbox)
+                        .is_some_and(|retry| retry.next_at > Instant::now())
+                    {
+                        continue;
+                    }
                     let token_cursor = mailbox_token_cursors
                         .entry(mailbox.clone())
                         .or_default();
@@ -2056,13 +2720,40 @@ async fn lifecycle(
                     // One bounded page per mailbox and lifecycle interval.
                     // A relay that never returns empty cannot monopolize this
                     // task or grow the local receive queue without a limit.
-                    match net.mailbox_checkin(&mailbox, &token_batch).await {
+                    let result = net.mailbox_checkin(&mailbox, &token_batch).await;
+                    let retry = mailbox_retry.entry(mailbox.clone()).or_insert(MailboxRetry {
+                        failures: 0,
+                        next_at: Instant::now(),
+                    });
+                    match result {
                         Ok(count) if count > 0 => {
-                            tracing::debug!(count, %mailbox, "mailbox page collected");
+                            retry.failures = 0;
+                            retry.next_at = Instant::now()
+                                + jittered_mailbox_delay(
+                                    cfg.checkin_interval,
+                                    0,
+                                    jitter_rng.next_u64(),
+                                );
+                            log_mailbox_page_collected(count);
                         }
-                        Ok(_) => {}
-                        Err(e) => {
-                            tracing::warn!(error = %e, %mailbox, "mailbox check-in failed");
+                        Ok(_) => {
+                            retry.failures = 0;
+                            retry.next_at = Instant::now()
+                                + jittered_mailbox_delay(
+                                    cfg.checkin_interval,
+                                    0,
+                                    jitter_rng.next_u64(),
+                                );
+                        }
+                        Err(_) => {
+                            retry.failures = retry.failures.saturating_add(1);
+                            retry.next_at = Instant::now()
+                                + jittered_mailbox_delay(
+                                    cfg.checkin_interval,
+                                    retry.failures,
+                                    jitter_rng.next_u64(),
+                                );
+                            log_mailbox_checkin_failed();
                         }
                     }
                 }
@@ -2254,6 +2945,29 @@ mod socket_tests {
 #[cfg(test)]
 mod lifecycle_tests {
     use super::*;
+    use std::io::Write;
+
+    #[derive(Clone, Default)]
+    struct LogCapture(Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl Write for LogCapture {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for LogCapture {
+        type Writer = Self;
+
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
 
     #[test]
     fn rotating_batches_cover_large_mailbox_and_token_sets_without_starvation() {
@@ -2283,5 +2997,55 @@ mod lifecycle_tests {
         assert_eq!(first.len(), MAX_MAILBOX_CHECKIN_TOKENS);
         assert_eq!(second, tokens[MAX_MAILBOX_CHECKIN_TOKENS..]);
         assert_eq!(token_cursor, 0);
+    }
+
+    #[test]
+    fn mailbox_backoff_is_jittered_bounded_and_exponential() {
+        let base = Duration::from_secs(10);
+        let first = jittered_mailbox_delay(base, 0, 0);
+        let second = jittered_mailbox_delay(base, 1, 0);
+        assert_eq!(first, Duration::from_millis(7_500));
+        assert_eq!(second, Duration::from_secs(15));
+        assert!(
+            jittered_mailbox_delay(base, 8, 50) <= MAX_MAILBOX_BACKOFF.saturating_mul(125) / 100
+        );
+        assert_ne!(
+            jittered_mailbox_delay(base, 2, 0),
+            jittered_mailbox_delay(base, 2, 50)
+        );
+    }
+
+    #[test]
+    fn mailbox_operational_logs_are_aggregate_only() {
+        let capture = LogCapture::default();
+        let subscriber = tracing_subscriber::fmt()
+            .without_time()
+            .with_ansi(false)
+            .with_target(false)
+            .with_max_level(tracing::Level::TRACE)
+            .with_writer(capture.clone())
+            .finish();
+        tracing::subscriber::with_default(subscriber, || {
+            log_mailbox_page_collected(7);
+            log_mailbox_checkin_failed();
+        });
+
+        let output = String::from_utf8(capture.0.lock().unwrap().clone()).unwrap();
+        assert_eq!(output.lines().count(), 2);
+        assert!(output.contains("mailbox page collected"));
+        assert!(output.contains("count=7"));
+        assert!(output.contains("mailbox check-in failed"));
+        assert_eq!(output.matches('=').count(), 1);
+        for forbidden in [
+            "/p2p/",
+            "token",
+            "locator",
+            "ciphertext",
+            "row_id",
+            "identity",
+            "contact",
+        ] {
+            assert!(!output.contains(forbidden));
+        }
     }
 }

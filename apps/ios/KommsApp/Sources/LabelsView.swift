@@ -21,7 +21,11 @@ func labelColorName(_ token: String) -> String {
 }
 
 func labelSummary(_ label: KommsCore.Label) -> String {
-    "\(label.name) — \(labelColorName(label.color)), label \(label.order + 1)"
+    L10n.text(
+        "label_accessible_summary",
+        label.name,
+        labelColorName(label.color),
+        Int(clamping: label.order + 1))
 }
 
 private func labelDisplayColor(_ token: String, scheme: ColorScheme) -> Color {
@@ -87,7 +91,11 @@ struct LabelManagerView: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section(editingId == nil ? "Create label" : "Edit label") {
+                Section(
+                    editingId == nil
+                        ? L10n.text("label_create")
+                        : L10n.source("Edit label")
+                ) {
                     TextField("Exact label name", text: $name)
                         .focused($nameFocused)
                         .incognitoKeyboard()
@@ -97,11 +105,18 @@ struct LabelManagerView: View {
                             Text(verbatim: labelColorName(token)).tag(token)
                         }
                     }
-                    if let error { Text(error).foregroundStyle(.red).accessibilityLabel("Error: \(error)") }
+                    if let error {
+                        Text(error).foregroundStyle(.red)
+                            .accessibilityLabel(L10n.text("accessibility_error", error))
+                    }
                     HStack {
                         if editingId != nil { Button("Cancel edit", action: cancelEdit) }
                         Spacer()
-                        Button(editingId == nil ? "Create" : "Save", action: save)
+                        Button(
+                            editingId == nil
+                                ? L10n.text("label_create")
+                                : L10n.text("label_save"),
+                            action: save)
                     }
                 }
                 Section("Private labels") {
@@ -111,9 +126,11 @@ struct LabelManagerView: View {
                             LabelChip(label: label)
                             Spacer()
                             Button("Edit") { beginEdit(label) }
-                                .accessibilityLabel("Edit \(labelSummary(label))")
+                                .accessibilityLabel(
+                                    L10n.text("label_edit_description", labelSummary(label)))
                             Button("Delete", role: .destructive) { previewDelete(label) }
-                                .accessibilityLabel("Delete \(labelSummary(label))")
+                                .accessibilityLabel(
+                                    L10n.text("label_delete_description", labelSummary(label)))
                         }
                     }
                 }
@@ -122,11 +139,19 @@ struct LabelManagerView: View {
                         Text("These sealed local rows no longer resolve to both a label and an available conversation.")
                             .font(.footnote).foregroundStyle(.secondary)
                         ForEach(Array(model.staleLabelRecords.enumerated()), id: \.offset) { _, record in
-                            Button("Clean up unavailable \(targetKindName(record.target)) membership", role: .destructive) {
+                            Button(
+                                L10n.text(
+                                    "label_stale_cleanup",
+                                    targetKindName(record.target)),
+                                role: .destructive
+                            ) {
                                 Task {
                                     do {
                                         try await model.cleanupStaleLabel(id: record.label, target: record.target)
-                                        announce("Unavailable membership removed.")
+                                        announce(
+                                            L10n.text(
+                                                "label_stale_cleaned",
+                                                targetKindName(record.target)))
                                     } catch { self.error = errorText(error) }
                                 }
                             }
@@ -144,20 +169,34 @@ struct LabelManagerView: View {
                 titleVisibility: .visible
             ) {
                 if let review = deletion {
-                    Button("Delete label and \(review.count) assignments", role: .destructive) {
+                    Button(
+                        L10n.text(
+                            "label_delete_assignments",
+                            Int(clamping: review.count)),
+                        role: .destructive
+                    ) {
                         Task {
                             do {
                                 let removed = try await model.deleteLabel(id: review.label.id)
-                                announce("Label deleted with \(removed) assignments removed.")
+                                announce(
+                                    L10n.text(
+                                        "label_deleted",
+                                        Int(clamping: removed)))
                                 cancelEdit()
                             } catch { self.error = errorText(error) }
                         }
                     }
                 }
-                Button("Cancel", role: .cancel) { announce("Label deletion cancelled.") }
+                Button("Cancel", role: .cancel) {
+                    announce(L10n.text("label_delete_cancelled"))
+                }
             } message: {
                 if let review = deletion {
-                    Text(verbatim: "Delete \(labelSummary(review.label))? Review the atomic membership removal before continuing.")
+                    Text(
+                        L10n.text(
+                            "label_delete_review",
+                            labelSummary(review.label),
+                            Int(clamping: review.count)))
                 }
             }
         }
@@ -172,7 +211,10 @@ struct LabelManagerView: View {
                 } else {
                     try await model.createLabel(name: name, color: color)
                 }
-                announce("\(editingId == nil ? "Created" : "Updated") \(labelSummary(saved)).")
+                announce(
+                    L10n.text(
+                        editingId == nil ? "label_created" : "label_updated",
+                        labelSummary(saved)))
                 cancelEdit()
                 nameFocused = true
             } catch { self.error = errorText(error); nameFocused = true }
@@ -219,12 +261,13 @@ struct LabelAssignmentView: View {
                             set: { update(label, assigned: $0) })) {
                             LabelChip(label: label)
                         }
-                        .accessibilityHint("Applies to exactly \(targetName)")
+                        .accessibilityHint(
+                            L10n.text("label_applies_exactly", targetName))
                     }
                 }
                 if let error { Text(error).foregroundStyle(.red) }
             }
-            .navigationTitle("Labels for \(targetName)")
+            .navigationTitle(L10n.text("label_assignment_title", targetName))
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
             .onAppear { assigned = Set(model.labelsForTarget(target).map(\.id)) }
         }
@@ -236,14 +279,26 @@ struct LabelAssignmentView: View {
                 let final = try await model.setLabel(label.id, assigned: requested, target: target)
                 assigned = Set(final.map(\.id))
                 let result = assigned.contains(label.id) ? "applied" : "removed"
-                announce("\(labelSummary(label)) is now \(result) for \(targetName). Final membership: \(final.count) labels.")
+                announce(
+                    L10n.text(
+                        "label_assignment_result",
+                        labelSummary(label),
+                        targetName,
+                        result == "applied"
+                            ? L10n.text("label_applied")
+                            : L10n.text("label_removed"),
+                        final.count))
             } catch { self.error = errorText(error); assigned = Set(model.labelsForTarget(target).map(\.id)) }
         }
     }
 }
 
 private func targetKindName(_ target: LabelTarget) -> String {
-    switch target.kind { case .peer: return "contact conversation"; case .group: return "group conversation"; case .noteToSelf: return "note-to-self" }
+    switch target.kind {
+    case .peer: return L10n.text("label_contact_conversation")
+    case .group: return L10n.text("label_group_conversation")
+    case .noteToSelf: return L10n.text("note_to_self_title")
+    }
 }
 
 private func announce(_ text: String) {

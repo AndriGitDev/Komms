@@ -11,8 +11,16 @@ launch. No network interaction, no phone number, no email, no name. Creating an 
 is free and instant; users may hold several (work/personal/disposable) and the protocol
 neither knows nor cares.
 
-Displayed identity = **kult address**: `kk1` + base32(multihash(IK)), self-checking,
-QR-friendly, and safe to print on a sticker.
+Displayed identity fingerprint = **kult address**: `kk1` +
+base32(multihash(IK)), self-checking and stable. It remains the safety-number
+input, but it is not the normal reachability artifact.
+
+Displayed first-contact artifact = **Connect code**: `kc2` plus a canonical
+base32 payload containing the stable account digest, a random 32-byte discovery
+capability, and checksum. The capability is a rotatable bearer reachability
+secret. Rotating it leaves `IK`, the kult address, and every safety number
+unchanged. Publishing a Connect code makes the account reachable to its
+holders; it does not promise anonymity.
 
 ## 2. Prekey bundles
 
@@ -20,19 +28,43 @@ To be reachable while offline, a user publishes a signed prekey bundle
 ([04: Cryptography §3](04-cryptography.md)):
 
 ```
-Bundle = { IK, SPK+sig, PQSPK+sig, [OPK...], relay hints, expiry }
+DiscoveryRecord = {
+  capability-derived locator, epoch, generation, issue/expiry,
+  account IK, complete device-authority proof,
+  up to two certified-device SPK/PQSPK bundles,
+  admission policy, up to three introduction mailboxes,
+  zero padding, complete active-device signature
+}
 ```
 
-Distribution channels, all equivalent in trust (the bundle is self-authenticating,
-everything is signed by `IK`, so the channel only affects *availability*):
+Distribution channels are equivalent in authentication once the complete
+account/device proof verifies; the channel still affects *availability* and
+metadata:
 
-1. **DHT record** under `H(IK)` on the internet transport.
-2. **Direct exchange**: QR code, BLE tap, file, or pasted text.
+1. **DHT record** under a weekly locator derived from the Connect capability.
+2. **Direct exchange**: Connect QR/link/file, pairing QR, BLE tap, or pasted text.
 3. **Mesh broadcast**: compact bundle announcement on the Meshtastic port (rate-limited).
 
-A tampered bundle fails signature verification; a *withheld* bundle (DHT censorship) is
-worked around via channels 2–3. What no channel can prevent is a fabricated identity
-claiming to be "Alice". That's what verification is for.
+The version-two direct pairing artifact binds the complete certified-device
+prekey bundle, current discovery capability, and capability generation under
+an active physical-device signature. This lets an offline recipient's selected
+mailbox recognize the first capability-derived introduction token without
+re-enabling the stable identity-derived legacy token. A raw `KDP2` bundle
+remains accepted for compatibility but carries no new-profile offline
+introduction authority.
+
+A tampered, wrong-recipient, wrong-locator, stale, revoked, forked, or
+non-canonical record fails closed; a *withheld* record (DHT censorship) is
+worked around via alternate DHT paths, introduction mailboxes, or channels
+2–3. What no channel can prevent is a fabricated identity claiming to be
+"Alice". That's what verification is for.
+
+The v2 DHT value has one exact encrypted size, carries no OPK or direct route in
+Standard/Private modes, and accepts at most eight candidates per locator. A
+Sovereign user may publish a direct route only after an explicit warning that
+every Connect-code holder can poll it. After pairing, contacts use
+authenticated route controls, selected mailboxes, and optional pairwise
+rendezvous rather than returning to identity-indexed public lookup.
 
 Optional rendezvous is deliberately absent from this first-contact list. Under
 [ADR-0018](adr/0018-pairwise-rendezvous.md), an authenticated session derives
@@ -65,7 +97,7 @@ user rename an exact peer in every implemented interface. Names are NFC-normaliz
 bounded; duplicates are valid because the peer key, never display text, is the
 identity. Duplicate, mixed-script/confusable, bidirectional-control, and invisible-
 character risks are shown for explicit review before a warned rename. The label is
-stored only in the sealed contact record, survives restart and `KKR7`, and creates no
+stored only in the sealed contact record, survives restart and `KKR10`, and creates no
 message, capability, lookup, notification, queue, or transport work.
 
 What the network sees remains keys and tokens, never the local petname. An optional
@@ -86,35 +118,41 @@ compatibility path. See [15: Private Contact Names](15-contact-petnames.md).
 - **Revocation**: a signed revocation statement propagates through sessions and DHT;
   contacts mark the identity dead and refuse new sessions to it.
 
-## 6. Linked devices (C2, Alpha with an open authority flaw)
+## 6. Linked devices (C2, revocable-device Alpha)
 
 Each physical device holds its own certified device keypair. The stable account
-identity signs a bounded device manifest, while PQXDH/Double Ratchet sessions,
-capabilities, delivery rows, and group sender chains remain per physical device.
-Linking a pristine installation requires a time-bounded offer, explicit
-confirmation on both sides, and matching six-digit comparison codes. Current
-exact-id revocation excludes that known id from honest future delivery and
-sync, but every linked device currently receives the stable account private
-key. A compromised revoked device can mint a replacement certificate, so
-permanent adversarial revocation is not implemented.
+root signs only genesis and an explicit offline recovery epoch. Routine
+authority changes are bounded append-only `KDA2` transitions authorized by a
+strict majority of the previous active set. Every transition binds its parent,
+generation, complete next active/revoked set, new immutable certificates, kind,
+id, and signatures. Forks and same-epoch recovery conflicts are visible and
+fail closed.
+
+PQXDH/Double Ratchet sessions, device secrets, delivery rows, and group sender
+chains remain per physical device. Linking a pristine installation requires a
+time-bounded offer, scan/compare/confirm on both sides, and an additional-device
+approval only when the previous active-set quorum requires it. Neither the
+package nor any live store receives the account root.
+
+The account root lives only in separately exported encrypted offline recovery
+material. Recovery opens it transiently to revoke the entire former active set,
+advance the recovery epoch, create one fresh device, and rotate live service,
+session, delivery, rendezvous, wake, and group-chain state. Descendants of the
+old epoch are rejected. Routine `KKR10` backup is root-free and separately
+requires that offline authority for stable-identity restore.
 
 Authenticated explicit device-to-device bundles converge contacts and
 verification, private organization, ordinary history, edits, polls, group
 authority, and terminal expiry tombstones. Drafts, scheduled outbox rows, live
 queues/ratchets, active ephemeral content, downloaded media, and most shell
 preferences remain installation-local. See [22: Linked Devices](22-linked-devices.md)
-and the required offline-root replacement in
+and the offline-root authority contract in
 [ADR-0026](adr/0026-revocable-device-authority.md).
 
 ## 7. First-contact abuse controls
 
-> **Proposed, not current Alpha behavior.** The current receive path accepts a
-> valid cryptographic introduction and creates a normal contact without a
-> request inbox, admission puzzle, or local blocking state. Do not treat the
-> controls below as implemented.
-
-[ADR-0030](adr/0030-first-contact-admission.md) defines the pre-stable
-replacement:
+[ADR-0030](adr/0030-first-contact-admission.md) is accepted and implemented for
+Alpha:
 
 - a signed, expiring recipient policy advertises a bounded client puzzle for
   unsolicited public-address contact;
@@ -128,6 +166,18 @@ replacement:
 - ordinary UI presents this as a familiar message request while technical
   admission details remain in diagnostics.
 
-The proposal raises unsolicited-sender cost but does not claim proof-of-work can
-defeat a distributed adversary; fixed resource quotas remain the controlling
-safety boundary.
+The implemented path binds the descriptor, exact target bundle, invitation or
+puzzle proof, expiry, and content id before ML-KEM work where possible. Direct
+next-hop acceptance waits for the atomic provisional stage or another complete
+durable transition. Accept promotes the request atomically; Delete retains
+only a bounded replay tombstone; Block also persists the exact account/device
+rule and removes the provisional row without claiming remote deletion. Group
+invitations use the same explicit consent boundary. The current evidence
+includes Rust, RPC, UniFFI, desktop, Android host, and iOS simulator tests;
+physical-device battery/background/accessibility qualification and independent
+adversarial review remain open.
+
+Puzzle work only raises unsolicited-sender cost and does not defeat a
+distributed adversary; fixed count, byte, work, time, carrier, and concurrency
+quotas remain the controlling safety boundary. Optional signed reputation
+inputs remain unimplemented and are not required for the consent boundary.

@@ -63,6 +63,11 @@ async fn note_is_local_survives_restart_and_backup_and_emits_zero_envelopes() {
     let directory = tempfile::tempdir().unwrap();
     let database = directory.path().join("node.db");
     let mut node = Node::create(&database, b"pass", TEST_KDF, &mut rng).unwrap();
+    let recovery_path = directory.path().join("account-authority.kra");
+    let recovery_mnemonic = node
+        .export_account_recovery_authority(&recovery_path)
+        .unwrap();
+    let recovery_package = std::fs::read(&recovery_path).unwrap();
     let spy = Arc::new(SpyTransport::default());
     node.add_transport(spy.clone());
 
@@ -91,10 +96,13 @@ async fn note_is_local_survives_restart_and_backup_and_emits_zero_envelopes() {
     assert_eq!(reopened.note_to_self_messages().unwrap()[0].id, id);
     drop(reopened);
 
-    let restored = Node::restore(
+    let restored = Node::restore_with_recovery_authority(
         &directory.path().join("restored.db"),
         &backup,
         &mnemonic,
+        &recovery_package,
+        &recovery_mnemonic,
+        1_800_000_002,
         b"new-pass",
         TEST_KDF,
         &mut rng,

@@ -17,7 +17,11 @@ struct PinsView: View {
                     ForEach(Array(model.pins.enumerated()), id: \.offset) { index, pin in
                         VStack(alignment: .leading) {
                             Text(title(pin))
-                            Text("Pin \(index + 1)" + (pin.active ? "" : " · unavailable"))
+                            Text(
+                                L10n.text("pin_order", index + 1)
+                                + (pin.active
+                                    ? ""
+                                    : " · " + L10n.text("pin_unavailable")))
                                 .font(.caption).foregroundStyle(.secondary)
                             HStack {
                                 Button("Earlier") { model.movePin(pin.target, by: -1) }
@@ -48,8 +52,9 @@ struct PinsView: View {
 
     private func title(_ pin: Pin) -> String {
         switch pin.target.kind {
-        case .noteToSelf: return "Note to self"
-        case .peer, .group: return pin.displayName ?? "Unavailable conversation"
+        case .noteToSelf: return L10n.text("note_to_self_title")
+        case .peer, .group:
+            return pin.displayName ?? L10n.text("pin_unavailable")
         }
     }
 }

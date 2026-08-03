@@ -199,9 +199,10 @@ from the apparent manifest author's pairwise session. In a group,
 `RequestMissing`, `Complete`, `Cancel`, or `Reject` from a receiver is accepted
 only from a member who was entitled to the manifest when it was sent. These
 checks are durable transfer metadata, not inferred from the current roster
-alone. Current sender-key group manifests do not prove their individual origin:
-a malicious member can forge another member as the apparent author and misroute
-chunk requests until ADR-0029 is implemented.
+alone. ADR-0029 now requires the group manifest author to come from the verified
+pairwise sender device and exact recipient origin tag. A member cannot reuse
+its own recipient capability to misroute requests as another author to an
+honest recipient.
 
 For a pairwise scope, `scope_id` is
 `BLAKE3("KAT-pairwise-scope-v1" || min(IK_A, IK_B) || max(IK_A, IK_B))`, with
@@ -366,7 +367,7 @@ references transactionally, then garbage-collect unreferenced files. Completed
 media remains until explicit local deletion or quota policy evicts it. Remote
 deletion and expiry remain later ADRs.
 
-The mnemonic backup (`KKR2` when this ADR was accepted; current `KKR7`)
+The mnemonic backup (`KKR2` when this ADR was accepted; current `KKR10`)
 continues carrying ordinary message and group-message bodies, therefore it carries
 ordinary Attachment manifests and their keys, but it excludes media files and
 C4 ephemeral manifests,
@@ -425,8 +426,9 @@ Implementation is not accepted until it includes:
   never handed to whole-envelope reassembly;
 - copied-database/media-directory inspection proving plaintext names, types,
   hashes, keys, bytes, transfer ranges, and conversation links are absent;
-- KKR1–KKR7 backup/restore tests proving ordinary manifests survive while media and transfer
-  state are intentionally absent; and
+- current `KKR10` backup/restore plus legacy archive-reset tests proving eligible
+  ordinary history survives while media and transfer state are intentionally
+  absent; and
 - cross-surface tests proving identical states and safe errors in RPC/CLI,
   UniFFI, desktop, Android, and iOS, including background interruption and
   platform temporary-file cleanup.
@@ -486,8 +488,8 @@ Implementation is not accepted until it includes:
   bulk-capable links for restart safety, metadata protection, and a mesh guard.
 - Group manifests and file bytes are encrypted once, but the apparent author
   maintains independent per-member request/progress state and must remain
-  available to serve v1 downloads. ADR-0029 is required to make that group
-  attribution resistant to another member.
+  available to serve v1 downloads. ADR-0029 makes that group attribution
+  recipient-authenticated while preserving the shared ciphertext.
 - The store gains filesystem lifecycle and crash-consistency obligations beyond
   SQLite. Backups remain small and compatible at the cost of media being
   re-downloadable rather than restored.

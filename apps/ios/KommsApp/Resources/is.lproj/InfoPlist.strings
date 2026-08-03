@@ -1,0 +1,4 @@
+/* Localized permission explanations from the canonical catalog. */
+"NSCameraUsageDescription" = "Komms notar myndavélina aðeins til að skanna tengi-QR-kóða tengiliðar eða QR-kóða öryggisnúmers við staðfestingu.";
+"NSLocalNetworkUsageDescription" = "Komms notar staðarnetið til að finna nálæga jafningja fyrir afhendingu aðeins um LAN án þess að internetið sé nauðsynlegt.";
+"NSMicrophoneUsageDescription" = "Komms notar hljóðnemann aðeins á meðan þú tekur sérstaklega upp hljóðskilaboð eða hringir eða svarar staðfestu beinu hljóðsímtali.";

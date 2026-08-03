@@ -46,12 +46,14 @@ fn sneakernet_end_to_end_with_restart() {
     {
         let alice = Store::create(&alice_db, b"alice-pass", TEST_KDF, &mut rng).unwrap();
         let a_ident = Identity::generate(&mut rng);
-        alice.put_identity(&a_ident, &mut rng).unwrap();
+        alice
+            .put_legacy_identity_fixture(&a_ident, &mut rng)
+            .unwrap();
         alice_id = a_ident.public();
 
         let bob = Store::create(&bob_db, b"bob-pass", TEST_KDF, &mut rng).unwrap();
         let b_ident = Identity::generate(&mut rng);
-        bob.put_identity(&b_ident, &mut rng).unwrap();
+        bob.put_legacy_identity_fixture(&b_ident, &mut rng).unwrap();
         bob_id_pub = b_ident.public();
 
         // Bob's prekeys (serialized like a prekey store would hold them).

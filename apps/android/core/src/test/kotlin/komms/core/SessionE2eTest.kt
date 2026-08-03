@@ -45,6 +45,8 @@ import uniffi.kult_ffi.FolderSelectionKind
 import uniffi.kult_ffi.FolderTarget
 import uniffi.kult_ffi.FolderTargetKind
 import uniffi.kult_ffi.GroupRole
+import uniffi.kult_ffi.GroupSecurity
+import uniffi.kult_ffi.GroupSecurityLevel
 import uniffi.kult_ffi.KdfChoice
 import uniffi.kult_ffi.ImageCrop
 import uniffi.kult_ffi.ImageEditRecipe
@@ -104,6 +106,51 @@ private fun listenAddr(session: Session): String {
 }
 
 private fun multiaddrHint(addr: String) = listOf(HintSpec("multiaddr", addr))
+
+private fun acceptGroupInvitation(session: Session, events: Events, group: String, what: String) {
+    events.wait(what) {
+        (it as? Event.GroupInvitationReceived)?.takeIf { event -> event.group == group }
+    }
+    val invitation = session.groupInvitations().single { it.group == group }
+    assertEquals(group, session.acceptGroupInvitation(invitation.id))
+    events.wait("group invitation acceptance") {
+        (it as? Event.GroupInvitationAccepted)?.takeIf { event -> event.group == group }
+    }
+}
+
+private fun waitGroupSecurityReady(
+    initiator: Session,
+    peer: Session,
+    group: String,
+    allowInitialUpgrade: Boolean,
+): Pair<GroupSecurity, GroupSecurity> {
+    val deadline = System.nanoTime() + 30_000_000_000L
+    var upgradeStarted = false
+    while (true) {
+        var initiatorSecurity = initiator.groupSecurity(group)
+        if (
+            allowInitialUpgrade &&
+            !upgradeStarted &&
+            initiatorSecurity.level == GroupSecurityLevel.UPGRADE_REQUIRED
+        ) {
+            initiator.upgradeGroupSecurity(group)
+            upgradeStarted = true
+            initiatorSecurity = initiator.groupSecurity(group)
+        }
+        val peerSecurity = peer.groupSecurity(group)
+        if (
+            initiatorSecurity.level == GroupSecurityLevel.RECIPIENT_AUTHENTICATED &&
+            peerSecurity.level == GroupSecurityLevel.RECIPIENT_AUTHENTICATED
+        ) {
+            return initiatorSecurity to peerSecurity
+        }
+        check(System.nanoTime() < deadline) {
+            "group origin exchange did not complete: " +
+                "initiator=$initiatorSecurity peer=$peerSecurity"
+        }
+        Thread.sleep(50)
+    }
+}
 
 class SessionE2eTest {
     private val filePresentationFixture by lazy {
@@ -172,7 +219,12 @@ class SessionE2eTest {
         val targetDevice = target.deviceId()
         val offer = source.beginDeviceLink()
         assertEquals(offer.uppercase(), deviceLinkQrText(offer))
-        val accepted = target.acceptDeviceLink(offer, "Android tablet")
+        val offerFrames = deviceLinkQrFrames(offer)
+        val offerAssembler = BundleQrAssembler()
+        val offerText = offerFrames.asReversed()
+            .firstNotNullOfOrNull { offerAssembler.accept(it)?.completeText }
+        assertNotNull(offerText)
+        val accepted = target.acceptDeviceLink(offerText, "Android tablet")
         assertEquals(6, accepted.confirmationCode.length)
         val responseHex = hexEncode(accepted.response)
         assertEquals(
@@ -195,14 +247,50 @@ class SessionE2eTest {
             (event as? Event.DeviceLinkCompleted)?.takeIf { it.device == targetDevice }
         }
 
-        source.renameLinkedDevice(targetDevice, "Travel tablet")
+        // A third device needs a detached signature from the other active
+        // installation. The same scan/compare ceremony resumes afterwards.
+        val third = open(directory, "third", Events())
+        val thirdOffer = source.beginDeviceLink()
+        val thirdAssembler = BundleQrAssembler()
+        val thirdOfferText = deviceLinkQrFrames(thirdOffer)
+            .asReversed()
+            .firstNotNullOfOrNull { thirdAssembler.accept(it)?.completeText }
+        assertNotNull(thirdOfferText)
+        val thirdAccepted = third.acceptDeviceLink(thirdOfferText, "Android phone")
+        assertFailsWith<FfiException.Node> {
+            source.approveDeviceLink(
+                hexEncode(thirdAccepted.response),
+                contacts = false,
+                organization = false,
+                history = false,
+                confirmed = true,
+            )
+        }
+        val linkRequest = source.deviceLinkApprovalRequest()
+        val linkApproval = target.approveDeviceLinkRequest(linkRequest)
+        val thirdPackage = assertNotNull(source.acceptDeviceLinkApproval(linkApproval))
+        third.completeDeviceLink(thirdPackage, confirmed = true)
+        assertEquals(3, source.linkedDevices().size)
+
+        target.importDeviceSync(source.exportDeviceSync(targetDevice))
+        assertFailsWith<FfiException.Node> {
+            source.renameLinkedDevice(targetDevice, "Travel tablet")
+        }
+        val authorityRequest = source.deviceAuthorityApprovalRequest()
+        val authorityApproval = target.approveDeviceAuthorityRequest(authorityRequest)
+        assertTrue(source.acceptDeviceAuthorityApproval(authorityApproval))
         target.importDeviceSync(source.exportDeviceSync(targetDevice))
         assertTrue(target.linkedDevices().any {
             it.id == targetDevice && it.name == "Travel tablet"
         })
+        assertTrue(source.deviceAuthorityConflicts().isEmpty())
+        assertTrue(target.deviceAuthorityConflicts().isEmpty())
+        assertTrue(source.contactAuthorityConflicts().isEmpty())
+        assertTrue(target.contactAuthorityConflicts().isEmpty())
 
         source.stop()
         target.stop()
+        third.stop()
         directory.deleteRecursively()
     }
 
@@ -393,7 +481,7 @@ class SessionE2eTest {
             .filter { it.isFile && it.extension == "xml" }
             .joinToString("\n") { it.readText() }
         assertFalse(Regex("<\\s*EditText\\b").containsMatchIn(layouts))
-        assertEquals(17, Regex("<komms\\.android\\.IncognitoEditText\\b").findAll(layouts).count())
+        assertEquals(23, Regex("<komms\\.android\\.IncognitoEditText\\b").findAll(layouts).count())
 
         val kotlin = File(app, "kotlin/komms/android").walkTopDown()
             .filter { it.isFile && it.extension == "kt" && it.name != "IncognitoEditText.kt" }
@@ -406,6 +494,10 @@ class SessionE2eTest {
         val gate = File(app, "res/layout/activity_gate.xml").readText()
         assertTrue(
             Regex("gate_mnemonic[\\s\\S]*textPassword\\|textNoSuggestions")
+                .containsMatchIn(gate),
+        )
+        assertTrue(
+            Regex("gate_recovery_mnemonic[\\s\\S]*textPassword\\|textNoSuggestions")
                 .containsMatchIn(gate),
         )
     }
@@ -529,6 +621,29 @@ class SessionE2eTest {
     private fun tempDir(): File = Files.createTempDirectory("komms-e2e").toFile()
 
     @Test
+    fun `Connect code rotates without changing identity and legacy discovery retires`() {
+        val dir = tempDir()
+        val session = open(dir, "connect-code", Events())
+        val address = session.address
+        val first = session.connectCode
+        val status = session.status()
+        assertTrue(address.startsWith("kk1"))
+        assertTrue(first.startsWith("kc2"))
+        assertEquals(first, status.connectCode)
+        assertFalse(status.legacyDiscovery)
+
+        val rotated = session.rotateConnectCode()
+        assertTrue(rotated.startsWith("kc2"))
+        assertNotEquals(first, rotated)
+        assertEquals(address, session.address)
+        assertEquals(rotated, session.connectCode)
+        assertEquals(rotated, session.status().connectCode)
+        assertEquals(rotated, session.retireLegacyDiscovery())
+        assertFalse(session.status().legacyDiscovery)
+        session.stop()
+    }
+
+    @Test
     fun `two phones pair by scanned bundle hex and message`() {
         val dir = tempDir()
         val aEv = Events()
@@ -555,6 +670,15 @@ class SessionE2eTest {
         val bAddr = listenAddr(bob)
         val bobPeer = alice.addContact("bob", scanned, multiaddrHint(bAddr))
         val alicePeer = bob.addContact("alice", aBundle, multiaddrHint(aAddr))
+        alice.requestRendezvousRefresh(bobPeer)
+        alice.setRendezvousConversationActive(bobPeer, true)
+        alice.setRendezvousConversationActive(bobPeer, false)
+        assertFailsWith<FfiException> {
+            alice.requestRendezvousRefresh("ff".repeat(32))
+        }
+        assertFailsWith<FfiException> {
+            alice.setRendezvousConversationActive("ff".repeat(32), true)
+        }
 
         // Send → the event stream walks the honest ladder.
         val formattedSource = "**hello** from Android ![pixel](https://invalid.test/p.png)"
@@ -913,7 +1037,58 @@ class SessionE2eTest {
     }
 
     @Test
-    fun `group ux creates manages messages and shows partial delivery`() {
+    fun `message requests require explicit accept delete or block`() {
+        val dir = tempDir()
+        val bobEvents = Events()
+        val bob = open(dir, "request-bob", bobEvents)
+        try {
+            val bobAddr = listenAddr(bob)
+            fun sendRequest(name: String, preview: String) {
+                val sender = open(dir, name, Events())
+                try {
+                    listenAddr(sender)
+                    sender.myBundleHex()
+                    val bobPeer = sender.addContact(
+                        "Bob",
+                        bob.myBundleHex(),
+                        multiaddrHint(bobAddr),
+                    )
+                    sender.send(bobPeer, preview)
+                    val deadline = System.nanoTime() + 30_000_000_000L
+                    while (bob.messageRequests().none { it.preview == preview }) {
+                        check(System.nanoTime() < deadline) {
+                            "request preview did not enter the sealed inbox"
+                        }
+                        Thread.sleep(50)
+                    }
+                } finally {
+                    sender.stop()
+                }
+            }
+            sendRequest("request-accept", "please accept")
+            sendRequest("request-delete", "please delete")
+            sendRequest("request-block", "please block")
+
+            assertTrue(bob.contacts().isEmpty())
+            val requests = bob.messageRequests()
+            assertEquals(3, requests.size)
+            fun id(preview: String) = requests.single { it.preview == preview }.id
+            val peer = bob.acceptMessageRequest(id("please accept"), "Accepted sender")
+            bob.deleteMessageRequest(id("please delete"))
+            bob.blockMessageRequest(id("please block"))
+            assertTrue(bob.messageRequests().isEmpty())
+            assertEquals("Accepted sender", bob.contacts().single().name)
+            assertEquals("please accept", bob.messages(peer).single().body)
+            bobEvents.wait("request accepted") { it as? Event.MessageRequestAccepted }
+            bobEvents.wait("request deleted") { it as? Event.MessageRequestDeleted }
+            bobEvents.wait("request blocked") { it as? Event.MessageRequestBlocked }
+        } finally {
+            bob.stop()
+        }
+    }
+
+    @Test
+    fun `group ux upgrades origins and blocks an unready roster`() {
         val dir = tempDir()
         val aEv = Events()
         val bEv = Events()
@@ -942,9 +1117,7 @@ class SessionE2eTest {
         // The create flow selects one stored contact; the creator then adds
         // another from the members screen.
         val group = alice.createGroup("Trail crew", listOf(bobPeer))
-        bEv.wait("Bob's group invite") {
-            (it as? Event.GroupUpdated)?.takeIf { event -> event.group == group }
-        }
+        acceptGroupInvitation(bob, bEv, group, "Bob's group invite")
         var listed = alice.groups()
         assertEquals(1, listed.size)
         assertEquals(group, listed[0].id)
@@ -965,6 +1138,10 @@ class SessionE2eTest {
                 event.id == capabilityProbe && event.state == DeliveryState.DELIVERED
             }
         }
+        val (aliceSecurity, bobSecurity) =
+            waitGroupSecurityReady(alice, bob, group, allowInitialUpgrade = true)
+        assertEquals(0uL, aliceSecurity.legacyHistoryRows)
+        assertEquals(0uL, bobSecurity.legacyHistoryRows)
 
         // The same Session methods cover one encrypt-once group attachment.
         val selectedImage = File(dir, "android-group-selected.png").apply {
@@ -1059,8 +1236,27 @@ class SessionE2eTest {
         }
         assertTrue("creator" in authority.reasonText(), "got: ${authority.reasonText()}")
 
-        // Bob receives while offline Carol remains queued/sent. Outbound
-        // history exposes one truthful state per recipient.
+        // The offline member has no authenticated pairwise session, so the
+        // roster change rotates origins and blocks new content rather than
+        // falling back to membership-only attribution.
+        assertEquals(
+            GroupSecurityLevel.UPGRADING,
+            alice.groupSecurity(group).level,
+        )
+        val unreadyRoster = assertFailsWith<FfiException.Node> {
+            alice.sendGroup(group, "must not use a legacy origin")
+        }
+        assertTrue(
+            "security upgrade" in unreadyRoster.reasonText(),
+            "got: ${unreadyRoster.reasonText()}",
+        )
+
+        // Removing the unresolved member erases its pending capability and
+        // completes a fresh exchange for the remaining exact device set.
+        alice.removeGroupMember(group, carolPeer)
+        assertEquals(2, alice.groups()[0].members.size)
+        waitGroupSecurityReady(alice, bob, group, allowInitialUpgrade = false)
+
         val first = alice.sendGroup(group, "Meet at the north trailhead")
         bEv.wait("Bob's group message") {
             (it as? Event.GroupMessageReceived)
@@ -1077,14 +1273,10 @@ class SessionE2eTest {
         val history = allHistory.filter { it.contentKind != ContentKind.ATTACHMENT }
         assertEquals(1, history.size)
         assertEquals(Direction.OUTBOUND, history[0].direction)
-        assertEquals(2, history[0].deliveries.size)
+        assertEquals(1, history[0].deliveries.size)
         assertEquals(
             DeliveryState.DELIVERED,
             history[0].deliveries.first { it.peer == bobPeer }.state,
-        )
-        assertTrue(
-            history[0].deliveries.first { it.peer == carolPeer }.state in
-                setOf(DeliveryState.QUEUED, DeliveryState.SENT),
         )
         val bobHistory = bob.groupMessages(group).filter {
             it.contentKind != ContentKind.ATTACHMENT
@@ -1092,12 +1284,6 @@ class SessionE2eTest {
         assertEquals(aliceAtBob, bobHistory[0].sender)
         assertEquals(Direction.INBOUND, bobHistory[0].direction)
         assertTrue(bobHistory[0].deliveries.isEmpty())
-
-        // Creator removal rotates the roster immediately. A member can leave;
-        // their live group disappears locally and the creator converges too.
-        alice.removeGroupMember(group, carolPeer)
-        assertEquals(2, alice.groups()[0].members.size)
-        Thread.sleep(300)
 
         // C6 uses only generated typed bindings: upgrade, roles, admin
         // result events, signed owner moderation, and ownership transfer.
@@ -1124,10 +1310,12 @@ class SessionE2eTest {
         assertEquals(aliceAtBob, upgraded.owner)
         assertEquals(GroupRole.MEMBER, upgraded.myRole)
         assertEquals(2, upgraded.members.size)
+        waitGroupSecurityReady(alice, bob, group, allowInitialUpgrade = false)
 
         alice.setGroupRole(group, bobPeer, GroupRole.ADMIN)
         val adminGeneration = upgradeGeneration + 1uL
         assertEquals(GroupRole.ADMIN, authorityAt(bob, adminGeneration).myRole)
+        waitGroupSecurityReady(alice, bob, group, allowInitialUpgrade = false)
         val roleError = assertFailsWith<FfiException.Node> {
             bob.setGroupRole(group, aliceAtBob, GroupRole.MEMBER)
         }
@@ -1142,6 +1330,7 @@ class SessionE2eTest {
             }
         }
         authorityAt(bob, renameGeneration)
+        waitGroupSecurityReady(alice, bob, group, allowInitialUpgrade = false)
         val renameDeadline = System.nanoTime() + 30_000_000_000L
         while (bob.groups().none { it.id == group && it.name == "Authority trail crew" }) {
             check(System.nanoTime() < renameDeadline) { "timed out waiting for admin rename" }
@@ -1165,9 +1354,11 @@ class SessionE2eTest {
         bEv.wait("Android moderation result") {
             (it as? Event.GroupAdminRequestResolved)?.takeIf { event ->
                 event.requestId == moderationRequest && event.accepted &&
-                    event.generation == moderationGeneration && event.reason == 0.toUByte()
+                event.generation == moderationGeneration && event.reason == 0.toUByte()
             }
         }
+        authorityAt(bob, moderationGeneration)
+        waitGroupSecurityReady(alice, bob, group, allowInitialUpgrade = false)
         val moderationDeadline = System.nanoTime() + 30_000_000_000L
         var moderated = bob.groupPolls(group).single { it.id == moderatedPoll }
         while (!moderated.closed) {
@@ -1184,6 +1375,7 @@ class SessionE2eTest {
         assertEquals(bobPeer, bobOwner.owner)
         assertEquals(1uL, bobOwner.ownerEpoch)
         assertEquals(GroupRole.OWNER, bobOwner.myRole)
+        waitGroupSecurityReady(alice, bob, group, allowInitialUpgrade = false)
         val leaveError = assertFailsWith<FfiException.Node> { bob.leaveGroup(group) }
         assertTrue("owner" in leaveError.reasonText(), "got: ${leaveError.reasonText()}")
 
@@ -1192,8 +1384,10 @@ class SessionE2eTest {
         val aliceOwner = authorityAt(alice, aliceOwnerGeneration)
         assertEquals(aliceAtBob, aliceOwner.owner)
         assertEquals(2uL, aliceOwner.ownerEpoch)
+        waitGroupSecurityReady(alice, bob, group, allowInitialUpgrade = false)
         alice.setGroupRole(group, bobPeer, GroupRole.MEMBER)
         authorityAt(bob, aliceOwnerGeneration + 1uL)
+        waitGroupSecurityReady(alice, bob, group, allowInitialUpgrade = false)
 
         val editable = alice.sendGroup(group, "Android group edit original")
         bEv.wait("Bob's editable Android group Text") {
@@ -1259,9 +1453,7 @@ class SessionE2eTest {
                 "Same name", alice.myBundleHex(), multiaddrHint(aliceAddr),
             )
             val group = alice.createGroup("Unicode crew", listOf(bobPeer))
-            bEv.wait("mention group invite") {
-                (it as? Event.GroupUpdated)?.takeIf { event -> event.group == group }
-            }
+            acceptGroupInvitation(bob, bEv, group, "mention group invite")
 
             val handshake = alice.send(bobPeer, "mention capability handshake")
             bEv.wait("mention capability handshake") {
@@ -1274,6 +1466,7 @@ class SessionE2eTest {
                     event.id == handshake && event.state == DeliveryState.DELIVERED
                 }
             }
+            waitGroupSecurityReady(alice, bob, group, allowInitialUpgrade = true)
 
             val capabilityDeadline = System.nanoTime() + 5_000_000_000L
             var capability = alice.groupMentionCapability(group)
@@ -1350,12 +1543,35 @@ class SessionE2eTest {
     }
 
     @Test
+    fun `legacy backup reset preparation exposes a fresh reviewed authority`() {
+        val directory = tempDir()
+        val authority = File(directory, "legacy-archive-authority.kra")
+        val prepared = Session.prepareLegacyBackupAuthorityReset(authority)
+        assertTrue(authority.isFile)
+        assertTrue(prepared.newAddress.isNotBlank())
+        assertEquals(
+            24,
+            prepared.recoveryMnemonic.split(Regex("\\s+")).count { it.isNotEmpty() },
+        )
+        assertFailsWith<FfiException> {
+            Session.prepareLegacyBackupAuthorityReset(authority)
+        }
+    }
+
+    @Test
     fun `backup mnemonic restore flow`() {
         val dir = tempDir()
         var aEv = Events()
         val bEv = Events()
         var alice = open(dir, "alice", aEv)
         val bob = open(dir, "bob", bEv)
+
+        val recoveryPackage = File(dir, "komms-account-authority.kra")
+        val recoveryMnemonic = alice.exportAccountRecoveryAuthority(recoveryPackage)
+        assertEquals(24, recoveryMnemonic.split(Regex("\\s+")).count { it.isNotEmpty() })
+        assertFailsWith<FfiException> {
+            alice.exportAccountRecoveryAuthority(File(dir, "second-authority.kra"))
+        }
 
         val aAddr = listenAddr(alice)
         val bAddr = listenAddr(bob)
@@ -1383,6 +1599,17 @@ class SessionE2eTest {
             Session.restore(
                 File(dir, "alice-wrong"), "new-pass", backup,
                 "abandon ".repeat(23) + "art",
+                recoveryPackage, recoveryMnemonic,
+                testSettings(), KdfChoice.MOBILE, Events().sink,
+            )
+        }
+
+        // The backup phrase cannot substitute for the separately held
+        // offline-authority phrase.
+        assertFailsWith<FfiException.Startup> {
+            Session.restore(
+                File(dir, "alice-wrong-authority"), "new-pass", backup, mnemonic,
+                recoveryPackage, "abandon ".repeat(23) + "art",
                 testSettings(), KdfChoice.MOBILE, Events().sink,
             )
         }
@@ -1391,6 +1618,7 @@ class SessionE2eTest {
         aEv = Events()
         alice = Session.restore(
             File(dir, "alice-new"), "new-pass", backup, mnemonic,
+            recoveryPackage, recoveryMnemonic,
             testSettings(), KdfChoice.MOBILE, aEv.sink,
         )
         assertEquals(addressBefore, alice.address)

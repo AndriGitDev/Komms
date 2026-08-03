@@ -3,7 +3,10 @@ import SwiftUI
 import UIKit
 
 func folderSummary(_ folder: KommsCore.Folder) -> String {
-    "\(folder.name) — folder \(folder.order + 1)"
+    L10n.text(
+        "folder_accessible_summary",
+        folder.name,
+        Int(clamping: folder.order + 1))
 }
 
 struct FolderManagerView: View {
@@ -18,16 +21,27 @@ struct FolderManagerView: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section(editingId == nil ? "Create folder" : "Rename folder") {
+                Section(
+                    editingId == nil
+                        ? L10n.text("folder_create")
+                        : L10n.source("Rename folder")
+                ) {
                     TextField("Exact folder name", text: $name)
                         .focused($nameFocused)
                         .incognitoKeyboard()
                         .accessibilityHint("Maximum 256 UTF-8 bytes; exact text is preserved")
-                    if let error { Text(error).foregroundStyle(.red).accessibilityLabel("Error: \(error)") }
+                    if let error {
+                        Text(error).foregroundStyle(.red)
+                            .accessibilityLabel(L10n.text("accessibility_error", error))
+                    }
                     HStack {
                         if editingId != nil { Button("Cancel rename", action: cancelEdit) }
                         Spacer()
-                        Button(editingId == nil ? "Create" : "Save", action: save)
+                        Button(
+                            editingId == nil
+                                ? L10n.text("folder_create")
+                                : L10n.text("folder_save"),
+                            action: save)
                     }
                 }
 
@@ -44,15 +58,27 @@ struct FolderManagerView: View {
                                 HStack {
                                     Button("Move up") { reorder(index, index - 1) }
                                         .disabled(index == 0)
-                                        .accessibilityLabel("Move \(folderSummary(folder)) up")
+                                        .accessibilityLabel(
+                                            L10n.text(
+                                                "folder_move_up",
+                                                folderSummary(folder)))
                                     Button("Move down") { reorder(index, index + 1) }
                                         .disabled(index + 1 == model.folders.count)
-                                        .accessibilityLabel("Move \(folderSummary(folder)) down")
+                                        .accessibilityLabel(
+                                            L10n.text(
+                                                "folder_move_down",
+                                                folderSummary(folder)))
                                     Spacer()
                                     Button("Rename") { beginEdit(folder) }
-                                        .accessibilityLabel("Rename \(folderSummary(folder))")
+                                        .accessibilityLabel(
+                                            L10n.text(
+                                                "folder_edit_description",
+                                                folderSummary(folder)))
                                     Button("Delete", role: .destructive) { previewDelete(folder) }
-                                        .accessibilityLabel("Delete \(folderSummary(folder))")
+                                        .accessibilityLabel(
+                                            L10n.text(
+                                                "folder_delete_description",
+                                                folderSummary(folder)))
                                 }
                             }
                         }
@@ -65,13 +91,18 @@ struct FolderManagerView: View {
                             .font(.footnote).foregroundStyle(.secondary)
                         ForEach(Array(model.staleFolderRecords.enumerated()), id: \.offset) { _, record in
                             Button(
-                                "Clean up unavailable \(folderTargetKindName(record.target)) assignment",
+                                L10n.text(
+                                    "folder_stale_cleanup",
+                                    folderTargetKindName(record.target)),
                                 role: .destructive
                             ) {
                                 Task {
                                     do {
                                         try await model.cleanupStaleFolder(id: record.folder, target: record.target)
-                                        folderAnnounce("Unavailable folder assignment removed.")
+                                        folderAnnounce(
+                                            L10n.text(
+                                                "folder_stale_cleaned",
+                                                folderTargetKindName(record.target)))
                                     } catch { self.error = errorText(error) }
                                 }
                             }
@@ -89,20 +120,34 @@ struct FolderManagerView: View {
                 titleVisibility: .visible
             ) {
                 if let review = deletion {
-                    Button("Delete folder and unfile \(review.count) conversations", role: .destructive) {
+                    Button(
+                        L10n.text(
+                            "folder_delete_unfile",
+                            Int(clamping: review.count)),
+                        role: .destructive
+                    ) {
                         Task {
                             do {
                                 let removed = try await model.deleteFolder(id: review.folder.id)
-                                folderAnnounce("Folder deleted; \(removed) conversations moved to Unfiled.")
+                                folderAnnounce(
+                                    L10n.text(
+                                        "folder_deleted",
+                                        Int(clamping: removed)))
                                 cancelEdit()
                             } catch { self.error = errorText(error) }
                         }
                     }
                 }
-                Button("Cancel", role: .cancel) { folderAnnounce("Folder deletion cancelled.") }
+                Button("Cancel", role: .cancel) {
+                    folderAnnounce(L10n.text("folder_delete_cancelled"))
+                }
             } message: {
                 if let review = deletion {
-                    Text(verbatim: "Delete \(folderSummary(review.folder))? Review the atomic move to Unfiled before continuing.")
+                    Text(
+                        L10n.text(
+                            "folder_delete_review",
+                            folderSummary(review.folder),
+                            Int(clamping: review.count)))
                 }
             }
         }
@@ -117,7 +162,10 @@ struct FolderManagerView: View {
                 } else {
                     try await model.createFolder(name: name)
                 }
-                folderAnnounce("\(editingId == nil ? "Created" : "Renamed") \(folderSummary(saved)).")
+                folderAnnounce(
+                    L10n.text(
+                        editingId == nil ? "folder_created" : "folder_updated",
+                        folderSummary(saved)))
                 cancelEdit()
                 nameFocused = true
             } catch { self.error = errorText(error); nameFocused = true }
@@ -133,13 +181,18 @@ struct FolderManagerView: View {
     private func cancelEdit() { editingId = nil; name = ""; error = nil }
 
     private func reorder(_ from: Int, _ to: Int) {
+        let movedSummary = folderSummary(model.folders[from])
         var ids = model.folders.map(\.id)
         let moved = ids.remove(at: from)
         ids.insert(moved, at: to)
         Task {
             do {
                 try await model.reorderFolders(ids: ids)
-                folderAnnounce("Folder moved to position \(to + 1).")
+                folderAnnounce(
+                    L10n.text(
+                        "folder_reordered",
+                        movedSummary,
+                        to + 1))
             } catch { self.error = errorText(error) }
         }
     }
@@ -188,7 +241,7 @@ struct FolderAssignmentView: View {
                     if let error { Text(error).foregroundStyle(.red) }
                 }
             }
-            .navigationTitle("Folder for \(targetName)")
+            .navigationTitle(L10n.text("folder_assignment_title", targetName))
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {
@@ -208,7 +261,11 @@ struct FolderAssignmentView: View {
         Task {
             do {
                 let final = try await model.setFolder(selected, target: target)
-                folderAnnounce("\(targetName) moved to \(final.map(folderSummary) ?? "Unfiled").")
+                folderAnnounce(
+                    L10n.text(
+                        "folder_assignment_result",
+                        targetName,
+                        final.map(folderSummary) ?? L10n.text("folder_unfiled")))
                 dismiss()
             } catch { self.error = errorText(error) }
         }
@@ -217,9 +274,9 @@ struct FolderAssignmentView: View {
 
 private func folderTargetKindName(_ target: FolderTarget) -> String {
     switch target.kind {
-    case .peer: return "contact conversation"
-    case .group: return "group conversation"
-    case .noteToSelf: return "note-to-self"
+    case .peer: return L10n.text("label_contact_conversation")
+    case .group: return L10n.text("label_group_conversation")
+    case .noteToSelf: return L10n.text("note_to_self_title")
     }
 }
 

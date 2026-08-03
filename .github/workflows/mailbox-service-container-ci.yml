@@ -1,0 +1,38 @@
+name: mailbox service container CI
+
+on:
+  pull_request:
+    paths:
+      - deploy/mailbox-service/**
+      - crates/kult-mailbox/**
+      - crates/kult-transport/**
+      - Cargo.toml
+      - Cargo.lock
+      - .github/workflows/mailbox-service-container-ci.yml
+      - .github/workflows/mailbox-service-container.yml
+  push:
+    branches: [main]
+    paths:
+      - deploy/mailbox-service/**
+      - crates/kult-mailbox/**
+      - crates/kult-transport/**
+      - Cargo.toml
+      - Cargo.lock
+      - .github/workflows/mailbox-service-container-ci.yml
+      - .github/workflows/mailbox-service-container.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mailbox-service-container-ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  container:
+    name: build, harden, restart
+    permissions:
+      contents: read
+    uses: ./.github/workflows/mailbox-service-container.yml
+    with:
+      push: false

@@ -21,8 +21,19 @@ The socket defaults to the KULTD_SOCKET environment variable.
 COMMANDS:
     status                          daemon and node status
     bundle                          export a fresh prekey bundle (hex)
+    connect-code-rotate --yes       rotate reachability; identity stays unchanged
+    connect-code-retire-legacy --yes
+                                    permanently retire stable-address lookup
     device-id                       show this exact certified physical-device id
     devices                         list active and revoked account devices
+    authority-reset-history         show former-identity archive and re-verification work
+    device-authority-conflicts      list unresolved fail-closed authority conflicts
+    contact-authority-conflicts     list contacts with unresolved authority conflicts
+    device-authority-request        export pending rename/revocation approval request
+    device-authority-approve REQUEST
+                                    verify and sign another device's exact request
+    device-authority-accept APPROVAL
+                                    merge a detached approval and report commit status
     message-devices MESSAGE_ID      show honest delivery state per recipient device
     device-rename DEVICE_ID NAME... rename an active linked device
     device-revoke DEVICE_ID --yes   permanently revoke another device
@@ -31,6 +42,11 @@ COMMANDS:
     device-link-code RESPONSE       show the source-side comparison code
     device-link-approve RESPONSE --confirm [--no-contacts] [--no-organization] [--no-history]
                                     confirm and create the encrypted transfer package
+    device-link-approval-request    export a pending add-device quorum request
+    device-link-approve-request REQUEST
+                                    verify and sign another device's add proposal
+    device-link-accept-approval APPROVAL
+                                    merge approval; returns package once quorum is met
     device-link-complete PACKAGE --confirm
                                     confirm and import on the pristine target
     device-sync-export DEVICE_ID    export encrypted convergence bytes
@@ -41,11 +57,18 @@ COMMANDS:
     add-contact NAME BUNDLE_HEX [--hint MULTIADDR]... [--relay MULTIADDR]...
                                 [--mesh NODE|broadcast]...
                                     add a contact from an out-of-band bundle
-    add NAME ADDRESS                add a contact from a kult address (DHT)
+    add NAME CONNECT_CODE           add a contact through capability-scoped DHT
     contact-name-check PEER_HEX NAME...
                                     preview NFC form and local spoofing/duplicate warnings
     contact-rename PEER_HEX [--accept-warnings] NAME...
                                     rename one private local petname; warning review is explicit
+    message-requests                list sealed first-contact requests
+    message-request-accept REQUEST_ID NAME...
+                                    promote one request to contact and history atomically
+    message-request-delete REQUEST_ID
+                                    discard one request and retain only a replay tombstone
+    message-request-block REQUEST_ID
+                                    discard one request and block its verified sender
     send PEER_HEX TEXT...           queue a message
     send-disappearing PEER_HEX LIFETIME_SECS TEXT...
                                     remove locally at deadline; relay hint is hourly
@@ -137,6 +160,8 @@ COMMANDS:
     pin-conversations all|unfiled|FOLDER_ID [any|all [LABEL_ID]...]
                                     compose folder, label, then pin ordering
     group-create NAME [MEMBER_HEX]... create a sender-key group
+    group-security GROUP_HEX         show recipient-origin upgrade state
+    group-security-upgrade GROUP_HEX start the visible legacy-group upgrade
     group-send GROUP_HEX TEXT...     queue a group message
     group-send-disappearing GROUP_HEX LIFETIME_SECS TEXT...
                                     queue group text with exact local expiry
@@ -166,6 +191,11 @@ COMMANDS:
     group-add GROUP_HEX PEER_HEX     owner direct; admin request
     group-remove GROUP_HEX PEER_HEX  owner direct; admin may remove members
     group-leave GROUP_HEX            leave a group
+    group-invitations                list sealed group-invitation requests
+    group-invitation-accept REQUEST_ID
+                                    create the proposed group after explicit consent
+    group-invitation-delete REQUEST_ID
+                                    discard one group invitation
     groups                            list groups
     group-messages GROUP_HEX         group message history
     contacts                        list contacts
@@ -186,10 +216,15 @@ COMMANDS:
     set-hints PEER_HEX [--hint MULTIADDR]... [--relay MULTIADDR]...
                        [--mesh NODE|broadcast]...
                                     replace a contact's delivery hints
+    rendezvous-refresh PEER_HEX     request a bounded post-pairing route refresh
+    rendezvous-active PEER_HEX on|off
+                                    mark or clear a foreground conversation
     publish                         publish the prekey bundle on the DHT now
     backup PATH                     write an encrypted backup file and print the
                                     one-time 24-word mnemonic that seals it
                                     (write it down; it is shown exactly once)
+    recovery-authority PATH         first-run only: write the encrypted offline
+                                    account authority and show its separate phrase
     watch                           stream events until interrupted
     -h, --help                      this text
 ";
@@ -395,8 +430,66 @@ fn build_request(command: &str, args: &[String]) -> Result<Value, String> {
     let request = match command {
         "status" => json!({ "op": "status" }),
         "bundle" => json!({ "op": "bundle" }),
+        "connect-code-rotate" => {
+            if args != ["--yes"] {
+                return Err(
+                    "connect-code-rotate: pass --yes after reviewing that old codes will expire"
+                        .to_owned(),
+                );
+            }
+            json!({ "op": "connect_code_rotate" })
+        }
+        "connect-code-retire-legacy" => {
+            if args != ["--yes"] {
+                return Err(
+                    "connect-code-retire-legacy: permanent retirement requires --yes".to_owned(),
+                );
+            }
+            json!({ "op": "connect_code_retire_legacy" })
+        }
         "device-id" => json!({ "op": "device_id" }),
         "devices" => json!({ "op": "linked_devices" }),
+        "authority-reset-history" => json!({ "op": "authority_reset_history" }),
+        "device-authority-conflicts" => json!({ "op": "device_authority_conflicts" }),
+        "contact-authority-conflicts" => json!({ "op": "contact_authority_conflicts" }),
+        "message-requests" => {
+            if !args.is_empty() {
+                return Err("message-requests: expected no arguments".to_owned());
+            }
+            json!({ "op": "message_requests" })
+        }
+        "message-request-accept" => {
+            need(2)?;
+            json!({
+                "op": "message_request_accept",
+                "request": args[0],
+                "name": args[1..].join(" "),
+            })
+        }
+        "message-request-delete" | "message-request-block" => {
+            if args.len() != 1 {
+                return Err(format!("{command}: expected REQUEST_ID"));
+            }
+            let op = if command == "message-request-delete" {
+                "message_request_delete"
+            } else {
+                "message_request_block"
+            };
+            json!({ "op": op, "request": args[0] })
+        }
+        "device-authority-request" => json!({ "op": "device_authority_approval_request" }),
+        "device-authority-approve" => {
+            if args.len() != 1 {
+                return Err("device-authority-approve: expected REQUEST".to_owned());
+            }
+            json!({ "op": "device_authority_approve", "request": args[0] })
+        }
+        "device-authority-accept" => {
+            if args.len() != 1 {
+                return Err("device-authority-accept: expected APPROVAL".to_owned());
+            }
+            json!({ "op": "device_authority_accept", "approval": args[0] })
+        }
         "message-devices" => {
             if args.len() != 1 {
                 return Err("message-devices: expected MESSAGE_ID".to_owned());
@@ -461,6 +554,19 @@ fn build_request(command: &str, args: &[String]) -> Result<Value, String> {
                 );
             }
             json!({ "op": "device_link_complete", "package": args[0], "confirmed": true })
+        }
+        "device-link-approval-request" => json!({ "op": "device_link_approval_request" }),
+        "device-link-approve-request" => {
+            if args.len() != 1 {
+                return Err("device-link-approve-request: expected REQUEST".to_owned());
+            }
+            json!({ "op": "device_link_approve_request", "request": args[0] })
+        }
+        "device-link-accept-approval" => {
+            if args.len() != 1 {
+                return Err("device-link-accept-approval: expected APPROVAL".to_owned());
+            }
+            json!({ "op": "device_link_accept_approval", "approval": args[0] })
         }
         "device-sync-export" => {
             if args.len() != 1 {
@@ -1088,6 +1194,20 @@ fn build_request(command: &str, args: &[String]) -> Result<Value, String> {
             need(1)?;
             json!({ "op": "group_create", "name": args[0], "members": args[1..] })
         }
+        "group-security" | "group-security-upgrade" => {
+            need(1)?;
+            if args.len() != 1 {
+                return Err(format!("{command}: expected one group id"));
+            }
+            json!({
+                "op": if command == "group-security" {
+                    "group_security"
+                } else {
+                    "group_upgrade_security"
+                },
+                "group": args[0],
+            })
+        }
         "group-send" => {
             need(2)?;
             json!({ "op": "group_send", "group": args[0], "body": args[1..].join(" ") })
@@ -1241,6 +1361,23 @@ fn build_request(command: &str, args: &[String]) -> Result<Value, String> {
             need(1)?;
             json!({ "op": "group_leave", "group": args[0] })
         }
+        "group-invitations" => {
+            if !args.is_empty() {
+                return Err("group-invitations: expected no arguments".to_owned());
+            }
+            json!({ "op": "group_invitations" })
+        }
+        "group-invitation-accept" | "group-invitation-delete" => {
+            if args.len() != 1 {
+                return Err(format!("{command}: expected REQUEST_ID"));
+            }
+            let op = if command == "group-invitation-accept" {
+                "group_invitation_accept"
+            } else {
+                "group_invitation_delete"
+            };
+            json!({ "op": op, "invitation": args[0] })
+        }
         "groups" => json!({ "op": "groups" }),
         "group-messages" => {
             need(1)?;
@@ -1314,10 +1451,37 @@ fn build_request(command: &str, args: &[String]) -> Result<Value, String> {
                 "hints": parse_hints(&args[1..])?,
             })
         }
+        "rendezvous-refresh" => {
+            if args.len() != 1 {
+                return Err("rendezvous-refresh: expected PEER_HEX".to_owned());
+            }
+            json!({ "op": "rendezvous_refresh", "peer": args[0] })
+        }
+        "rendezvous-active" => {
+            if args.len() != 2 {
+                return Err("rendezvous-active: expected PEER_HEX on|off".to_owned());
+            }
+            let active = match args[1].as_str() {
+                "on" => true,
+                "off" => false,
+                _ => return Err("rendezvous-active: expected PEER_HEX on|off".to_owned()),
+            };
+            json!({
+                "op": "rendezvous_conversation_active",
+                "peer": args[0],
+                "active": active,
+            })
+        }
         "publish" => json!({ "op": "publish" }),
         "backup" => {
             need(1)?;
             json!({ "op": "backup", "path": args[0] })
+        }
+        "recovery-authority" => {
+            if args.len() != 1 {
+                return Err("recovery-authority: expected PATH".to_owned());
+            }
+            json!({ "op": "recovery_authority_export", "path": args[0] })
         }
         "watch" => json!({ "op": "subscribe" }),
         other => return Err(format!("unknown command: {other}\n\n{USAGE}")),
@@ -1526,6 +1690,33 @@ mod tests {
             build_request("devices", &[]).unwrap()["op"],
             "linked_devices"
         );
+        assert_eq!(
+            build_request("authority-reset-history", &[]).unwrap()["op"],
+            "authority_reset_history"
+        );
+        assert_eq!(
+            build_request("contact-authority-conflicts", &[]).unwrap()["op"],
+            "contact_authority_conflicts"
+        );
+        let rendezvous_peer = "42".repeat(32);
+        assert_eq!(
+            build_request("rendezvous-refresh", std::slice::from_ref(&rendezvous_peer)).unwrap(),
+            json!({ "op": "rendezvous_refresh", "peer": rendezvous_peer })
+        );
+        assert!(build_request(
+            "rendezvous-refresh",
+            &["42".repeat(32), "trailing".to_owned()]
+        )
+        .is_err());
+        assert_eq!(
+            build_request("rendezvous-active", &["42".repeat(32), "on".to_owned()]).unwrap(),
+            json!({
+                "op": "rendezvous_conversation_active",
+                "peer": "42".repeat(32),
+                "active": true,
+            })
+        );
+        assert!(build_request("rendezvous-active", &["42".repeat(32), "yes".to_owned()]).is_err());
         let approve = build_request(
             "device-link-approve",
             &[
@@ -1544,6 +1735,31 @@ mod tests {
         )
         .is_err());
         assert!(build_request("device-revoke", &["11".repeat(32)]).is_err());
+        assert_eq!(
+            build_request("message-requests", &[]).unwrap()["op"],
+            json!("message_requests")
+        );
+        let request = build_request(
+            "message-request-accept",
+            &["10".repeat(16), "Local".to_owned(), "petname".to_owned()],
+        )
+        .unwrap();
+        assert_eq!(request["request"], json!("10".repeat(16)));
+        assert_eq!(request["name"], json!("Local petname"));
+        assert_eq!(
+            build_request("message-request-block", &["11".repeat(16)]).unwrap()["op"],
+            json!("message_request_block")
+        );
+        assert!(build_request("message-request-delete", &[]).is_err());
+        assert_eq!(
+            build_request("group-invitations", &[]).unwrap()["op"],
+            json!("group_invitations")
+        );
+        assert_eq!(
+            build_request("group-invitation-accept", &["12".repeat(16)]).unwrap()["op"],
+            json!("group_invitation_accept")
+        );
+        assert!(build_request("group-invitation-delete", &[]).is_err());
 
         let request = build_request(
             "group-create",

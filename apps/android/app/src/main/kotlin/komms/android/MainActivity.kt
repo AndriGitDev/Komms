@@ -8,21 +8,23 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
-import android.view.Menu
-import android.view.MenuItem
-import android.view.LayoutInflater
-import android.view.View
-import android.view.ViewGroup
 import android.text.InputFilter
 import android.text.InputType
-import android.widget.CheckBox
+import android.view.LayoutInflater
+import android.view.Menu
+import android.view.MenuItem
+import android.view.View
+import android.view.ViewGroup
 import android.widget.Button
+import android.widget.CheckBox
 import android.widget.ImageView
 import android.widget.LinearLayout
-import android.widget.TextView
-import android.widget.ScrollView
-import android.widget.RadioGroup
 import android.widget.RadioButton
+import android.widget.RadioGroup
+import android.widget.ScrollView
+import android.widget.TextView
+import java.text.DateFormat
+import java.util.Date
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
@@ -31,6 +33,7 @@ import komms.core.bundleQrFrames
 import uniffi.kult_ffi.Contact
 import uniffi.kult_ffi.ContactNameAssessment
 import uniffi.kult_ffi.ContactNameWarning
+import uniffi.kult_ffi.ConnectionVerdict
 import uniffi.kult_ffi.CustomIcon
 import uniffi.kult_ffi.CustomIconTarget
 import uniffi.kult_ffi.CustomIconTargetKind
@@ -46,8 +49,10 @@ import uniffi.kult_ffi.LabelMatchMode
 import uniffi.kult_ffi.LabelTarget
 import uniffi.kult_ffi.LabelTargetKind
 import uniffi.kult_ffi.NatVerdict
+import uniffi.kult_ffi.NetworkMode
 import uniffi.kult_ffi.PinConversation
 import uniffi.kult_ffi.PinTargetKind
+import uniffi.kult_ffi.ProviderDirectoryVerdict
 
 /**
  * Contacts + the transport-indicator header. All state shown is the
@@ -88,16 +93,48 @@ class MainActivity : SecureActivity() {
     private val listener: (Event) -> Unit = { event ->
         runOnUiThread {
             when (event) {
-                is Event.ContactAdded, is Event.ContactRenamed -> refreshLabelsAndLists(false)
-                is Event.SessionEstablished -> onSessionEstablished(event.peer)
+                is Event.ContactAdded, is Event.ContactRenamed -> {
+                    refreshLabelsAndLists(false)
+                    NativeWakeManager.onRelationshipChanged(this)
+                }
+                is Event.SessionEstablished -> {
+                    onSessionEstablished(event.peer)
+                    NativeWakeManager.onRelationshipChanged(this)
+                }
+                is Event.DevicesChanged, is Event.DeviceLinkCompleted ->
+                    NativeWakeManager.onRelationshipChanged(this)
                 is Event.MessageReceived -> refreshLabelsAndLists(false)
+                is Event.MessageRequestReceived -> {
+                    toast(getString(R.string.message_request_received))
+                    invalidateOptionsMenu()
+                }
+                is Event.MessageRequestAccepted,
+                is Event.MessageRequestDeleted,
+                is Event.MessageRequestBlocked,
+                is Event.MessageRequestExpired -> {
+                    refreshLabelsAndLists(false)
+                    invalidateOptionsMenu()
+                    NativeWakeManager.onRelationshipChanged(this)
+                }
                 is Event.GroupUpdated -> refreshLabelsAndLists(false)
+                is Event.GroupInvitationReceived -> {
+                    toast(getString(R.string.group_invitation_received))
+                    invalidateOptionsMenu()
+                }
+                is Event.GroupInvitationAccepted,
+                is Event.GroupInvitationDeleted,
+                is Event.GroupInvitationExpired -> {
+                    refreshLabelsAndLists(false)
+                    invalidateOptionsMenu()
+                }
                 is Event.GroupMessageReceived -> refreshLabelsAndLists(false)
                 is Event.FoldersChanged -> refreshLabelsAndLists(true)
                 is Event.LabelsChanged -> refreshLabelsAndLists(true)
                 is Event.PinsChanged -> refreshLabelsAndLists(true)
                 is Event.ThemeChanged -> Unit // ThemeController applies process-wide DayNight.
                 is Event.CustomIconsChanged -> refreshLabelsAndLists(false)
+                is Event.RendezvousConflict -> toast(getString(R.string.rendezvous_conflict))
+                is Event.WakeConflict -> toast(getString(R.string.wake_conflict))
                 else -> {}
             }
         }
@@ -108,7 +145,9 @@ class MainActivity : SecureActivity() {
     private var knownPeers = setOf<String>()
 
     private val requestNotifications =
-        registerForActivityResult(ActivityResultContracts.RequestPermission()) {}
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) {
+            NativeWakeManager.onPermissionChanged(this)
+        }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -183,6 +222,7 @@ class MainActivity : SecureActivity() {
             requestNotifications.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
         NodeHolder.addListener(listener)
+        NativeWakeManager.handleVisibleWakeIntent(this, intent)
     }
 
     override fun onDestroy() {
@@ -192,6 +232,8 @@ class MainActivity : SecureActivity() {
 
     override fun onResume() {
         super.onResume()
+        NativeWakeManager.onPermissionChanged(this)
+        refreshAuthorityResetHistory()
         refreshLabelsAndLists(false)
         tick.post(refreshLoop)
     }
@@ -199,6 +241,12 @@ class MainActivity : SecureActivity() {
     override fun onPause() {
         tick.removeCallbacks(refreshLoop)
         super.onPause()
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        NativeWakeManager.handleVisibleWakeIntent(this, intent)
     }
 
     override fun onCreateOptionsMenu(menu: Menu): Boolean {
@@ -210,6 +258,7 @@ class MainActivity : SecureActivity() {
         when (item.itemId) {
             R.id.menu_add -> startActivity(Intent(this, AddContactActivity::class.java))
             R.id.menu_create_group -> showCreateGroup()
+            R.id.menu_message_requests -> showMessageRequests()
             R.id.menu_pins -> showPinManager()
             R.id.menu_my_qr -> showMyQr()
             R.id.menu_settings -> startActivity(Intent(this, SettingsActivity::class.java))
@@ -217,6 +266,184 @@ class MainActivity : SecureActivity() {
             else -> return super.onOptionsItemSelected(item)
         }
         return true
+    }
+
+    private fun requestExpiry(expiresAt: ULong): String =
+        DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT)
+            .format(Date(expiresAt.toLong() * 1000L))
+
+    private fun showMessageRequests() {
+        val session = NodeHolder.session ?: return
+        runNode(
+            work = { session.messageRequests() to session.groupInvitations() },
+        ) { (requests, invitations) ->
+            val root = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                val spacing = (resources.displayMetrics.density * 12).toInt()
+                setPadding(spacing, spacing, spacing, spacing)
+            }
+            root.addView(TextView(this).apply {
+                setText(R.string.message_requests_intro)
+                importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES
+            })
+            lateinit var dialog: AlertDialog
+            if (requests.isEmpty() && invitations.isEmpty()) {
+                root.addView(TextView(this).apply { setText(R.string.message_requests_empty) })
+            }
+            for (request in requests) {
+                val card = LinearLayout(this).apply {
+                    orientation = LinearLayout.VERTICAL
+                    val spacing = (resources.displayMetrics.density * 8).toInt()
+                    setPadding(0, spacing, 0, spacing)
+                }
+                card.addView(TextView(this).apply {
+                    setText(R.string.message_request_from_new)
+                    textSize = 18f
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                        setAccessibilityHeading(true)
+                    }
+                })
+                card.addView(TextView(this).apply {
+                    text = getString(
+                        R.string.message_request_expires,
+                        requestExpiry(request.expiresAt),
+                    )
+                })
+                card.addView(TextView(this).apply {
+                    text = request.preview.ifBlank { getString(R.string.message_requests_empty) }
+                    textDirection = View.TEXT_DIRECTION_FIRST_STRONG
+                    setPadding(0, 8, 0, 8)
+                })
+                card.addView(TextView(this).apply {
+                    text = getString(R.string.message_request_safety, request.safetyNumber)
+                })
+                val name = IncognitoEditText(this).apply {
+                    id = View.generateViewId()
+                    hint = getString(R.string.message_request_name_hint)
+                    setText(R.string.message_request_default_name)
+                    inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_WORDS
+                    filters = arrayOf(InputFilter.LengthFilter(256))
+                }
+                card.addView(TextView(this).apply {
+                    text = getString(R.string.message_request_name_hint)
+                    labelFor = name.id
+                })
+                card.addView(name)
+                val actions = LinearLayout(this).apply {
+                    orientation = LinearLayout.VERTICAL
+                }
+                actions.addView(Button(this).apply {
+                    setText(R.string.message_request_accept)
+                    setOnClickListener {
+                        val localName = name.text.toString().trim()
+                        if (localName.isEmpty()) {
+                            name.error = getString(R.string.message_request_name_hint)
+                            return@setOnClickListener
+                        }
+                        runNode(work = {
+                            session.acceptMessageRequest(request.id, localName)
+                        }) { peer ->
+                            dialog.dismiss()
+                            refreshLabelsAndLists(false)
+                            startActivity(
+                                Intent(this@MainActivity, ChatActivity::class.java)
+                                    .putExtra("peer", peer)
+                                    .putExtra("name", localName),
+                            )
+                        }
+                    }
+                })
+                actions.addView(Button(this).apply {
+                    setText(R.string.message_request_delete)
+                    setOnClickListener {
+                        runNode(work = { session.deleteMessageRequest(request.id) }) {
+                            dialog.dismiss()
+                            showMessageRequests()
+                        }
+                    }
+                })
+                actions.addView(Button(this).apply {
+                    setText(R.string.message_request_block)
+                    setOnClickListener {
+                        AlertDialog.Builder(this@MainActivity)
+                            .setTitle(R.string.message_request_block_title)
+                            .setMessage(R.string.message_request_block_explanation)
+                            .setPositiveButton(R.string.message_request_block) { _, _ ->
+                                runNode(work = { session.blockMessageRequest(request.id) }) {
+                                    dialog.dismiss()
+                                    showMessageRequests()
+                                }
+                            }
+                            .setNegativeButton(android.R.string.cancel, null)
+                            .show()
+                    }
+                })
+                card.addView(actions)
+                root.addView(card)
+            }
+            for (invitation in invitations) {
+                val card = LinearLayout(this).apply {
+                    orientation = LinearLayout.VERTICAL
+                    val spacing = (resources.displayMetrics.density * 8).toInt()
+                    setPadding(0, spacing, 0, spacing)
+                }
+                card.addView(TextView(this).apply {
+                    setText(R.string.group_invitation_title)
+                    textSize = 18f
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                        setAccessibilityHeading(true)
+                    }
+                })
+                card.addView(TextView(this).apply {
+                    text = invitation.name
+                    textDirection = View.TEXT_DIRECTION_FIRST_STRONG
+                })
+                card.addView(TextView(this).apply {
+                    text = getString(
+                        R.string.group_invitation_members,
+                        invitation.memberCount.toLong(),
+                        requestExpiry(invitation.expiresAt),
+                    )
+                })
+                card.addView(TextView(this).apply {
+                    setText(R.string.group_invitation_explanation)
+                })
+                val actions = LinearLayout(this).apply {
+                    orientation = LinearLayout.VERTICAL
+                }
+                actions.addView(Button(this).apply {
+                    setText(R.string.group_invitation_accept)
+                    setOnClickListener {
+                        runNode(work = {
+                            session.acceptGroupInvitation(invitation.id)
+                        }) { group ->
+                            dialog.dismiss()
+                            refreshLabelsAndLists(false)
+                            openGroup(group, invitation.name)
+                        }
+                    }
+                })
+                actions.addView(Button(this).apply {
+                    setText(R.string.message_request_delete)
+                    setOnClickListener {
+                        runNode(work = {
+                            session.deleteGroupInvitation(invitation.id)
+                        }) {
+                            dialog.dismiss()
+                            showMessageRequests()
+                        }
+                    }
+                })
+                card.addView(actions)
+                root.addView(card)
+            }
+            dialog = AlertDialog.Builder(this)
+                .setTitle(R.string.message_requests_title)
+                .setView(ScrollView(this).apply { addView(root) })
+                .setNegativeButton(android.R.string.cancel, null)
+                .create()
+            dialog.show()
+        }
     }
 
     private fun refreshStatus() {
@@ -227,6 +454,28 @@ class MainActivity : SecureActivity() {
                 NatVerdict.PRIVATE -> getString(R.string.nat_private)
                 NatVerdict.UNKNOWN -> getString(R.string.nat_unknown)
             }
+            val mode = when (s.mode) {
+                NetworkMode.STANDARD -> getString(R.string.mode_standard)
+                NetworkMode.PRIVATE -> getString(R.string.mode_private)
+                NetworkMode.SOVEREIGN -> getString(R.string.mode_sovereign)
+            }
+            val connection = when (s.connection) {
+                ConnectionVerdict.CONNECTED -> getString(R.string.connection_connected)
+                ConnectionVerdict.FALLBACK_READY ->
+                    getString(R.string.connection_fallback_ready)
+                ConnectionVerdict.WAITING_FOR_ROUTE -> getString(R.string.connection_waiting)
+            }
+            val directory = when (s.providerDirectory) {
+                ProviderDirectoryVerdict.NOT_CONFIGURED ->
+                    getString(R.string.directory_not_configured)
+                ProviderDirectoryVerdict.CURRENT -> getString(R.string.directory_current)
+                ProviderDirectoryVerdict.RETAINED_LAST_VALID ->
+                    getString(R.string.directory_retained)
+                ProviderDirectoryVerdict.STALE -> getString(R.string.directory_stale)
+                ProviderDirectoryVerdict.CONFLICT -> getString(R.string.directory_conflict)
+                ProviderDirectoryVerdict.UNAVAILABLE ->
+                    getString(R.string.directory_unavailable)
+            }
             findViewById<TextView>(R.id.main_status).apply {
                 val queued = if (s.queued == 0uL) {
                     ""
@@ -234,7 +483,7 @@ class MainActivity : SecureActivity() {
                     getString(R.string.status_queued_suffix, s.queued.toLong())
                 }
                 text = getString(
-                    R.string.status_summary, nat, s.lanPeers.size, queued,
+                    R.string.status_summary, mode, connection, queued,
                 )
                 contentDescription = text
                 setOnClickListener {
@@ -253,18 +502,48 @@ class MainActivity : SecureActivity() {
                             networkSettings.bootstrap.size,
                         )
                     }
+                    val legacy = if (s.legacyDiscovery) {
+                        getString(R.string.discovery_legacy_enabled)
+                    } else {
+                        getString(R.string.discovery_legacy_retired)
+                    }
                     AlertDialog.Builder(this@MainActivity)
                         .setTitle(R.string.node_details_title)
                         .setMessage(
                             getString(
                                 R.string.status_details,
-                                s.address, nat, s.lanPeers.size, s.scheduled.toLong(),
-                                s.queued.toLong(), s.transit.toLong(),
-                                mdns, dht,
+                                s.connectCode, s.address, nat, s.lanPeers.size,
+                                s.scheduled.toLong(), s.queued.toLong(), s.transit.toLong(),
+                                mdns, dht, legacy,
+                                mode, connection, directory, s.connectedPeers.toLong(),
                             ),
                         )
                         .setPositiveButton(android.R.string.ok, null)
                         .show()
+                }
+            }
+        }
+    }
+
+    private fun refreshAuthorityResetHistory() {
+        val session = NodeHolder.session ?: return
+        runNode(work = { session.authorityResetHistory() }, onError = {}) { history ->
+            findViewById<TextView>(R.id.main_authority_reset_history).apply {
+                if (history == null) {
+                    visibility = View.GONE
+                    text = ""
+                } else {
+                    text = getString(
+                        R.string.authority_reset_archive_summary,
+                        getString(R.string.authority_reset_archive_title),
+                        history.preservedPairwiseMessages.toLong(),
+                        history.preservedNoteMessages.toLong(),
+                        history.omittedGroups.toLong(),
+                        history.omittedGroupMessages.toLong(),
+                        history.pendingReverification.size,
+                    )
+                    contentDescription = text
+                    visibility = View.VISIBLE
                 }
             }
         }
@@ -532,8 +811,17 @@ class MainActivity : SecureActivity() {
             }
             val status = findViewById<TextView>(R.id.main_label_filter_status)
             status.text = when {
-                snapshot.unavailableCount > 0 -> getString(R.string.label_filter_unavailable, snapshot.unavailableCount)
-                announce && selectedLabels.isNotEmpty() -> getString(R.string.label_filter_result, snapshot.matching.size, requestedMode)
+                snapshot.unavailableCount > 0 -> resources.getQuantityString(
+                    R.plurals.label_filter_unavailable,
+                    snapshot.unavailableCount,
+                    snapshot.unavailableCount,
+                )
+                announce && selectedLabels.isNotEmpty() -> resources.getQuantityString(
+                    R.plurals.label_filter_result,
+                    snapshot.matching.size,
+                    snapshot.matching.size,
+                    requestedMode,
+                )
                 else -> ""
             }
             if (announce && status.text.isNotEmpty()) status.announceForAccessibility(status.text)
@@ -734,37 +1022,92 @@ class MainActivity : SecureActivity() {
     /** A ready signed prekey bundle in the compact, versioned pairing QR format. */
     private fun showMyQr() {
         val session = NodeHolder.session ?: return
-        runNode(work = { session.myBundleHex() to session.address }) { (hex, address) ->
+        runNode(work = {
+            Triple(session.myBundleHex(), session.connectCode, session.status().legacyDiscovery)
+        }) { (hex, connectCode, legacyDiscovery) ->
             val view = LayoutInflater.from(this).inflate(R.layout.dialog_qr, null)
             val image = view.findViewById<ImageView>(R.id.qr_image)
             val caption = view.findViewById<TextView>(R.id.qr_caption)
+            val modeButton = view.findViewById<Button>(R.id.qr_mode_button)
             val frames = bundleQrFrames(hex)
             var frame = 0
-            fun renderFrame() {
-                image.setImageBitmap(pairingQrBitmap(frames[frame]))
-                caption.text = if (frames.size == 1) {
-                    getString(R.string.my_qr_caption, address)
+            var currentConnectCode = connectCode
+            var showingPairing = false
+            fun render() {
+                if (showingPairing) {
+                    image.setImageBitmap(pairingQrBitmap(frames[frame]))
+                    image.contentDescription = getString(R.string.my_pairing_qr_description)
+                    caption.text = if (frames.size == 1) {
+                        getString(R.string.my_pairing_qr_caption)
+                    } else {
+                        getString(R.string.my_qr_frame, frame + 1, frames.size)
+                    }
+                    modeButton.setText(R.string.show_connect_qr)
                 } else {
-                    getString(R.string.my_qr_frame, frame + 1, frames.size, address)
+                    image.setImageBitmap(pairingQrBitmap(currentConnectCode))
+                    image.contentDescription = getString(R.string.my_connect_qr_description)
+                    caption.text = getString(R.string.my_qr_caption, currentConnectCode)
+                    modeButton.setText(R.string.show_pairing_qr)
                 }
             }
-            renderFrame()
-            val dialog = AlertDialog.Builder(this)
+            render()
+            val builder = AlertDialog.Builder(this)
                 .setTitle(R.string.my_qr_title)
                 .setView(view)
+                .setNeutralButton(R.string.rotate_connect_code, null)
                 .setPositiveButton(android.R.string.ok, null)
-                .create()
+            if (legacyDiscovery) {
+                builder.setNegativeButton(R.string.retire_legacy_discovery, null)
+            }
+            val dialog = builder.create()
             val handler = Handler(Looper.getMainLooper())
             val rotate = object : Runnable {
                 override fun run() {
-                    if (!dialog.isShowing) return
+                    if (!dialog.isShowing || !showingPairing || frames.size < 2) return
                     frame = (frame + 1) % frames.size
-                    renderFrame()
+                    render()
                     handler.postDelayed(this, 1_100)
                 }
             }
             dialog.setOnShowListener {
-                if (frames.size > 1) handler.postDelayed(rotate, 1_100)
+                modeButton.setOnClickListener {
+                    handler.removeCallbacks(rotate)
+                    showingPairing = !showingPairing
+                    frame = 0
+                    render()
+                    if (showingPairing && frames.size > 1) {
+                        handler.postDelayed(rotate, 1_100)
+                    }
+                }
+                dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener {
+                    AlertDialog.Builder(this)
+                        .setTitle(R.string.rotate_connect_code)
+                        .setMessage(R.string.rotate_connect_code_warning)
+                        .setNegativeButton(android.R.string.cancel, null)
+                        .setPositiveButton(R.string.rotate_connect_code) { _, _ ->
+                            runNode(work = { session.rotateConnectCode() }) { code ->
+                                currentConnectCode = code
+                                dialog.getButton(AlertDialog.BUTTON_NEGATIVE)?.visibility =
+                                    View.GONE
+                                render()
+                                toast(getString(R.string.rotate_connect_code_done))
+                            }
+                        }
+                        .show()
+                }
+                dialog.getButton(AlertDialog.BUTTON_NEGATIVE)?.setOnClickListener {
+                    AlertDialog.Builder(this)
+                        .setTitle(R.string.retire_legacy_discovery)
+                        .setMessage(R.string.retire_legacy_discovery_warning)
+                        .setNegativeButton(android.R.string.cancel, null)
+                        .setPositiveButton(R.string.retire_legacy_discovery) { _, _ ->
+                            runNode(work = { session.retireLegacyDiscovery() }) {
+                                dialog.getButton(AlertDialog.BUTTON_NEGATIVE).isEnabled = false
+                                toast(getString(R.string.retire_legacy_discovery_done))
+                            }
+                        }
+                        .show()
+                }
             }
             dialog.setOnDismissListener { handler.removeCallbacks(rotate) }
             dialog.show()

@@ -26,6 +26,8 @@ pub enum ProtocolError {
     ReassemblyOverflow,
     /// Completed reassembly failed its integrity check.
     IntegrityMismatch,
+    /// The caller-selected bounded first-contact puzzle budget was exhausted.
+    AdmissionWorkExhausted,
 }
 
 impl fmt::Display for ProtocolError {
@@ -41,6 +43,7 @@ impl fmt::Display for ProtocolError {
             Self::TooManyFragments => "fragment count exceeds format limit",
             Self::ReassemblyOverflow => "reassembly bounds exceeded",
             Self::IntegrityMismatch => "reassembled message failed integrity check",
+            Self::AdmissionWorkExhausted => "bounded first-contact work was exhausted",
         };
         f.write_str(s)
     }

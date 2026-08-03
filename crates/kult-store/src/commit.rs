@@ -6,7 +6,10 @@ use rand_core::CryptoRngCore;
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
-use kult_crypto::{Identity, Session};
+use kult_crypto::{
+    GroupMessage, GroupOriginEnvelope, GroupSenderChain, Identity, IdentityPublic, Session,
+    GROUP_MESSAGE_VERSION_LEGACY,
+};
 use kult_protocol::{
     CapabilityControl, DeviceSyncEvent, Envelope, EnvelopeKind, MAX_DEVICE_SYNC_BUNDLE_EVENTS,
     MAX_GROUP_ADMIN_REQUESTS, MAX_GROUP_AUTHORITY_MEMBERS, MAX_GROUP_MEMBER_IDENTITY_LEN,
@@ -14,12 +17,16 @@ use kult_protocol::{
 };
 
 use crate::{
-    decode_exact, direction_code, store_v2, ContactDeviceRecord, ContactRecord, DeliveryState,
-    DeviceLinkRecoveryRecord, DeviceStateRecord, Direction, EphemeralRecord, EphemeralState,
-    GroupAuthorityRecord, GroupMessageRecord, GroupRecord, LocalMetadataRecord, MediaObjectRecord,
-    MediaRecord, MediaTransferRecord, MessageDeviceDeliveryRecord, MessageRecord,
-    NoteMessageRecord, QueueItem, Result, ScheduledMessageRecord, Store, StoreError,
-    MAX_DEVICE_SYNC_EVENT_BYTES,
+    decode_exact, direction_code, store_v2, AdmissionReplayTombstone, AdmissionTransportClass,
+    BlockedIdentityRecord, ContactDeviceRecord, ContactRecord, DeliveryState,
+    DeviceAuthorityStateRecord, DeviceLinkRecoveryRecord, DeviceStateRecord, Direction,
+    EphemeralRecord, EphemeralState, GroupAuthorityRecord, GroupMessageRecord,
+    GroupOriginAuthentication, GroupPendingFanout, GroupRecord, LocalMetadataRecord,
+    MediaObjectRecord, MediaRecord, MediaTransferRecord, MessageDeviceDeliveryRecord,
+    MessageRecord, NoteMessageRecord, PendingEnvelopeRecord, ProvisionalRequestRecord, QueueItem,
+    RendezvousServiceState, Result, ScheduledMessageRecord, Store, StoreError,
+    WakeRevocationRecord, WakeServiceState, MAX_DEVICE_SYNC_EVENT_BYTES, MAX_PENDING_BYTES,
+    MAX_PENDING_ENVELOPES, PENDING_ENVELOPE_RECORD_VERSION,
 };
 
 /// Maximum logical durable mutations accepted by one typed commit plan.
@@ -54,7 +61,86 @@ pub const MAX_DEVICE_LINK_MUTATIONS: usize = 8_192;
 /// Maximum exact durable changes projected from one accepted sync winner.
 pub const MAX_DEVICE_PROJECTION_MUTATIONS: usize = 512;
 
+fn validate_outbound_group_origin(origin: GroupOriginAuthentication) -> Result<()> {
+    match origin {
+        GroupOriginAuthentication::LegacyMembership => Ok(()),
+        GroupOriginAuthentication::OutboundV1 {
+            sender_device,
+            chain_key_id,
+        } if sender_device != [0u8; 32] && chain_key_id != [0u8; 16] => Ok(()),
+        GroupOriginAuthentication::RecipientV1 { .. }
+        | GroupOriginAuthentication::PendingOutboundV1 { .. }
+        | GroupOriginAuthentication::OutboundV1 { .. } => Err(StoreError::InvalidTransition),
+    }
+}
+
+fn validate_inbound_group_origin(origin: GroupOriginAuthentication) -> Result<()> {
+    match origin {
+        GroupOriginAuthentication::RecipientV1 {
+            sender_device,
+            recipient_device,
+            chain_key_id,
+        } if sender_device != [0u8; 32]
+            && recipient_device != [0u8; 32]
+            && chain_key_id != [0u8; 16] =>
+        {
+            Ok(())
+        }
+        _ => Err(StoreError::InvalidTransition),
+    }
+}
+
+fn pending_group_shared(origin: GroupOriginAuthentication, encoded: &[u8]) -> Result<Vec<u8>> {
+    if let Ok(pending) = GroupPendingFanout::decode(encoded) {
+        let tagged = pending.routes[0].origin_tag.is_some();
+        if tagged != matches!(origin, GroupOriginAuthentication::OutboundV1 { .. }) {
+            return Err(StoreError::InvalidTransition);
+        }
+        return Ok(pending.shared_ciphertext);
+    }
+    if origin != GroupOriginAuthentication::LegacyMembership {
+        return Err(StoreError::InvalidTransition);
+    }
+    let message = GroupMessage::decode(encoded).map_err(|_| StoreError::InvalidTransition)?;
+    if message.version() != GROUP_MESSAGE_VERSION_LEGACY {
+        return Err(StoreError::InvalidTransition);
+    }
+    Ok(encoded.to_vec())
+}
+
+fn queued_group_shared(origin: GroupOriginAuthentication, encoded: &[u8]) -> Result<Vec<u8>> {
+    match origin {
+        GroupOriginAuthentication::LegacyMembership => {
+            let message =
+                GroupMessage::decode(encoded).map_err(|_| StoreError::InvalidTransition)?;
+            if message.version() != GROUP_MESSAGE_VERSION_LEGACY {
+                return Err(StoreError::InvalidTransition);
+            }
+            Ok(encoded.to_vec())
+        }
+        GroupOriginAuthentication::OutboundV1 { .. } => {
+            let envelope =
+                GroupOriginEnvelope::decode(encoded).map_err(|_| StoreError::InvalidTransition)?;
+            Ok(envelope.shared().encode())
+        }
+        GroupOriginAuthentication::RecipientV1 { .. }
+        | GroupOriginAuthentication::PendingOutboundV1 { .. } => Err(StoreError::InvalidTransition),
+    }
+}
+
+fn pending_stage_payload(plan: &PendingStagePlan<'_>) -> Result<Vec<u8>> {
+    let encoded = plan.envelope.try_encode()?;
+    postcard::to_allocvec(&PendingEnvelopeRecord {
+        version: PENDING_ENVELOPE_RECORD_VERSION,
+        encoded,
+        first_seen: plan.first_seen,
+        transport: plan.transport,
+    })
+    .map_err(|_| StoreError::Serialization)
+}
+
 /// Complete cryptographic bootstrap of one previously unpublished profile.
+#[cfg(any(test, feature = "legacy-test-fixtures"))]
 pub struct ProfileBootstrapPlan<'a> {
     /// Fresh account identity.
     pub identity: &'a Identity,
@@ -62,6 +148,32 @@ pub struct ProfileBootstrapPlan<'a> {
     pub device_state: &'a DeviceStateRecord,
     /// Fresh encoded prekey vault.
     pub prekeys: &'a [u8],
+}
+
+/// Complete ADR-0026 bootstrap with no account private key in the live store.
+pub struct AuthorityProfileBootstrapPlan<'a> {
+    /// Stable public account trust anchor.
+    pub account: &'a IdentityPublic,
+    /// Fresh local quorum-authorized physical-device state.
+    pub device_state: &'a DeviceAuthorityStateRecord,
+    /// Fresh encoded prekey vault.
+    pub prekeys: &'a [u8],
+}
+
+/// Exact in-place conversion of a single-device Alpha profile to ADR-0026.
+///
+/// The legacy account root and device state are replaced in one SQLite
+/// transaction. Conversation state and the independently keyed physical
+/// device remain unchanged.
+pub struct AuthorityMigrationPlan<'a> {
+    /// Exact legacy account root expected before the transaction.
+    pub legacy_identity: &'a Identity,
+    /// Exact legacy single-device authority state expected before the transaction.
+    pub legacy_device_state: &'a DeviceStateRecord,
+    /// Public account trust anchor retained after the root is removed.
+    pub account: &'a IdentityPublic,
+    /// Root-authorized generation-one authority state for the same device key.
+    pub device_state: &'a DeviceAuthorityStateRecord,
 }
 
 /// Kind of authenticated pairwise control retained for idempotent follow-up.
@@ -100,6 +212,40 @@ pub struct SessionTransition<'a> {
     pub after: &'a Session,
 }
 
+/// Exact relationship-scoped optional-service state replacement.
+pub struct RendezvousServiceTransition<'a> {
+    /// Exact physical-device session route.
+    pub peer_device: [u8; 32],
+    /// Durable service state expected before the transaction.
+    pub before: &'a RendezvousServiceState,
+    /// Candidate complete service state.
+    pub after: &'a RendezvousServiceState,
+}
+
+/// Exact relationship-scoped wake state replacement.
+pub struct WakeServiceTransition<'a> {
+    /// Exact physical-device session route.
+    pub peer_device: [u8; 32],
+    /// Durable wake state expected before the transaction.
+    pub before: &'a WakeServiceState,
+    /// Candidate complete wake state.
+    pub after: &'a WakeServiceState,
+}
+
+/// Exact durable gateway-revocation retry replacement or acknowledgement.
+pub struct WakeRevocationTransition<'a> {
+    /// Durable retry expected before the transaction.
+    pub before: &'a WakeRevocationRecord,
+    /// Updated bounded retry, or `None` after acknowledgement or expiry.
+    pub after: Option<&'a WakeRevocationRecord>,
+}
+
+/// One bounded identity-free gateway-revocation maintenance transaction.
+pub struct WakeRevocationPlan<'a> {
+    /// Exact durable retries updated or removed together.
+    pub transitions: &'a [WakeRevocationTransition<'a>],
+}
+
 /// One deferred-inbox row that may be removed only with its named envelope.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PendingDelete {
@@ -107,6 +253,16 @@ pub struct PendingDelete {
     pub sequence: i64,
     /// Exact envelope content id expected in that row.
     pub content_id: [u8; 16],
+}
+
+/// One complete inbound envelope staged durably before carrier custody ends.
+pub struct PendingStagePlan<'a> {
+    /// Exact untrusted envelope accepted from a bounded carrier page.
+    pub envelope: &'a Envelope,
+    /// Local time at which the complete envelope first arrived.
+    pub first_seen: u64,
+    /// Coarse carrier class retained for admission budgeting after restart.
+    pub transport: AdmissionTransportClass,
 }
 
 /// One outbound row that may be removed only with its named envelope.
@@ -228,6 +384,15 @@ pub struct ContactTransition<'a> {
     pub after: &'a ContactRecord,
 }
 
+/// Exact authenticated relationship-route/capability replacement for one
+/// contact device.
+pub struct ContactDeviceTransition<'a> {
+    /// Durable endpoint expected before the transaction.
+    pub before: &'a ContactDeviceRecord,
+    /// Replacement with the same account/device identity.
+    pub after: &'a ContactDeviceRecord,
+}
+
 /// An exact ephemeral marker update.
 pub struct EphemeralTransition<'a> {
     /// Existing marker, or `None` when the transition creates it.
@@ -267,11 +432,20 @@ pub struct ContactDeviceDelete<'a> {
 }
 
 /// Exact account-identity replacement during a confirmed device link.
+#[cfg(any(test, feature = "legacy-test-fixtures"))]
 pub struct IdentityTransition<'a> {
     /// Identity currently stored on the pristine target.
     pub before: &'a Identity,
     /// Account identity authenticated by the completed link package.
     pub after: &'a Identity,
+}
+
+/// Exact public-account replacement during a confirmed root-free device link.
+pub struct AccountIdentityTransition<'a> {
+    /// Public account currently stored on the pristine target.
+    pub before: &'a IdentityPublic,
+    /// Public account authenticated by the completed link package.
+    pub after: &'a IdentityPublic,
 }
 
 /// New or exact replacement of the complete local linked-device state.
@@ -280,6 +454,14 @@ pub struct DeviceStateTransition<'a> {
     pub before: Option<&'a DeviceStateRecord>,
     /// Detached candidate state.
     pub after: &'a DeviceStateRecord,
+}
+
+/// Exact replacement of live ADR-0026 device authority state.
+pub struct DeviceAuthorityStateTransition<'a> {
+    /// Existing state, or `None` while atomically initializing.
+    pub before: Option<&'a DeviceAuthorityStateRecord>,
+    /// Detached candidate state.
+    pub after: &'a DeviceAuthorityStateRecord,
 }
 
 /// Creation, exact replacement, or acknowledgement of a recoverable link package.
@@ -366,7 +548,24 @@ pub struct DeviceControlPlan<'a> {
     pub presentation_changed: bool,
 }
 
+/// One bounded ADR-0026 authority, counter, convergence, or rotation transition.
+pub struct AuthorityDeviceControlPlan<'a> {
+    /// Optional complete live authority/counter replacement.
+    pub state: Option<DeviceAuthorityStateTransition<'a>>,
+    /// Optional committed link-package recovery outbox transition.
+    pub link_recovery: Option<DeviceLinkRecoveryTransition<'a>>,
+    /// Sender-chain rotations owned by revocation or recovery.
+    pub groups: &'a [GroupTransition<'a>],
+    /// New authenticated convergence events.
+    pub insert_events: &'a [Vec<u8>],
+    /// Exact redundant convergence events removed during compaction.
+    pub delete_events: &'a [Vec<u8>],
+    /// Whether presentation must be recoverable after commit.
+    pub presentation_changed: bool,
+}
+
 /// Complete bounded import performed by one confirmed link onto a pristine target.
+#[cfg(any(test, feature = "legacy-test-fixtures"))]
 pub struct DeviceLinkPlan<'a> {
     /// Authenticated account replacement.
     pub identity: IdentityTransition<'a>,
@@ -392,6 +591,39 @@ pub struct DeviceLinkPlan<'a> {
     pub ephemeral: &'a [EphemeralRecord],
     /// Authenticated convergence events.
     pub sync_events: &'a [Vec<u8>],
+    /// Whether presentation must be recoverable after commit.
+    pub presentation_changed: bool,
+}
+
+/// Complete bounded root-free import onto a pristine ADR-0026 target.
+pub struct AuthorityDeviceLinkPlan<'a> {
+    /// Authenticated public-account replacement.
+    pub account: AccountIdentityTransition<'a>,
+    /// Complete target-device authority and channel state.
+    pub device_state: DeviceAuthorityStateTransition<'a>,
+    /// Selected contact records.
+    pub contacts: &'a [ContactRecord],
+    /// Selected contact-device endpoints.
+    pub devices: &'a [ContactDeviceRecord],
+    /// Selected pairwise history.
+    pub messages: &'a [MessageRecord],
+    /// Regenerated local group records.
+    pub groups: &'a [GroupRecord],
+    /// Selected group history.
+    pub group_messages: &'a [GroupMessageRecord],
+    /// Selected signed group authority.
+    pub authorities: &'a [GroupAuthorityRecord],
+    /// Selected local organization state.
+    pub local_metadata: &'a [LocalMetadataRecord],
+    /// Selected note-to-self history.
+    pub notes: &'a [NoteMessageRecord],
+    /// Terminal ephemeral tombstones.
+    pub ephemeral: &'a [EphemeralRecord],
+    /// Authenticated convergence events.
+    pub sync_events: &'a [Vec<u8>],
+    /// Physical contact routes whose copied public one-time prekeys must be
+    /// ignored when the target creates fresh ratchets.
+    pub reset_peers: &'a [[u8; 32]],
     /// Whether presentation must be recoverable after commit.
     pub presentation_changed: bool,
 }
@@ -442,6 +674,8 @@ pub struct PairwiseSendPlan<'a> {
     pub media_objects: &'a [MediaObjectTransition<'a>],
     /// Accepted controls consumed by the resulting encrypted response.
     pub delete_controls: &'a [DeferredControlRecord],
+    /// Exact wake capability issuance owned by this authenticated control.
+    pub wake: &'a [WakeServiceTransition<'a>],
     /// Whether presentation must be recoverable after commit.
     pub presentation_changed: bool,
 }
@@ -610,6 +844,14 @@ pub struct HandshakeReceivePlan<'a> {
     pub delete_capabilities: &'a [[u8; 32]],
     /// Exact queued envelopes invalidated by revoked/superseded sessions.
     pub delete_queue: &'a [QueueDelete],
+    /// Outbound pairwise history made eligible for encryption on the replacement session.
+    pub reset_messages: &'a [MessageTransition<'a>],
+    /// Exact per-device promises invalidated by the replaced session.
+    pub reset_deliveries: &'a [DeliveryTransition<'a>],
+    /// Outbound group history whose exact replaced-device copy became terminal.
+    pub retire_group_messages: &'a [GroupMessageTransition<'a>],
+    /// Group recipient-device promises invalidated by the replaced session.
+    pub retire_group_deliveries: &'a [DeliveryTransition<'a>],
     /// Group announce state changed by session establishment.
     pub groups: &'a [GroupTransition<'a>],
     /// Optional accepted anonymous first-flight history.
@@ -634,6 +876,73 @@ pub struct HandshakeReceivePlan<'a> {
     pub presentation_changed: bool,
 }
 
+/// Atomic admission of one cryptographically valid stranger into the sealed
+/// provisional request domain.
+pub struct AdmissionStagePlan<'a> {
+    /// Optional one-time-prekey consumption.
+    pub prekeys: Option<PrekeyTransition<'a>>,
+    /// Exact prior request for this account when deterministic replacement occurs.
+    pub before: Option<&'a ProvisionalRequestRecord>,
+    /// Complete detached candidate state.
+    pub after: &'a ProvisionalRequestRecord,
+    /// Exact introduction content id.
+    pub content_id: [u8; 16],
+    /// Deferred source row staged before cryptographic work.
+    pub source_pending: Option<PendingDelete>,
+    /// Whether presentation must be recoverable after commit.
+    pub presentation_changed: bool,
+}
+
+/// Atomic promotion of one provisional request into normal contact state.
+pub struct AdmissionAcceptPlan<'a> {
+    /// Exact sealed request being promoted.
+    pub request: &'a ProvisionalRequestRecord,
+    /// Detached session decoded from the request before acceptance encryption.
+    pub session_before: &'a Session,
+    /// Newly live session after the encrypted acceptance result was queued.
+    pub session: SessionTransition<'a>,
+    /// User-named normal contact.
+    pub contact: &'a ContactRecord,
+    /// Verified physical-device endpoints copied from provisional state.
+    pub devices: &'a [ContactDeviceRecord],
+    /// Group announce state changed only after consent.
+    pub groups: &'a [GroupTransition<'a>],
+    /// Optional bounded first message promoted to normal history.
+    pub message: Option<&'a MessageRecord>,
+    /// Encrypted acceptance/delivery result.
+    pub queue: &'a [QueueItem],
+    /// Local acceptance time.
+    pub accepted_at: u64,
+    /// Whether presentation must be recoverable after commit.
+    pub presentation_changed: bool,
+}
+
+/// Atomic Delete or Block transition for one provisional request.
+pub struct AdmissionDiscardPlan<'a> {
+    /// Exact sealed request being removed.
+    pub request: &'a ProvisionalRequestRecord,
+    /// Short replay absorber that replaces it.
+    pub tombstone: &'a AdmissionReplayTombstone,
+    /// Oldest tombstone retired when the fixed domain is full.
+    pub retire_tombstone: Option<&'a AdmissionReplayTombstone>,
+    /// Exact local block rule for Block; absent for Delete.
+    pub block: Option<&'a BlockedIdentityRecord>,
+    /// Whether presentation must be recoverable after commit.
+    pub presentation_changed: bool,
+}
+
+/// Bounded expiry of provisional keys/content and replay tombstones.
+pub struct AdmissionSweepPlan<'a> {
+    /// Exact expired live requests.
+    pub requests: &'a [ProvisionalRequestRecord],
+    /// Exact expired replay tombstones.
+    pub tombstones: &'a [AdmissionReplayTombstone],
+    /// Sweep time used for expiry validation.
+    pub now: u64,
+    /// Whether presentation must be recoverable after commit.
+    pub presentation_changed: bool,
+}
+
 /// Complete durable consequences of an encrypted receipt/control receive.
 pub struct ReceiptReceivePlan<'a> {
     /// Detached session after receive and any response encryption.
@@ -650,12 +959,18 @@ pub struct ReceiptReceivePlan<'a> {
     pub group_messages: &'a [GroupMessageTransition<'a>],
     /// Group pending-announce changes retired by acknowledgements.
     pub groups: &'a [GroupTransition<'a>],
+    /// Authenticated discovery capability and route updates.
+    pub contact_devices: &'a [ContactDeviceTransition<'a>],
     /// Attachment transfer metadata changes.
     pub media_transfers: &'a [MediaTransferRecord],
     /// Attachment object metadata changes.
     pub media_objects: &'a [MediaObjectRecord],
     /// Authenticated capability snapshot carried by this control.
     pub capabilities: Option<&'a CapabilityControl>,
+    /// Authenticated rendezvous provider-set replacement.
+    pub rendezvous: Option<RendezvousServiceTransition<'a>>,
+    /// Authenticated wake capability-set replacement.
+    pub wake: Option<WakeServiceTransition<'a>>,
     /// Immutable control work retained before filesystem or group callbacks.
     pub deferred_control: Option<&'a DeferredControlRecord>,
     /// Receipt envelope content id.
@@ -704,6 +1019,8 @@ pub struct MaintenancePlan<'a> {
     pub clear_reset_markers: &'a [[u8; 32]],
     /// Exact accepted controls acknowledged after idempotent follow-up.
     pub delete_controls: &'a [DeferredControlRecord],
+    /// Exact session-bound wake state replacements.
+    pub wake: &'a [WakeServiceTransition<'a>],
     /// Exact presentation marker acknowledged after event delivery.
     pub acknowledge_presentation: Option<[u8; 16]>,
     /// Whether this maintenance transition itself changes presentation.
@@ -713,7 +1030,12 @@ pub struct MaintenancePlan<'a> {
 /// The only protocol-state transaction variants exposed by the store.
 pub enum CommitPlan<'a> {
     /// Initial account, device, and prekey publication.
+    #[cfg(any(test, feature = "legacy-test-fixtures"))]
     ProfileBootstrap(ProfileBootstrapPlan<'a>),
+    /// Initial offline-root account, device, and prekey publication.
+    AuthorityProfileBootstrap(AuthorityProfileBootstrapPlan<'a>),
+    /// Explicit single-device Alpha conversion that removes the live account root.
+    AuthorityMigration(AuthorityMigrationPlan<'a>),
     /// Prekey bundle issuance.
     PrekeyPublish(PrekeyPublishPlan<'a>),
     /// Pairwise send.
@@ -732,16 +1054,33 @@ pub enum CommitPlan<'a> {
     GroupState(GroupStatePlan<'a>),
     /// Linked-device authority, channel counter, convergence-log, or rotation transition.
     DeviceControl(DeviceControlPlan<'a>),
+    /// Offline-root linked-device authority and related atomic state.
+    AuthorityDeviceControl(AuthorityDeviceControlPlan<'a>),
     /// Confirmed bounded link import onto a pristine target.
+    #[cfg(any(test, feature = "legacy-test-fixtures"))]
     DeviceLink(DeviceLinkPlan<'a>),
+    /// Confirmed root-free link import onto a pristine target.
+    AuthorityDeviceLink(AuthorityDeviceLinkPlan<'a>),
     /// One idempotent projection from already-durable device-sync state.
     DeviceProjection(DeviceProjectionPlan<'a>),
     /// Handshake receive.
     HandshakeReceive(HandshakeReceivePlan<'a>),
+    /// Complete inbound carrier envelope staged before carrier acknowledgement.
+    PendingStage(PendingStagePlan<'a>),
+    /// Valid first contact staged behind the consent boundary.
+    AdmissionStage(AdmissionStagePlan<'a>),
+    /// Explicit user acceptance of one provisional request.
+    AdmissionAccept(AdmissionAcceptPlan<'a>),
+    /// Explicit user deletion or block of one provisional request.
+    AdmissionDiscard(AdmissionDiscardPlan<'a>),
+    /// Bounded provisional/tombstone expiry.
+    AdmissionSweep(AdmissionSweepPlan<'a>),
     /// Receipt or authenticated pairwise control receive.
     ReceiptReceive(ReceiptReceivePlan<'a>),
     /// Bounded maintenance.
     Maintenance(MaintenancePlan<'a>),
+    /// Bounded gateway-revocation retry or acknowledgement.
+    WakeRevocation(WakeRevocationPlan<'a>),
 }
 
 /// Stable identities returned only after a successful commit.
@@ -751,6 +1090,8 @@ pub struct CommittedRecordIds {
     pub messages: Vec<[u8; 16]>,
     /// Newly appended outbound row sequences.
     pub queue_sequences: Vec<i64>,
+    /// Newly appended durable inbound row sequences.
+    pub pending_sequences: Vec<i64>,
 }
 
 /// Proof returned after SQLite accepted the complete typed transition.
@@ -819,7 +1160,10 @@ impl Store {
     ) -> Result<CommitReceipt> {
         self.validate_commit_plan(&plan)?;
         let presentation_changed = match &plan {
+            #[cfg(any(test, feature = "legacy-test-fixtures"))]
             CommitPlan::ProfileBootstrap(_) => false,
+            CommitPlan::AuthorityProfileBootstrap(_) => false,
+            CommitPlan::AuthorityMigration(_) => false,
             CommitPlan::PrekeyPublish(_) => false,
             CommitPlan::PairwiseSend(plan) => plan.presentation_changed,
             CommitPlan::PairwiseReceive(plan) => plan.presentation_changed,
@@ -829,11 +1173,20 @@ impl Store {
             CommitPlan::AttachmentState(plan) => plan.presentation_changed,
             CommitPlan::GroupState(plan) => plan.presentation_changed,
             CommitPlan::DeviceControl(plan) => plan.presentation_changed,
+            CommitPlan::AuthorityDeviceControl(plan) => plan.presentation_changed,
+            #[cfg(any(test, feature = "legacy-test-fixtures"))]
             CommitPlan::DeviceLink(plan) => plan.presentation_changed,
+            CommitPlan::AuthorityDeviceLink(plan) => plan.presentation_changed,
             CommitPlan::DeviceProjection(plan) => plan.presentation_changed,
             CommitPlan::HandshakeReceive(plan) => plan.presentation_changed,
+            CommitPlan::PendingStage(_) => false,
+            CommitPlan::AdmissionStage(plan) => plan.presentation_changed,
+            CommitPlan::AdmissionAccept(plan) => plan.presentation_changed,
+            CommitPlan::AdmissionDiscard(plan) => plan.presentation_changed,
+            CommitPlan::AdmissionSweep(plan) => plan.presentation_changed,
             CommitPlan::ReceiptReceive(plan) => plan.presentation_changed,
             CommitPlan::Maintenance(plan) => plan.presentation_changed,
+            CommitPlan::WakeRevocation(_) => false,
         };
         let mut transaction_id = [0u8; 16];
         rng.fill_bytes(&mut transaction_id);
@@ -854,7 +1207,12 @@ impl Store {
                 .store
                 .check_commit_failpoint(CommitPoint::AfterBegin)?;
             match plan {
+                #[cfg(any(test, feature = "legacy-test-fixtures"))]
                 CommitPlan::ProfileBootstrap(plan) => writer.profile_bootstrap(&plan)?,
+                CommitPlan::AuthorityProfileBootstrap(plan) => {
+                    writer.authority_profile_bootstrap(&plan)?
+                }
+                CommitPlan::AuthorityMigration(plan) => writer.authority_migration(&plan)?,
                 CommitPlan::PrekeyPublish(plan) => writer.prekey_publish(&plan)?,
                 CommitPlan::PairwiseSend(plan) => writer.pairwise_send(&plan)?,
                 CommitPlan::PairwiseReceive(plan) => writer.pairwise_receive(&plan)?,
@@ -864,11 +1222,22 @@ impl Store {
                 CommitPlan::AttachmentState(plan) => writer.attachment_state(&plan)?,
                 CommitPlan::GroupState(plan) => writer.group_state(&plan)?,
                 CommitPlan::DeviceControl(plan) => writer.device_control(&plan)?,
+                CommitPlan::AuthorityDeviceControl(plan) => {
+                    writer.authority_device_control(&plan)?
+                }
+                #[cfg(any(test, feature = "legacy-test-fixtures"))]
                 CommitPlan::DeviceLink(plan) => writer.device_link(&plan)?,
+                CommitPlan::AuthorityDeviceLink(plan) => writer.authority_device_link(&plan)?,
                 CommitPlan::DeviceProjection(plan) => writer.device_projection(&plan)?,
                 CommitPlan::HandshakeReceive(plan) => writer.handshake_receive(&plan)?,
+                CommitPlan::PendingStage(plan) => writer.pending_stage(&plan)?,
+                CommitPlan::AdmissionStage(plan) => writer.admission_stage(&plan)?,
+                CommitPlan::AdmissionAccept(plan) => writer.admission_accept(&plan)?,
+                CommitPlan::AdmissionDiscard(plan) => writer.admission_discard(&plan)?,
+                CommitPlan::AdmissionSweep(plan) => writer.admission_sweep(&plan)?,
                 CommitPlan::ReceiptReceive(plan) => writer.receipt_receive(&plan)?,
                 CommitPlan::Maintenance(plan) => writer.maintenance(&plan)?,
+                CommitPlan::WakeRevocation(plan) => writer.wake_revocation(&plan)?,
             }
             if presentation_changed {
                 writer.write(|store, rng| {
@@ -946,7 +1315,12 @@ impl Store {
 
     fn validate_commit_plan(&self, plan: &CommitPlan<'_>) -> Result<()> {
         match plan {
+            #[cfg(any(test, feature = "legacy-test-fixtures"))]
             CommitPlan::ProfileBootstrap(plan) => self.validate_profile_bootstrap(plan),
+            CommitPlan::AuthorityProfileBootstrap(plan) => {
+                self.validate_authority_profile_bootstrap(plan)
+            }
+            CommitPlan::AuthorityMigration(plan) => self.validate_authority_migration(plan),
             CommitPlan::PrekeyPublish(plan) => self.validate_prekey_publish(plan),
             CommitPlan::PairwiseSend(plan) => self.validate_pairwise_send(plan),
             CommitPlan::PairwiseReceive(plan) => self.validate_pairwise_receive(plan),
@@ -956,14 +1330,26 @@ impl Store {
             CommitPlan::AttachmentState(plan) => self.validate_attachment_state(plan),
             CommitPlan::GroupState(plan) => self.validate_group_state(plan),
             CommitPlan::DeviceControl(plan) => self.validate_device_control(plan),
+            CommitPlan::AuthorityDeviceControl(plan) => {
+                self.validate_authority_device_control(plan)
+            }
+            #[cfg(any(test, feature = "legacy-test-fixtures"))]
             CommitPlan::DeviceLink(plan) => self.validate_device_link(plan),
+            CommitPlan::AuthorityDeviceLink(plan) => self.validate_authority_device_link(plan),
             CommitPlan::DeviceProjection(plan) => self.validate_device_projection(plan),
             CommitPlan::HandshakeReceive(plan) => self.validate_handshake_receive(plan),
+            CommitPlan::PendingStage(plan) => self.validate_pending_stage(plan),
+            CommitPlan::AdmissionStage(plan) => self.validate_admission_stage(plan),
+            CommitPlan::AdmissionAccept(plan) => self.validate_admission_accept(plan),
+            CommitPlan::AdmissionDiscard(plan) => self.validate_admission_discard(plan),
+            CommitPlan::AdmissionSweep(plan) => self.validate_admission_sweep(plan),
             CommitPlan::ReceiptReceive(plan) => self.validate_receipt_receive(plan),
             CommitPlan::Maintenance(plan) => self.validate_maintenance(plan),
+            CommitPlan::WakeRevocation(plan) => self.validate_wake_revocation(plan),
         }
     }
 
+    #[cfg(any(test, feature = "legacy-test-fixtures"))]
     fn validate_profile_bootstrap(&self, plan: &ProfileBootstrapPlan<'_>) -> Result<()> {
         if plan.prekeys.is_empty()
             || self.get_identity()?.is_some()
@@ -974,6 +1360,49 @@ impl Store {
         }
         plan.identity.public().verify()?;
         plan.device_state.validate(plan.identity)
+    }
+
+    fn validate_authority_profile_bootstrap(
+        &self,
+        plan: &AuthorityProfileBootstrapPlan<'_>,
+    ) -> Result<()> {
+        if plan.prekeys.is_empty()
+            || self.get_identity()?.is_some()
+            || self.get_account_identity()?.is_some()
+            || self.get_device_state()?.is_some()
+            || self.get_device_authority_state()?.is_some()
+            || self.get_prekeys()?.is_some()
+        {
+            return Err(StoreError::InvalidTransition);
+        }
+        plan.account.verify()?;
+        plan.device_state.validate(plan.account)
+    }
+
+    fn validate_authority_migration(&self, plan: &AuthorityMigrationPlan<'_>) -> Result<()> {
+        let current_identity = self.get_identity()?.ok_or(StoreError::InvalidTransition)?;
+        if !identity_eq(&current_identity, plan.legacy_identity)
+            || self.get_account_identity()?.is_some()
+            || self.get_device_state()?.as_ref() != Some(plan.legacy_device_state)
+            || self.get_device_authority_state()?.is_some()
+            || self.get_prekeys()?.is_none()
+            || plan.account != &plan.legacy_identity.public()
+            || plan.legacy_device_state.manifest.devices.len() != 1
+            || !plan.legacy_device_state.channels.is_empty()
+        {
+            return Err(StoreError::InvalidTransition);
+        }
+        plan.account.verify()?;
+        plan.device_state.validate(plan.account)?;
+        if plan.device_state.local_device_secret != plan.legacy_device_state.local_device_secret
+            || plan.device_state.sync_counter != plan.legacy_device_state.sync_counter
+            || !plan.device_state.channels.is_empty()
+            || plan.device_state.manifest.generation() != 1
+            || plan.device_state.manifest.recovery_epoch() != 0
+        {
+            return Err(StoreError::InvalidTransition);
+        }
+        Ok(())
     }
 
     fn validate_prekey_publish(&self, plan: &PrekeyPublishPlan<'_>) -> Result<()> {
@@ -988,6 +1417,30 @@ impl Store {
     }
 
     fn validate_pairwise_send(&self, plan: &PairwiseSendPlan<'_>) -> Result<()> {
+        let wake_revocation_mutations =
+            plan.wake.iter().try_fold(0usize, |count, transition| {
+                count
+                    .checked_add(
+                        self.retired_wake_revocations(transition.before, Some(transition.after))?
+                            .len(),
+                    )
+                    .ok_or(StoreError::InvalidTransition)
+            })?;
+        let session_revocation_mutations =
+            plan.sessions.iter().try_fold(0usize, |count, transition| {
+                if transition
+                    .before
+                    .is_some_and(|before| before.session_id() == transition.after.session_id())
+                {
+                    return Ok(count);
+                }
+                let retired = self
+                    .get_wake_service_state(&transition.peer_device)?
+                    .map_or(0, |state| state.issued().count());
+                count
+                    .checked_add(retired)
+                    .ok_or(StoreError::InvalidTransition)
+            })?;
         if plan.sessions.is_empty()
             || plan.sessions.len() > MAX_PAIRWISE_COMMIT_DEVICES
             || plan.queue.is_empty()
@@ -1008,6 +1461,9 @@ impl Store {
                 plan.media_transfers.len(),
                 plan.media_objects.len(),
                 plan.delete_controls.len(),
+                plan.wake.len(),
+                wake_revocation_mutations,
+                session_revocation_mutations,
             ])? > MAX_COMMIT_MUTATIONS
             || plan.groups.len() > MAX_GROUP_AUTHORITY_MEMBERS
             || plan.authorities.len() > MAX_GROUP_AUTHORITY_MEMBERS
@@ -1036,6 +1492,21 @@ impl Store {
         }
         for transition in plan.sessions {
             self.validate_session_transition(transition)?;
+        }
+        let sessions = plan
+            .sessions
+            .iter()
+            .map(|transition| (transition.peer_device, transition.after))
+            .collect::<HashMap<_, _>>();
+        let mut wake_peers = HashSet::new();
+        for transition in plan.wake {
+            let candidate_session = sessions
+                .get(&transition.peer_device)
+                .ok_or(StoreError::InvalidTransition)?;
+            if !wake_peers.insert(transition.peer_device) {
+                return Err(StoreError::InvalidTransition);
+            }
+            self.validate_wake_transition(transition, candidate_session)?;
         }
         for transition in plan.groups {
             self.validate_group_transition(transition)?;
@@ -1363,10 +1834,7 @@ impl Store {
 
         if let Some(group) = &plan.group {
             self.validate_group_transition(group)?;
-            if group.after.id != group_id
-                || group.before.sender_chain == group.after.sender_chain
-                || (plan.queue.is_empty() && message_after.wire_body.is_none())
-            {
+            if group.after.id != group_id || group.before.sender_chain == group.after.sender_chain {
                 return Err(StoreError::InvalidTransition);
             }
         } else if retained_wire.is_none() || plan.message.is_some() {
@@ -1405,26 +1873,81 @@ impl Store {
         {
             return Err(StoreError::InvalidTransition);
         }
+        validate_outbound_group_origin(message_after.origin)?;
+        if plan.group.is_some()
+            && !eligible_accounts.is_empty()
+            && plan.queue.is_empty()
+            && message_after.wire_body.is_none()
+        {
+            return Err(StoreError::InvalidTransition);
+        }
+        if eligible_accounts.is_empty()
+            && (!plan.queue.is_empty() || message_after.wire_body.is_some())
+        {
+            return Err(StoreError::InvalidTransition);
+        }
 
-        let wire = plan
-            .queue
-            .first()
-            .map(|item| item.envelope.body.as_slice())
-            .or(message_after.wire_body.as_deref())
-            .or(retained_wire)
-            .ok_or(StoreError::InvalidTransition)?;
+        let mut shared_wire = None;
         if plan.queue.iter().any(|item| {
             item.msg_id.is_some()
                 || item.group_msg_id != Some(message_id)
                 || item.envelope.kind != EnvelopeKind::GroupMessage
-                || item.envelope.body.as_slice() != wire
-        }) || message_after
-            .wire_body
-            .as_deref()
-            .is_some_and(|retained| retained != wire)
-            || retained_wire.is_some_and(|retained| retained != wire)
-        {
+        }) {
             return Err(StoreError::InvalidTransition);
+        }
+        for item in plan.queue {
+            let shared = queued_group_shared(message_after.origin, &item.envelope.body)?;
+            if shared_wire
+                .as_ref()
+                .is_some_and(|canonical| canonical != &shared)
+            {
+                return Err(StoreError::InvalidTransition);
+            }
+            shared_wire.get_or_insert(shared);
+        }
+        if plan.queue.first().is_some_and(|first| {
+            plan.queue
+                .iter()
+                .any(|item| item.envelope.retention_until != first.envelope.retention_until)
+        }) {
+            return Err(StoreError::InvalidTransition);
+        }
+        for pending in [message_after.wire_body.as_deref(), retained_wire]
+            .into_iter()
+            .flatten()
+        {
+            let shared = pending_group_shared(message_after.origin, pending)?;
+            if shared_wire
+                .as_ref()
+                .is_some_and(|canonical| canonical != &shared)
+            {
+                return Err(StoreError::InvalidTransition);
+            }
+            shared_wire.get_or_insert(shared);
+        }
+        if !eligible_accounts.is_empty() && shared_wire.is_none() {
+            return Err(StoreError::InvalidTransition);
+        }
+        if let Some(encoded) = message_after.wire_body.as_deref() {
+            if let Ok(pending) = GroupPendingFanout::decode(encoded) {
+                if pending.routes.iter().any(|route| {
+                    !eligible_accounts.contains(&route.account)
+                        || message_after.deliveries.iter().any(|delivery| {
+                            delivery.peer == route.account && delivery.wire_id.is_some()
+                        })
+                        || plan.queue.iter().any(|item| item.peer == route.device)
+                }) {
+                    return Err(StoreError::InvalidTransition);
+                }
+                let mut counts = HashMap::new();
+                for route in pending.routes {
+                    let count = counts.entry(route.account).or_insert(0usize);
+                    *count = count.saturating_add(1);
+                    if *count > MAX_PAIRWISE_COMMIT_DEVICES {
+                        return Err(StoreError::InvalidTransition);
+                    }
+                }
+            }
         }
 
         let queue_ids = plan
@@ -1630,6 +2153,7 @@ impl Store {
             {
                 return Err(StoreError::InvalidTransition);
             }
+            validate_inbound_group_origin(message.origin)?;
         }
         if let Some(ephemeral) = plan.ephemeral {
             if ephemeral.conversation != crate::EphemeralConversation::Group(plan.chain.group)
@@ -1685,6 +2209,11 @@ impl Store {
             if message.direction != Direction::Outbound
                 || message.wire_body.is_some()
                 || message.body.is_empty()
+                || !matches!(
+                    message.origin,
+                    GroupOriginAuthentication::PendingOutboundV1 { sender_device }
+                        if sender_device != [0u8; 32]
+                )
                 || peers.len() != message.deliveries.len()
                 || peers.len() != plan.media_transfers.len()
                 || message.deliveries.iter().any(|delivery| {
@@ -2110,6 +2639,118 @@ impl Store {
         Ok(())
     }
 
+    fn validate_authority_device_control(
+        &self,
+        plan: &AuthorityDeviceControlPlan<'_>,
+    ) -> Result<()> {
+        let count = mutation_count([
+            usize::from(plan.state.is_some()),
+            usize::from(plan.link_recovery.is_some()),
+            plan.groups.len(),
+            plan.insert_events.len(),
+            plan.delete_events.len(),
+        ])?;
+        if count == 0 || count > MAX_DEVICE_CONTROL_MUTATIONS {
+            return Err(StoreError::MaintenanceBounds);
+        }
+        if let Some(state) = &plan.state {
+            let current = self.get_device_authority_state()?;
+            if current.as_ref() != state.before || state.before == Some(state.after) {
+                return Err(StoreError::InvalidTransition);
+            }
+            let account = self
+                .get_account_identity()?
+                .ok_or(StoreError::InvalidTransition)?;
+            state.after.validate(&account)?;
+        }
+        let mut group_ids = HashSet::new();
+        for transition in plan.groups {
+            if !group_ids.insert(transition.after.id) {
+                return Err(StoreError::InvalidTransition);
+            }
+            self.validate_group_transition(transition)?;
+        }
+
+        let current_events = self.device_sync_events()?;
+        let current = current_events
+            .iter()
+            .map(Vec::as_slice)
+            .collect::<HashSet<_>>();
+        let inserts = plan
+            .insert_events
+            .iter()
+            .map(Vec::as_slice)
+            .collect::<HashSet<_>>();
+        let deletes = plan
+            .delete_events
+            .iter()
+            .map(Vec::as_slice)
+            .collect::<HashSet<_>>();
+        if inserts.len() != plan.insert_events.len()
+            || deletes.len() != plan.delete_events.len()
+            || inserts
+                .iter()
+                .any(|event| current.contains(event) || deletes.contains(event))
+            || deletes.iter().any(|event| !current.contains(event))
+        {
+            return Err(StoreError::InvalidTransition);
+        }
+        let manifest = if let Some(state) = &plan.state {
+            &state.after.manifest
+        } else {
+            &self
+                .get_device_authority_state()?
+                .ok_or(StoreError::InvalidTransition)?
+                .manifest
+        };
+        if let Some(transition) = &plan.link_recovery {
+            let target = transition
+                .before
+                .map(|record| record.target_device)
+                .or_else(|| transition.after.map(|record| record.target_device))
+                .ok_or(StoreError::InvalidTransition)?;
+            if transition.before == transition.after
+                || transition
+                    .before
+                    .is_some_and(|record| record.target_device != target)
+                || transition
+                    .after
+                    .is_some_and(|record| record.target_device != target)
+                || self.get_device_link_recovery(&target)?.as_ref() != transition.before
+            {
+                return Err(StoreError::InvalidTransition);
+            }
+            if let Some(recovery) = transition.after {
+                crate::devices::validate_device_link_recovery(recovery)?;
+                let channel_exists = if let Some(state) = &plan.state {
+                    state
+                        .after
+                        .channels
+                        .iter()
+                        .any(|channel| channel.peer_device == target)
+                } else {
+                    self.get_device_authority_state()?.is_some_and(|state| {
+                        state
+                            .channels
+                            .iter()
+                            .any(|channel| channel.peer_device == target)
+                    })
+                };
+                if manifest.active_certificate(&target).is_none() || !channel_exists {
+                    return Err(StoreError::InvalidTransition);
+                }
+            }
+        }
+        for encoded in plan.insert_events {
+            if encoded.is_empty() || encoded.len() > MAX_DEVICE_SYNC_EVENT_BYTES {
+                return Err(StoreError::RecordBounds);
+            }
+            DeviceSyncEvent::decode(encoded)?.verify(manifest)?;
+        }
+        Ok(())
+    }
+
+    #[cfg(any(test, feature = "legacy-test-fixtures"))]
     fn validate_device_link(&self, plan: &DeviceLinkPlan<'_>) -> Result<()> {
         let count = mutation_count([
             2,
@@ -2166,6 +2807,9 @@ impl Store {
             self.count_rows::<store_v2::PresentationMarkerRows>()?,
             self.count_rows::<store_v2::DeferredControlRows>()?,
             self.count_rows::<store_v2::DeviceLinkRecoveryRows>()?,
+            self.count_rows::<store_v2::ProvisionalRequestRows>()?,
+            self.count_rows::<store_v2::AdmissionReplayRows>()?,
+            self.count_rows::<store_v2::BlockedIdentityRows>()?,
         ];
         if self.get_prekeys()?.is_none() || pristine_tables.into_iter().any(|count| count != 0) {
             return Err(StoreError::InvalidTransition);
@@ -2257,12 +2901,182 @@ impl Store {
         Ok(())
     }
 
+    fn validate_authority_device_link(&self, plan: &AuthorityDeviceLinkPlan<'_>) -> Result<()> {
+        let count = mutation_count([
+            2,
+            plan.contacts.len(),
+            plan.devices.len(),
+            plan.messages.len(),
+            plan.groups.len(),
+            plan.group_messages.len(),
+            plan.authorities.len(),
+            plan.local_metadata.len(),
+            plan.notes.len(),
+            plan.ephemeral.len(),
+            plan.sync_events.len(),
+            plan.reset_peers.len(),
+        ])?;
+        if plan.groups.len() > MAX_PROFILE_GROUPS {
+            return Err(StoreError::GroupLimit);
+        }
+        if count > MAX_DEVICE_LINK_MUTATIONS
+            || plan.account.before == plan.account.after
+            || self.get_account_identity()?.as_ref() != Some(plan.account.before)
+            || self.get_device_authority_state()?.as_ref() != plan.device_state.before
+            || plan.device_state.before == Some(plan.device_state.after)
+        {
+            return Err(StoreError::InvalidTransition);
+        }
+        plan.account.after.verify()?;
+        plan.device_state.after.validate(plan.account.after)?;
+
+        let pristine_tables = [
+            self.count_rows::<store_v2::SessionRows>()?,
+            self.count_rows::<store_v2::CapabilityRows>()?,
+            self.count_rows::<store_v2::MessageRows>()?,
+            self.count_rows::<store_v2::ContactRows>()?,
+            self.count_rows::<store_v2::QueueRows>()?,
+            self.count_rows::<store_v2::SeenRows>()?,
+            self.count_rows::<store_v2::ReceiptReplayRows>()?,
+            self.count_rows::<store_v2::PendingRows>()?,
+            self.count_rows::<store_v2::GroupRows>()?,
+            self.count_rows::<store_v2::GroupAuthorityRows>()?,
+            self.count_rows::<store_v2::GroupChainRows>()?,
+            self.count_rows::<store_v2::GroupMessageRows>()?,
+            self.count_rows::<store_v2::ResetRows>()?,
+            self.count_rows::<store_v2::MediaTransferRows>()?,
+            self.count_rows::<store_v2::MediaObjectRows>()?,
+            self.count_rows::<store_v2::LocalMetadataRows>()?,
+            self.count_rows::<store_v2::NoteRows>()?,
+            self.count_rows::<store_v2::ScheduledRows>()?,
+            self.count_rows::<store_v2::EphemeralRows>()?,
+            self.count_rows::<store_v2::DeviceSyncRows>()?,
+            self.count_rows::<store_v2::ContactDeviceRows>()?,
+            self.count_rows::<store_v2::MessageDeviceDeliveryRows>()?,
+            self.count_rows::<store_v2::PresentationMarkerRows>()?,
+            self.count_rows::<store_v2::DeferredControlRows>()?,
+            self.count_rows::<store_v2::DeviceLinkRecoveryRows>()?,
+            self.count_rows::<store_v2::ProvisionalRequestRows>()?,
+            self.count_rows::<store_v2::AdmissionReplayRows>()?,
+            self.count_rows::<store_v2::BlockedIdentityRows>()?,
+        ];
+        if self.get_prekeys()?.is_none() || pristine_tables.into_iter().any(|count| count != 0) {
+            return Err(StoreError::InvalidTransition);
+        }
+
+        let contact_ids = plan
+            .contacts
+            .iter()
+            .map(|record| record.peer)
+            .collect::<HashSet<_>>();
+        let device_ids = plan
+            .devices
+            .iter()
+            .map(|record| (record.account, record.device))
+            .collect::<HashSet<_>>();
+        let message_ids = plan
+            .messages
+            .iter()
+            .map(|record| record.id)
+            .collect::<HashSet<_>>();
+        let group_ids = plan
+            .groups
+            .iter()
+            .map(|record| record.id)
+            .collect::<HashSet<_>>();
+        let group_message_ids = plan
+            .group_messages
+            .iter()
+            .map(|record| record.id)
+            .collect::<HashSet<_>>();
+        let authority_ids = plan
+            .authorities
+            .iter()
+            .map(|record| record.group)
+            .collect::<HashSet<_>>();
+        let note_ids = plan
+            .notes
+            .iter()
+            .map(|record| record.id)
+            .collect::<HashSet<_>>();
+        if contact_ids.len() != plan.contacts.len()
+            || device_ids.len() != plan.devices.len()
+            || message_ids.len() != plan.messages.len()
+            || group_ids.len() != plan.groups.len()
+            || group_message_ids.len() != plan.group_messages.len()
+            || authority_ids.len() != plan.authorities.len()
+            || note_ids.len() != plan.notes.len()
+            || plan
+                .devices
+                .iter()
+                .any(|record| !contact_ids.contains(&record.account))
+            || plan.groups.iter().any(|record| !valid_group_record(record))
+            || plan
+                .group_messages
+                .iter()
+                .any(|record| !group_ids.contains(&record.group))
+            || plan.authorities.iter().any(|record| {
+                !group_ids.contains(&record.group) || !valid_group_authority_record(record)
+            })
+            || plan.ephemeral.iter().any(|record| {
+                record.state == EphemeralState::Active || !record.transfer_ids.is_empty()
+            })
+        {
+            return Err(StoreError::InvalidTransition);
+        }
+        for record in plan.devices {
+            crate::devices::validate_contact_device(record)?;
+        }
+        for record in plan.local_metadata {
+            record.validate()?;
+        }
+        for record in plan.notes {
+            record.validate()?;
+        }
+        let event_ids = plan
+            .sync_events
+            .iter()
+            .map(Vec::as_slice)
+            .collect::<HashSet<_>>();
+        if event_ids.len() != plan.sync_events.len() {
+            return Err(StoreError::InvalidTransition);
+        }
+        for encoded in plan.sync_events {
+            if encoded.is_empty() || encoded.len() > MAX_DEVICE_SYNC_EVENT_BYTES {
+                return Err(StoreError::RecordBounds);
+            }
+            DeviceSyncEvent::decode(encoded)?.verify(&plan.device_state.after.manifest)?;
+        }
+        let reset_peers = plan.reset_peers.iter().copied().collect::<HashSet<_>>();
+        if reset_peers.len() != plan.reset_peers.len()
+            || plan.reset_peers.iter().any(|peer| {
+                !plan.devices.iter().any(|device| device.device == *peer)
+                    && !plan.contacts.iter().any(|contact| contact.peer == *peer)
+            })
+        {
+            return Err(StoreError::InvalidTransition);
+        }
+        Ok(())
+    }
+
     fn validate_device_projection(&self, plan: &DeviceProjectionPlan<'_>) -> Result<()> {
+        let wake_revocation_mutations =
+            plan.delete_sessions
+                .iter()
+                .try_fold(0usize, |count, delete| {
+                    let retired = self
+                        .get_wake_service_state(&delete.peer_device)?
+                        .map_or(0, |state| state.issued().count());
+                    count
+                        .checked_add(retired)
+                        .ok_or(StoreError::MaintenanceBounds)
+                })?;
         let count = mutation_count([
             plan.projections.len(),
             plan.delete_sessions.len(),
             plan.delete_capabilities.len(),
             plan.delete_queue.len(),
+            wake_revocation_mutations,
         ])?;
         if count == 0 || count > MAX_DEVICE_PROJECTION_MUTATIONS {
             return Err(StoreError::MaintenanceBounds);
@@ -2432,6 +3246,10 @@ impl Store {
             || plan.devices.len() > MAX_PAIRWISE_COMMIT_DEVICES
             || plan.queue.len() > MAX_COMMIT_QUEUE_ROWS
             || plan.delete_queue.len() > MAX_COMMIT_QUEUE_ROWS
+            || plan.reset_messages.len() > MAX_COMMIT_QUEUE_ROWS
+            || plan.reset_deliveries.len() > MAX_COMMIT_QUEUE_ROWS
+            || plan.retire_group_messages.len() > MAX_COMMIT_QUEUE_ROWS
+            || plan.retire_group_deliveries.len() > MAX_COMMIT_QUEUE_ROWS
             || plan
                 .devices
                 .iter()
@@ -2451,6 +3269,10 @@ impl Store {
                 plan.delete_sessions.len(),
                 plan.delete_capabilities.len(),
                 plan.delete_queue.len(),
+                plan.reset_messages.len(),
+                plan.reset_deliveries.len(),
+                plan.retire_group_messages.len(),
+                plan.retire_group_deliveries.len(),
                 plan.groups.len(),
                 usize::from(plan.message.is_some()),
                 usize::from(plan.ephemeral.is_some()),
@@ -2496,6 +3318,132 @@ impl Store {
         for delete in plan.delete_queue {
             self.validate_queue_delete(*delete)?;
         }
+        let mut reset_delivery_ids = HashSet::new();
+        for transition in plan.reset_deliveries {
+            self.validate_delivery_transition(transition)?;
+            let mut expected = transition.before.clone();
+            expected.state = DeliveryState::Queued;
+            expected.wire_id = None;
+            if !reset_delivery_ids.insert((transition.before.message, transition.before.device))
+                || transition.before.account != plan.contact.peer
+                || transition.before.device != plan.session.peer_device
+                || *transition.after != expected
+                || matches!(
+                    transition.before.state,
+                    DeliveryState::Delivered | DeliveryState::Failed
+                )
+            {
+                return Err(StoreError::InvalidTransition);
+            }
+        }
+        let mut reset_message_ids = HashSet::new();
+        for transition in plan.reset_messages {
+            self.validate_message_transition(transition)?;
+            let mut deliveries = self.message_device_deliveries(&transition.before.id)?;
+            for delivery in &mut deliveries {
+                if let Some(reset) = plan.reset_deliveries.iter().find(|reset| {
+                    reset.before.message == delivery.message
+                        && reset.before.device == delivery.device
+                }) {
+                    *delivery = reset.after.clone();
+                }
+            }
+            let mut expected = transition.before.clone();
+            expected.state = if deliveries
+                .iter()
+                .any(|delivery| delivery.state == DeliveryState::Delivered)
+            {
+                DeliveryState::Delivered
+            } else if deliveries
+                .iter()
+                .any(|delivery| delivery.state == DeliveryState::Sent)
+            {
+                DeliveryState::Sent
+            } else if deliveries
+                .iter()
+                .any(|delivery| delivery.state == DeliveryState::Queued)
+            {
+                DeliveryState::Queued
+            } else {
+                DeliveryState::Failed
+            };
+            expected.wire_id = deliveries.iter().find_map(|delivery| delivery.wire_id);
+            if !reset_message_ids.insert(transition.before.id)
+                || transition.before.peer != plan.contact.peer
+                || transition.before.direction != Direction::Outbound
+                || *transition.after != expected
+            {
+                return Err(StoreError::InvalidTransition);
+            }
+        }
+        let mut retired_delivery_ids = HashSet::new();
+        for transition in plan.retire_group_deliveries {
+            self.validate_delivery_transition(transition)?;
+            let mut expected = transition.before.clone();
+            expected.state = DeliveryState::Failed;
+            expected.wire_id = None;
+            if !retired_delivery_ids.insert((transition.before.message, transition.before.device))
+                || transition.before.account != plan.contact.peer
+                || transition.before.device != plan.session.peer_device
+                || *transition.after != expected
+                || matches!(
+                    transition.before.state,
+                    DeliveryState::Delivered | DeliveryState::Failed
+                )
+            {
+                return Err(StoreError::InvalidTransition);
+            }
+        }
+        let mut retired_message_ids = HashSet::new();
+        for transition in plan.retire_group_messages {
+            self.validate_group_message_transition(transition)?;
+            let mut deliveries = self.message_device_deliveries(&transition.before.id)?;
+            for delivery in &mut deliveries {
+                if let Some(retired) = plan.retire_group_deliveries.iter().find(|retired| {
+                    retired.before.message == delivery.message
+                        && retired.before.device == delivery.device
+                }) {
+                    *delivery = retired.after.clone();
+                }
+            }
+            let account_deliveries = deliveries
+                .iter()
+                .filter(|delivery| delivery.account == plan.contact.peer)
+                .collect::<Vec<_>>();
+            let mut expected = transition.before.clone();
+            let account = expected
+                .deliveries
+                .iter_mut()
+                .find(|delivery| delivery.peer == plan.contact.peer)
+                .ok_or(StoreError::InvalidTransition)?;
+            account.state = if account_deliveries
+                .iter()
+                .any(|delivery| delivery.state == DeliveryState::Delivered)
+            {
+                DeliveryState::Delivered
+            } else if account_deliveries
+                .iter()
+                .any(|delivery| delivery.state == DeliveryState::Sent)
+            {
+                DeliveryState::Sent
+            } else if account_deliveries
+                .iter()
+                .any(|delivery| delivery.state == DeliveryState::Queued)
+            {
+                DeliveryState::Queued
+            } else {
+                DeliveryState::Failed
+            };
+            account.wire_id = account_deliveries
+                .iter()
+                .find_map(|delivery| delivery.wire_id);
+            if !retired_message_ids.insert(transition.before.id)
+                || transition.before.direction != Direction::Outbound
+                || *transition.after != expected
+            {
+                return Err(StoreError::InvalidTransition);
+            }
+        }
         if let Some(prekeys) = &plan.prekeys {
             let current = self.get_prekeys()?;
             if prekeys.before.is_none()
@@ -2529,6 +3477,207 @@ impl Store {
         Ok(())
     }
 
+    fn validate_pending_stage(&self, plan: &PendingStagePlan<'_>) -> Result<()> {
+        let content = store_v2::ContentKey::new(plan.envelope.content_id());
+        if let Some(existing) = self.row_by_unique::<store_v2::PendingContentIndex>(&content)? {
+            let (stored, _, _) = crate::decode_pending_envelope(&existing.payload)?;
+            return if stored == *plan.envelope {
+                Ok(())
+            } else {
+                Err(StoreError::LogicalKeyMismatch)
+            };
+        }
+        if pending_stage_payload(plan)?.len() > MAX_PENDING_BYTES
+            || self.count_rows::<store_v2::PendingRows>()? >= MAX_PENDING_ENVELOPES as u64
+        {
+            return Err(StoreError::PendingQuota);
+        }
+        Ok(())
+    }
+
+    fn validate_admission_stage(&self, plan: &AdmissionStagePlan<'_>) -> Result<()> {
+        plan.after.validate()?;
+        let current = self.get_provisional_request(&plan.after.account)?;
+        if plan.content_id == [0u8; 16]
+            || plan.content_id != plan.after.request_id
+            || current.as_ref() != plan.before
+            || self.is_seen(&plan.content_id)?
+            || self
+                .get_admission_tombstone(&plan.content_id)?
+                .is_some_and(|record| record.expires_at > plan.after.arrived_at)
+            || self.get_contact(&plan.after.account)?.is_some()
+            || self.get_session(&plan.after.device)?.is_some()
+            || self.is_blocked_identity(&plan.after.account)?
+            || mutation_count([
+                usize::from(plan.prekeys.is_some()),
+                1,
+                1,
+                usize::from(plan.source_pending.is_some()),
+            ])? > MAX_COMMIT_MUTATIONS
+        {
+            return Err(StoreError::InvalidTransition);
+        }
+        if let Some(before) = plan.before {
+            if (plan.after.arrived_at, plan.after.request_id)
+                <= (before.arrived_at, before.request_id)
+            {
+                return Err(StoreError::InvalidTransition);
+            }
+        }
+        if let Some(prekeys) = &plan.prekeys {
+            let current = self.get_prekeys()?;
+            if prekeys.before.is_none()
+                || prekeys.before == Some(prekeys.after)
+                || current.as_ref().map(|value| value.as_slice()) != prekeys.before
+            {
+                return Err(StoreError::InvalidTransition);
+            }
+        }
+        self.validate_pending(plan.source_pending)
+    }
+
+    fn validate_admission_accept(&self, plan: &AdmissionAcceptPlan<'_>) -> Result<()> {
+        plan.request.validate()?;
+        let encoded_before =
+            postcard::to_allocvec(plan.session_before).map_err(|_| StoreError::Serialization)?;
+        if self
+            .get_provisional_request(&plan.request.account)?
+            .as_ref()
+            != Some(plan.request)
+            || encoded_before != plan.request.session
+            || plan.accepted_at < plan.request.arrived_at
+            || plan.accepted_at > plan.request.expires_at
+            || plan.session.peer_device != plan.request.device
+            || plan.session.before.is_some()
+            || self.get_contact(&plan.request.account)?.is_some()
+            || self.is_blocked_identity(&plan.request.account)?
+            || plan.contact.peer != plan.request.account
+            || plan.contact.identity != plan.request.contact.identity
+            || plan.contact.bundle != plan.request.contact.bundle
+            || plan.contact.hints != plan.request.contact.hints
+            || plan.contact.name.is_empty()
+            || plan.contact.verified
+            || plan.devices != plan.request.devices
+            || plan.queue.is_empty()
+            || plan.queue.len() > MAX_COMMIT_QUEUE_ROWS
+            || plan.queue.iter().any(|item| {
+                item.peer != plan.request.device
+                    || item.msg_id.is_some()
+                    || item.group_msg_id.is_some()
+                    || item.envelope.kind != EnvelopeKind::Receipt
+            })
+            || mutation_count([
+                1,
+                1,
+                plan.devices.len(),
+                plan.groups.len(),
+                usize::from(plan.message.is_some()),
+                plan.queue.len(),
+                1,
+                1,
+            ])? > MAX_COMMIT_MUTATIONS
+        {
+            return Err(StoreError::InvalidTransition);
+        }
+        self.validate_session_transition(&plan.session)?;
+        for group in plan.groups {
+            self.validate_group_transition(group)?;
+        }
+        if let Some(message) = plan.message {
+            if message.peer != plan.request.account {
+                return Err(StoreError::InvalidTransition);
+            }
+            self.validate_new_message(message)?;
+        }
+        Ok(())
+    }
+
+    fn validate_admission_discard(&self, plan: &AdmissionDiscardPlan<'_>) -> Result<()> {
+        plan.request.validate()?;
+        plan.tombstone.validate()?;
+        if self
+            .get_provisional_request(&plan.request.account)?
+            .as_ref()
+            != Some(plan.request)
+            || plan.tombstone.request_id != plan.request.request_id
+            || plan.tombstone.account != plan.request.account
+            || plan.tombstone.device != plan.request.device
+            || self
+                .get_admission_tombstone(&plan.tombstone.request_id)?
+                .is_some()
+            || mutation_count([
+                1,
+                1,
+                usize::from(plan.retire_tombstone.is_some()),
+                usize::from(plan.block.is_some()),
+            ])? > MAX_COMMIT_MUTATIONS
+        {
+            return Err(StoreError::InvalidTransition);
+        }
+        if let Some(retire) = plan.retire_tombstone {
+            if retire.request_id == plan.tombstone.request_id
+                || self.get_admission_tombstone(&retire.request_id)?.as_ref() != Some(retire)
+            {
+                return Err(StoreError::InvalidTransition);
+            }
+        } else if self.count_rows::<store_v2::AdmissionReplayRows>()?
+            >= crate::MAX_ADMISSION_REPLAY_TOMBSTONES as u64
+        {
+            return Err(StoreError::InvalidTransition);
+        }
+        if let Some(block) = plan.block {
+            block.validate()?;
+            if block.account != plan.request.account
+                || block.device != plan.request.device
+                || block.created_at != plan.tombstone.rejected_at
+            {
+                return Err(StoreError::InvalidTransition);
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_admission_sweep(&self, plan: &AdmissionSweepPlan<'_>) -> Result<()> {
+        if plan.now == 0
+            || plan.requests.len() + plan.tombstones.len() > MAX_MAINTENANCE_TRANSITIONS
+        {
+            return Err(StoreError::InvalidTransition);
+        }
+        let request_accounts = plan
+            .requests
+            .iter()
+            .map(|request| request.account)
+            .collect::<HashSet<_>>();
+        let tombstone_ids = plan
+            .tombstones
+            .iter()
+            .map(|record| record.request_id)
+            .collect::<HashSet<_>>();
+        if request_accounts.len() != plan.requests.len()
+            || tombstone_ids.len() != plan.tombstones.len()
+        {
+            return Err(StoreError::InvalidTransition);
+        }
+        for request in plan.requests {
+            if request.expires_at > plan.now
+                || self.get_provisional_request(&request.account)?.as_ref() != Some(request)
+            {
+                return Err(StoreError::InvalidTransition);
+            }
+        }
+        for tombstone in plan.tombstones {
+            if tombstone.expires_at > plan.now
+                || self
+                    .get_admission_tombstone(&tombstone.request_id)?
+                    .as_ref()
+                    != Some(tombstone)
+            {
+                return Err(StoreError::InvalidTransition);
+            }
+        }
+        Ok(())
+    }
+
     fn validate_receipt_receive(&self, plan: &ReceiptReceivePlan<'_>) -> Result<()> {
         self.validate_session_transition(&plan.session)?;
         if plan.queue.len() > MAX_COMMIT_QUEUE_ROWS
@@ -2547,9 +3696,12 @@ impl Store {
                 plan.deliveries.len(),
                 plan.group_messages.len(),
                 plan.groups.len(),
+                plan.contact_devices.len(),
                 plan.media_transfers.len(),
                 plan.media_objects.len(),
                 usize::from(plan.capabilities.is_some()),
+                usize::from(plan.rendezvous.is_some()),
+                usize::from(plan.wake.is_some()),
                 usize::from(plan.deferred_control.is_some()),
                 1,
                 usize::from(plan.source_pending.is_some()),
@@ -2578,7 +3730,35 @@ impl Store {
         for transition in plan.groups {
             self.validate_group_transition(transition)?;
         }
+        let mut contact_devices = HashSet::new();
+        for transition in plan.contact_devices {
+            if transition.before.account != transition.after.account
+                || transition.before.device != transition.after.device
+                || !contact_devices.insert(transition.before.device)
+                || self
+                    .contact_devices_for(&transition.before.account)?
+                    .into_iter()
+                    .find(|endpoint| endpoint.device == transition.before.device)
+                    .as_ref()
+                    != Some(transition.before)
+            {
+                return Err(StoreError::InvalidTransition);
+            }
+            let mut expected = transition.before.clone();
+            expected.hints.clone_from(&transition.after.hints);
+            expected.introduction_capability = transition.after.introduction_capability;
+            expected.introduction_generation = transition.after.introduction_generation;
+            if expected != *transition.after {
+                return Err(StoreError::InvalidTransition);
+            }
+        }
         self.validate_new_media(plan.media_transfers, plan.media_objects)?;
+        if let Some(transition) = plan.rendezvous.as_ref() {
+            self.validate_rendezvous_transition(transition, plan.session.after)?;
+        }
+        if let Some(transition) = plan.wake.as_ref() {
+            self.validate_wake_transition(transition, plan.session.after)?;
+        }
         if let Some(control) = plan.deferred_control {
             if control.content_id != plan.content_id
                 || control.peer_device != plan.session.peer_device
@@ -2592,6 +3772,17 @@ impl Store {
     }
 
     fn validate_maintenance(&self, plan: &MaintenancePlan<'_>) -> Result<()> {
+        let wake_revocation_mutations =
+            plan.delete_sessions
+                .iter()
+                .try_fold(0usize, |count, peer| {
+                    let retired = self
+                        .get_wake_service_state(peer)?
+                        .map_or(0, |state| state.issued().count());
+                    count
+                        .checked_add(retired)
+                        .ok_or(StoreError::MaintenanceBounds)
+                })?;
         let count = mutation_count([
             plan.seen.len(),
             plan.delete_pending.len(),
@@ -2614,6 +3805,8 @@ impl Store {
             plan.delete_capabilities.len(),
             plan.clear_reset_markers.len(),
             plan.delete_controls.len(),
+            plan.wake.len(),
+            wake_revocation_mutations,
             usize::from(plan.acknowledge_presentation.is_some()),
         ])?;
         if count == 0 || count > MAX_MAINTENANCE_TRANSITIONS {
@@ -2745,9 +3938,44 @@ impl Store {
                 return Err(StoreError::InvalidTransition);
             }
         }
+        let mut wake_peers = HashSet::new();
+        for transition in plan.wake {
+            if !wake_peers.insert(transition.peer_device) {
+                return Err(StoreError::InvalidTransition);
+            }
+            let session = self
+                .get_session(&transition.peer_device)?
+                .ok_or(StoreError::InvalidTransition)?;
+            self.validate_wake_transition(transition, &session)?;
+        }
         if let Some(marker) = plan.acknowledge_presentation {
             if self.presentation_resync_marker()? != Some(marker) {
                 return Err(StoreError::InvalidTransition);
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_wake_revocation(&self, plan: &WakeRevocationPlan<'_>) -> Result<()> {
+        if plan.transitions.is_empty() || plan.transitions.len() > MAX_MAINTENANCE_TRANSITIONS {
+            return Err(StoreError::MaintenanceBounds);
+        }
+        let mut ids = HashSet::new();
+        for transition in plan.transitions {
+            if !ids.insert(transition.before.id)
+                || self.get_wake_revocation(&transition.before.id)?.as_ref()
+                    != Some(transition.before)
+                || transition.after.is_some_and(|after| {
+                    after.id != transition.before.id
+                        || after == transition.before
+                        || !transition.before.same_authority(after)
+                })
+            {
+                return Err(StoreError::InvalidTransition);
+            }
+            transition.before.validate()?;
+            if let Some(after) = transition.after {
+                after.validate()?;
             }
         }
         Ok(())
@@ -2763,6 +3991,50 @@ impl Store {
         Ok(())
     }
 
+    fn validate_rendezvous_transition(
+        &self,
+        transition: &RendezvousServiceTransition<'_>,
+        candidate_session: &Session,
+    ) -> Result<()> {
+        if transition.peer_device == [0u8; 32]
+            || transition.after.session_id != *candidate_session.session_id()
+            || transition.before.session_id != *candidate_session.session_id()
+            || self
+                .get_rendezvous_service_state(&transition.peer_device)?
+                .as_ref()
+                != Some(transition.before)
+            || transition.before == transition.after
+        {
+            return Err(StoreError::InvalidTransition);
+        }
+        let Some(exporter) = candidate_session.hybrid_service_exporter() else {
+            return Err(StoreError::InvalidTransition);
+        };
+        if transition.after.hybrid_service_exporter != *exporter {
+            return Err(StoreError::InvalidTransition);
+        }
+        Ok(())
+    }
+
+    fn validate_wake_transition(
+        &self,
+        transition: &WakeServiceTransition<'_>,
+        candidate_session: &Session,
+    ) -> Result<()> {
+        if transition.peer_device == [0u8; 32]
+            || transition.after.session_id != *candidate_session.session_id()
+            || transition.before.session_id != *candidate_session.session_id()
+            || self
+                .get_wake_service_state(&transition.peer_device)?
+                .as_ref()
+                != Some(transition.before)
+            || transition.before == transition.after
+        {
+            return Err(StoreError::InvalidTransition);
+        }
+        Ok(())
+    }
+
     fn validate_pending(&self, pending: Option<PendingDelete>) -> Result<()> {
         let Some(pending) = pending else {
             return Ok(());
@@ -2770,8 +4042,8 @@ impl Store {
         let row = self
             .row_by_rowid::<store_v2::PendingRows>(pending.sequence)?
             .ok_or(StoreError::InvalidTransition)?;
-        let (encoded, _): (Vec<u8>, u64) = decode_exact(&row.payload)?;
-        if Envelope::decode(&encoded)?.content_id() != pending.content_id {
+        let (envelope, _, _) = crate::decode_pending_envelope(&row.payload)?;
+        if envelope.content_id() != pending.content_id {
             return Err(StoreError::InvalidTransition);
         }
         Ok(())
@@ -3072,6 +4344,12 @@ impl<R: CryptoRngCore> CommitWriter<'_, R> {
 
     fn session(&mut self, transition: &SessionTransition<'_>) -> Result<()> {
         self.write(|store, rng| {
+            store.synchronize_rendezvous_session(&transition.peer_device, transition.after, rng)
+        })?;
+        self.write(|store, rng| {
+            store.synchronize_wake_session(&transition.peer_device, transition.after, rng)
+        })?;
+        self.write(|store, rng| {
             let payload = Zeroizing::new(
                 postcard::to_allocvec(transition.after).map_err(|_| StoreError::Serialization)?,
             );
@@ -3111,10 +4389,25 @@ impl<R: CryptoRngCore> CommitWriter<'_, R> {
         Ok(())
     }
 
+    #[cfg(any(test, feature = "legacy-test-fixtures"))]
     fn profile_bootstrap(&mut self, plan: &ProfileBootstrapPlan<'_>) -> Result<()> {
         self.write(|store, rng| store.put_identity(plan.identity, rng))?;
         self.write(|store, rng| store.put_device_state(plan.device_state, rng))?;
         self.write(|store, rng| store.put_prekeys(plan.prekeys, rng))
+    }
+
+    fn authority_profile_bootstrap(
+        &mut self,
+        plan: &AuthorityProfileBootstrapPlan<'_>,
+    ) -> Result<()> {
+        self.write(|store, rng| store.put_account_identity(plan.account, rng))?;
+        self.write(|store, rng| store.put_device_authority_state(plan.device_state, rng))?;
+        self.write(|store, rng| store.put_prekeys(plan.prekeys, rng))
+    }
+
+    fn authority_migration(&mut self, plan: &AuthorityMigrationPlan<'_>) -> Result<()> {
+        self.write(|store, rng| store.put_account_identity(plan.account, rng))?;
+        self.write(|store, rng| store.put_device_authority_state(plan.device_state, rng))
     }
 
     fn prekey_publish(&mut self, plan: &PrekeyPublishPlan<'_>) -> Result<()> {
@@ -3180,6 +4473,14 @@ impl<R: CryptoRngCore> CommitWriter<'_, R> {
         }
         for transition in plan.media_objects {
             self.write(|store, rng| store.put_media_object(transition.after, rng))?;
+        }
+        for transition in plan.wake {
+            self.write(|store, rng| {
+                store.enqueue_retired_wake_revocations(transition.before, transition.after, rng)
+            })?;
+            self.write(|store, rng| {
+                store.write_wake_service_state(&transition.peer_device, transition.after, rng)
+            })?;
         }
         for control in plan.delete_controls {
             self.write(|store, _| {
@@ -3476,6 +4777,54 @@ impl<R: CryptoRngCore> CommitWriter<'_, R> {
         Ok(())
     }
 
+    fn authority_device_control(&mut self, plan: &AuthorityDeviceControlPlan<'_>) -> Result<()> {
+        if let Some(state) = &plan.state {
+            self.write(|store, rng| store.put_device_authority_state(state.after, rng))?;
+        }
+        if let Some(recovery) = &plan.link_recovery {
+            if let Some(after) = recovery.after {
+                self.write(|store, rng| store.put_device_link_recovery(after, rng))?;
+            } else {
+                let target = recovery
+                    .before
+                    .expect("validated recovery deletion")
+                    .target_device;
+                self.write(|store, _| {
+                    if store.delete_equality::<store_v2::DeviceLinkRecoveryRows>(
+                        &store_v2::AccountKey::new(target),
+                    )? {
+                        Ok(())
+                    } else {
+                        Err(StoreError::InvalidTransition)
+                    }
+                })?;
+            }
+        }
+        for transition in plan.groups {
+            self.write(|store, rng| store.put_group(transition.after, rng))?;
+        }
+        for encoded in plan.delete_events {
+            self.write(|store, _| {
+                if store.delete_device_sync_event(encoded)? {
+                    Ok(())
+                } else {
+                    Err(StoreError::InvalidTransition)
+                }
+            })?;
+        }
+        for encoded in plan.insert_events {
+            self.write(|store, rng| {
+                if store.put_device_sync_event(encoded, rng)? {
+                    Ok(())
+                } else {
+                    Err(StoreError::InvalidTransition)
+                }
+            })?;
+        }
+        Ok(())
+    }
+
+    #[cfg(any(test, feature = "legacy-test-fixtures"))]
     fn device_link(&mut self, plan: &DeviceLinkPlan<'_>) -> Result<()> {
         self.write(|store, rng| store.put_identity(plan.identity.after, rng))?;
         self.write(|store, rng| store.put_device_state(plan.device_state.after, rng))?;
@@ -3515,6 +4864,52 @@ impl<R: CryptoRngCore> CommitWriter<'_, R> {
                     Err(StoreError::InvalidTransition)
                 }
             })?;
+        }
+        Ok(())
+    }
+
+    fn authority_device_link(&mut self, plan: &AuthorityDeviceLinkPlan<'_>) -> Result<()> {
+        self.write(|store, rng| store.put_account_identity(plan.account.after, rng))?;
+        self.write(|store, rng| store.put_device_authority_state(plan.device_state.after, rng))?;
+        for contact in plan.contacts {
+            self.write(|store, rng| store.put_contact(contact, rng))?;
+        }
+        for device in plan.devices {
+            self.write(|store, rng| store.put_contact_device(device, rng))?;
+        }
+        for message in plan.messages {
+            self.write(|store, rng| store.put_message(message, rng))?;
+            self.records.messages.push(message.id);
+        }
+        for group in plan.groups {
+            self.write(|store, rng| store.put_group(group, rng))?;
+        }
+        for message in plan.group_messages {
+            self.write(|store, rng| store.put_group_message(message, rng))?;
+        }
+        for authority in plan.authorities {
+            self.write(|store, rng| store.put_group_authority(authority, rng))?;
+        }
+        for record in plan.local_metadata {
+            self.write(|store, rng| store.put_local_metadata(record, rng))?;
+        }
+        for note in plan.notes {
+            self.write(|store, rng| store.put_note_message(note, rng))?;
+        }
+        for record in plan.ephemeral {
+            self.write(|store, rng| store.put_ephemeral_record(record, rng))?;
+        }
+        for encoded in plan.sync_events {
+            self.write(|store, rng| {
+                if store.put_device_sync_event(encoded, rng)? {
+                    Ok(())
+                } else {
+                    Err(StoreError::InvalidTransition)
+                }
+            })?;
+        }
+        for peer in plan.reset_peers {
+            self.write(|store, rng| store.put_reset_marker_with_rng(peer, rng))?;
         }
         Ok(())
     }
@@ -3623,6 +5018,14 @@ impl<R: CryptoRngCore> CommitWriter<'_, R> {
             }
         }
         for delete in plan.delete_sessions {
+            self.write(|store, rng| {
+                if let Some(wake) = store.get_wake_service_state(&delete.peer_device)? {
+                    store.enqueue_issued_wake_revocations(&wake, rng)?;
+                }
+                Ok(())
+            })?;
+            self.write(|store, _| store.delete_rendezvous_service_state(&delete.peer_device))?;
+            self.write(|store, _| store.delete_wake_service_state(&delete.peer_device))?;
             self.write(|store, _| {
                 if store.delete_equality::<store_v2::SessionRows>(&store_v2::AccountKey::new(
                     delete.peer_device,
@@ -3685,6 +5088,31 @@ impl<R: CryptoRngCore> CommitWriter<'_, R> {
                 }
             })?;
         }
+        for transition in plan.reset_messages {
+            self.write(|store, rng| {
+                if store.update_message(transition.after, rng)? {
+                    Ok(())
+                } else {
+                    Err(StoreError::InvalidTransition)
+                }
+            })?;
+            self.records.messages.push(transition.after.id);
+        }
+        for transition in plan.reset_deliveries {
+            self.write(|store, rng| store.put_message_device_delivery(transition.after, rng))?;
+        }
+        for transition in plan.retire_group_messages {
+            self.write(|store, rng| {
+                if store.update_group_message(transition.after, rng)? {
+                    Ok(())
+                } else {
+                    Err(StoreError::InvalidTransition)
+                }
+            })?;
+        }
+        for transition in plan.retire_group_deliveries {
+            self.write(|store, rng| store.put_message_device_delivery(transition.after, rng))?;
+        }
         for group in plan.groups {
             self.write(|store, rng| store.put_group(group.after, rng))?;
         }
@@ -3717,6 +5145,133 @@ impl<R: CryptoRngCore> CommitWriter<'_, R> {
             })?;
         }
         self.pending(plan.source_pending)
+    }
+
+    fn pending_stage(&mut self, plan: &PendingStagePlan<'_>) -> Result<()> {
+        let payload = pending_stage_payload(plan)?;
+        let content = store_v2::ContentKey::new(plan.envelope.content_id());
+        if let Some(existing) = self
+            .store
+            .row_by_unique::<store_v2::PendingContentIndex>(&content)?
+        {
+            let (stored, _, _) = crate::decode_pending_envelope(&existing.payload)?;
+            if stored != *plan.envelope {
+                return Err(StoreError::LogicalKeyMismatch);
+            }
+            self.records.pending_sequences.push(existing.rowid);
+            return Ok(());
+        }
+        let sequence = self.write(|store, rng| {
+            if store.count_rows::<store_v2::PendingRows>()? >= MAX_PENDING_ENVELOPES as u64 {
+                return Err(StoreError::PendingQuota);
+            }
+            let row = store.append_opaque::<store_v2::PendingRows>(
+                &payload,
+                store_v2::IndexKeys::pending(&content),
+                rng,
+            )?;
+            if store.sealed_bytes_on::<store_v2::PendingRows>(&store.conn)?
+                > MAX_PENDING_BYTES as u64
+            {
+                return Err(StoreError::PendingQuota);
+            }
+            Ok(row.rowid)
+        })?;
+        self.records.pending_sequences.push(sequence);
+        Ok(())
+    }
+
+    fn admission_stage(&mut self, plan: &AdmissionStagePlan<'_>) -> Result<()> {
+        if let Some(prekeys) = &plan.prekeys {
+            self.write(|store, rng| store.put_prekeys(prekeys.after, rng))?;
+        }
+        self.write(|store, rng| store.put_provisional_request(plan.after, rng))?;
+        self.write(|store, rng| {
+            store.put_equality::<store_v2::SeenRows>(
+                &store_v2::ContentKey::new(plan.content_id),
+                &plan.content_id,
+                store_v2::IndexKeys::none(),
+                rng,
+            )
+        })?;
+        self.pending(plan.source_pending)
+    }
+
+    fn admission_accept(&mut self, plan: &AdmissionAcceptPlan<'_>) -> Result<()> {
+        self.session(&plan.session)?;
+        self.write(|store, rng| store.put_contact(plan.contact, rng))?;
+        for device in plan.devices {
+            self.write(|store, rng| store.put_contact_device(device, rng))?;
+        }
+        for group in plan.groups {
+            self.write(|store, rng| store.put_group(group.after, rng))?;
+        }
+        if let Some(message) = plan.message {
+            self.write(|store, rng| store.put_message(message, rng))?;
+            self.records.messages.push(message.id);
+        }
+        self.queue(plan.queue)?;
+        self.write(|store, rng| {
+            store.put_receipt_replay(
+                &plan.request.request_id,
+                &plan.request.device,
+                plan.accepted_at,
+                rng,
+            )
+        })?;
+        self.write(|store, _| {
+            if store.delete_provisional_request(&plan.request.account)? {
+                Ok(())
+            } else {
+                Err(StoreError::InvalidTransition)
+            }
+        })
+    }
+
+    fn admission_discard(&mut self, plan: &AdmissionDiscardPlan<'_>) -> Result<()> {
+        self.write(|store, _| {
+            if store.delete_provisional_request(&plan.request.account)? {
+                Ok(())
+            } else {
+                Err(StoreError::InvalidTransition)
+            }
+        })?;
+        if let Some(retire) = plan.retire_tombstone {
+            self.write(|store, _| {
+                if store.delete_admission_tombstone(&retire.request_id)? {
+                    Ok(())
+                } else {
+                    Err(StoreError::InvalidTransition)
+                }
+            })?;
+        }
+        self.write(|store, rng| store.put_admission_tombstone(plan.tombstone, rng))?;
+        if let Some(block) = plan.block {
+            self.write(|store, rng| store.put_blocked_identity(block, rng))?;
+        }
+        Ok(())
+    }
+
+    fn admission_sweep(&mut self, plan: &AdmissionSweepPlan<'_>) -> Result<()> {
+        for request in plan.requests {
+            self.write(|store, _| {
+                if store.delete_provisional_request(&request.account)? {
+                    Ok(())
+                } else {
+                    Err(StoreError::InvalidTransition)
+                }
+            })?;
+        }
+        for tombstone in plan.tombstones {
+            self.write(|store, _| {
+                if store.delete_admission_tombstone(&tombstone.request_id)? {
+                    Ok(())
+                } else {
+                    Err(StoreError::InvalidTransition)
+                }
+            })?;
+        }
+        Ok(())
     }
 
     fn receipt_receive(&mut self, plan: &ReceiptReceivePlan<'_>) -> Result<()> {
@@ -3756,6 +5311,9 @@ impl<R: CryptoRngCore> CommitWriter<'_, R> {
         for transition in plan.groups {
             self.write(|store, rng| store.put_group(transition.after, rng))?;
         }
+        for transition in plan.contact_devices {
+            self.write(|store, rng| store.put_contact_device(transition.after, rng))?;
+        }
         for transfer in plan.media_transfers {
             self.write(|store, rng| store.put_media_transfer(transfer, rng))?;
         }
@@ -3765,6 +5323,19 @@ impl<R: CryptoRngCore> CommitWriter<'_, R> {
         if let Some(capabilities) = plan.capabilities {
             let peer = plan.session.peer_device;
             self.write(|store, rng| store.put_capabilities(&peer, capabilities, rng))?;
+        }
+        if let Some(transition) = plan.rendezvous.as_ref() {
+            self.write(|store, rng| {
+                store.put_rendezvous_service_state(&transition.peer_device, transition.after, rng)
+            })?;
+        }
+        if let Some(transition) = plan.wake.as_ref() {
+            self.write(|store, rng| {
+                store.enqueue_retired_wake_revocations(transition.before, transition.after, rng)
+            })?;
+            self.write(|store, rng| {
+                store.write_wake_service_state(&transition.peer_device, transition.after, rng)
+            })?;
         }
         if let Some(control) = plan.deferred_control {
             self.write(|store, rng| {
@@ -3911,6 +5482,14 @@ impl<R: CryptoRngCore> CommitWriter<'_, R> {
             })?;
         }
         for peer in plan.delete_sessions {
+            self.write(|store, rng| {
+                if let Some(wake) = store.get_wake_service_state(peer)? {
+                    store.enqueue_issued_wake_revocations(&wake, rng)?;
+                }
+                Ok(())
+            })?;
+            self.write(|store, _| store.delete_rendezvous_service_state(peer))?;
+            self.write(|store, _| store.delete_wake_service_state(peer))?;
             self.write(|store, _| {
                 if store
                     .delete_equality::<store_v2::SessionRows>(&store_v2::AccountKey::new(*peer))?
@@ -3946,6 +5525,14 @@ impl<R: CryptoRngCore> CommitWriter<'_, R> {
                 }
             })?;
         }
+        for transition in plan.wake {
+            self.write(|store, rng| {
+                store.enqueue_retired_wake_revocations(transition.before, transition.after, rng)
+            })?;
+            self.write(|store, rng| {
+                store.write_wake_service_state(&transition.peer_device, transition.after, rng)
+            })?;
+        }
         if let Some(marker) = plan.acknowledge_presentation {
             self.write(|store, _| {
                 if store.presentation_resync_marker()? != Some(marker) {
@@ -3959,6 +5546,23 @@ impl<R: CryptoRngCore> CommitWriter<'_, R> {
                     Err(StoreError::InvalidTransition)
                 }
             })?;
+        }
+        Ok(())
+    }
+
+    fn wake_revocation(&mut self, plan: &WakeRevocationPlan<'_>) -> Result<()> {
+        for transition in plan.transitions {
+            if let Some(after) = transition.after {
+                self.write(|store, rng| store.put_wake_revocation(after, rng))?;
+            } else {
+                self.write(|store, _| {
+                    if store.delete_wake_revocation(&transition.before.id)? {
+                        Ok(())
+                    } else {
+                        Err(StoreError::InvalidTransition)
+                    }
+                })?;
+            }
         }
         Ok(())
     }
@@ -4047,6 +5651,122 @@ fn valid_group_authority_record(authority: &GroupAuthorityRecord) -> bool {
         && consumed.len() == authority.consumed_requests.len()
 }
 
+const LEGACY_GROUP_SENDER_ORIGIN_MAGIC: &[u8; 4] = b"KGS2";
+const GROUP_SENDER_ORIGIN_MAGIC: &[u8; 4] = b"KGS3";
+
+#[derive(Deserialize)]
+struct ValidatedOutgoingGroupOrigin {
+    recipient_account: [u8; 32],
+    recipient_device: [u8; 32],
+    key_id: [u8; 16],
+    chain_key: [u8; 32],
+    iteration: u32,
+    origin_key: [u8; 32],
+    wire_id: Option<[u8; 16]>,
+    last_sent: u64,
+    acknowledged: bool,
+}
+
+#[derive(Deserialize)]
+struct ValidatedGroupSenderState {
+    origin_generation: u64,
+    chain: GroupSenderChain,
+    origins: Vec<ValidatedOutgoingGroupOrigin>,
+}
+
+#[derive(Deserialize)]
+struct LegacyValidatedGroupSenderState {
+    chain: GroupSenderChain,
+    origins: Vec<ValidatedOutgoingGroupOrigin>,
+}
+
+fn decode_validated_group_sender_state(encoded: &[u8]) -> Result<ValidatedGroupSenderState> {
+    let state = if let Some(body) = encoded.strip_prefix(GROUP_SENDER_ORIGIN_MAGIC) {
+        decode_exact(body)?
+    } else if let Some(body) = encoded.strip_prefix(LEGACY_GROUP_SENDER_ORIGIN_MAGIC) {
+        let legacy: LegacyValidatedGroupSenderState = decode_exact(body)?;
+        ValidatedGroupSenderState {
+            origin_generation: 1,
+            chain: legacy.chain,
+            origins: legacy.origins,
+        }
+    } else {
+        return Err(StoreError::InvalidTransition);
+    };
+    if state.origin_generation == 0
+        || state.origins.is_empty()
+        || state.origins.len() > MAX_GROUP_COMMIT_QUEUE_ROWS
+        || state.origins.windows(2).any(|pair| {
+            (pair[0].recipient_account, pair[0].recipient_device)
+                >= (pair[1].recipient_account, pair[1].recipient_device)
+        })
+        || state.origins.iter().any(|origin| {
+            origin.recipient_account == [0u8; 32]
+                || origin.recipient_device == [0u8; 32]
+                || origin.key_id != state.chain.key_id()
+                || origin.chain_key == [0u8; 32]
+                || origin.origin_key == [0u8; 32]
+                || origin.acknowledged && origin.wire_id.is_none()
+        })
+    {
+        return Err(StoreError::InvalidTransition);
+    }
+    Ok(state)
+}
+
+fn validate_group_origin_control_transition(
+    before: &GroupRecord,
+    after: &GroupRecord,
+    queue: &[QueueItem],
+) -> Result<()> {
+    let prior = decode_validated_group_sender_state(&before.sender_chain)?;
+    let candidate = decode_validated_group_sender_state(&after.sender_chain)?;
+    if postcard::to_allocvec(&prior.chain).map_err(|_| StoreError::Serialization)?
+        != postcard::to_allocvec(&candidate.chain).map_err(|_| StoreError::Serialization)?
+        || prior.origin_generation != candidate.origin_generation
+        || prior.origins.len() != candidate.origins.len()
+        || !before.pending.is_empty()
+        || !after.pending.is_empty()
+    {
+        return Err(StoreError::InvalidTransition);
+    }
+    let mut changed = 0usize;
+    for (old, new) in prior.origins.iter().zip(&candidate.origins) {
+        if old.recipient_account != new.recipient_account
+            || old.recipient_device != new.recipient_device
+            || old.key_id != new.key_id
+            || old.chain_key != new.chain_key
+            || old.iteration != new.iteration
+            || old.origin_key != new.origin_key
+        {
+            return Err(StoreError::InvalidTransition);
+        }
+        if old.wire_id == new.wire_id
+            && old.last_sent == new.last_sent
+            && old.acknowledged == new.acknowledged
+        {
+            continue;
+        }
+        changed += 1;
+        if new.last_sent <= old.last_sent
+            || new.acknowledged
+            || new.wire_id.is_none_or(|wire_id| {
+                !queue.iter().any(|item| {
+                    item.peer == new.recipient_device
+                        && item.envelope.kind == EnvelopeKind::GroupControl
+                        && item.envelope.content_id() == wire_id
+                })
+            })
+        {
+            return Err(StoreError::InvalidTransition);
+        }
+    }
+    if changed != 1 {
+        return Err(StoreError::InvalidTransition);
+    }
+    Ok(())
+}
+
 fn validate_group_control_transition(
     transition: &GroupTransition<'_>,
     queue: &[QueueItem],
@@ -4059,11 +5779,13 @@ fn validate_group_control_transition(
         || before.secret != after.secret
         || before.prev_secret != after.prev_secret
         || before.generation != after.generation
-        || before.sender_chain != after.sender_chain
         || before.sent_since_rotation != after.sent_since_rotation
         || before.pending.len() != after.pending.len()
     {
         return Err(StoreError::InvalidTransition);
+    }
+    if before.sender_chain != after.sender_chain {
+        return validate_group_origin_control_transition(before, after, queue);
     }
     let mut changed = 0usize;
     for (prior, candidate) in before.pending.iter().zip(&after.pending) {

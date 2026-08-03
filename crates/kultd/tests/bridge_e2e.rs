@@ -232,6 +232,30 @@ async fn bridge_carries_traffic_between_mesh_and_internet_both_ways() {
     let mut b = Client::connect(&bridge.socket_path).await;
     let status = b.ok(json!({ "op": "status" })).await;
     assert_eq!(status["contacts"], json!(0));
+    assert_eq!(status["mailbox"]["schema_version"], json!(2));
+    let mailbox = status["mailbox"].as_object().unwrap();
+    let aggregate_fields = [
+        "stored_items",
+        "stored_bytes",
+        "capacity_items",
+        "capacity_bytes",
+        "retention_secs",
+        "request_capacity_per_minute",
+        "request_capacity_per_client_per_minute",
+        "disk_available_bytes",
+        "registrations",
+        "live_leases",
+        "lease_capacity",
+        "oldest_lease_age_secs",
+        "rejected_deposits",
+        "rejected_requests",
+        "expired_rows",
+        "schema_version",
+    ];
+    assert_eq!(mailbox.len(), aggregate_fields.len());
+    for field in aggregate_fields {
+        assert!(mailbox.contains_key(field));
+    }
 
     vera.shutdown().await;
     bridge.shutdown().await;

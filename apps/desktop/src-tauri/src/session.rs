@@ -24,7 +24,8 @@ use image::{ImageFormat, ImageReader};
 use serde::{Deserialize, Serialize};
 
 use kult_ffi::{
-    canonicalize_recorded_audio, default_config, edit_image, probe_edited_image,
+    canonicalize_recorded_audio, default_config, edit_image, prepare_authority_migration,
+    prepare_authority_reset, prepare_legacy_backup_authority_reset, probe_edited_image,
     probe_recorded_audio, Attachment, AttachmentConversation, AttachmentDirection,
     AttachmentFileKind as FfiAttachmentFileKind,
     AttachmentFilePresentation as FfiAttachmentFilePresentation,
@@ -33,26 +34,34 @@ use kult_ffi::{
     CallAudioFrame as FfiCallAudioFrame, CallAvailability as FfiCallAvailability,
     CallDirection as FfiCallDirection, CallEndReason as FfiCallEndReason,
     CallPhase as FfiCallPhase, CallUnavailableReason as FfiCallUnavailableReason,
-    CarrierCapability, Config, ContactNameAssessment as FfiContactNameAssessment,
-    ContactNameWarning as FfiContactNameWarning, ContentKind, CustomIcon as FfiCustomIcon,
-    CustomIconCrop as FfiCustomIconCrop, CustomIconTarget as FfiCustomIconTarget,
-    CustomIconTargetKind as FfiCustomIconTargetKind, DeliveryState,
+    CarrierCapability, Config, ConnectionVerdict as FfiConnectionVerdict,
+    ContactNameAssessment as FfiContactNameAssessment, ContactNameWarning as FfiContactNameWarning,
+    ContentKind, CustomIcon as FfiCustomIcon, CustomIconCrop as FfiCustomIconCrop,
+    CustomIconTarget as FfiCustomIconTarget, CustomIconTargetKind as FfiCustomIconTargetKind,
+    DeliveryState, DeviceAuthorityConflictKind as FfiDeviceAuthorityConflictKind,
     DeviceLinkSelection as FfiDeviceLinkSelection, Direction, Event, EventListener,
     Folder as FfiFolder, FolderConversation as FfiFolderConversation,
     FolderConversationResult as FfiFolderConversationResult, FolderSelection as FfiFolderSelection,
     FolderSelectionKind as FfiFolderSelectionKind, FolderTarget as FfiFolderTarget,
     FolderTargetKind as FfiFolderTargetKind, GroupAuthority as FfiGroupAuthority,
-    GroupPoll as FfiGroupPoll, GroupRole as FfiGroupRole, Hint, ImageCrop, ImageEditRecipe,
-    ImageEditRegion, ImageEditRegionKind, ImageInfo, KdfChoice, KultNode, Label as FfiLabel,
+    GroupInvitation as FfiGroupInvitation,
+    GroupMessageAuthentication as FfiGroupMessageAuthentication, GroupPoll as FfiGroupPoll,
+    GroupRole as FfiGroupRole, GroupSecurity as FfiGroupSecurity,
+    GroupSecurityLevel as FfiGroupSecurityLevel, Hint, ImageCrop, ImageEditRecipe, ImageEditRegion,
+    ImageEditRegionKind, ImageInfo, KdfChoice, KultNode, Label as FfiLabel,
     LabelConversation as FfiLabelConversation, LabelFilterResult as FfiLabelFilterResult,
     LabelMatchMode as FfiLabelMatchMode, LabelTarget as FfiLabelTarget,
-    LabelTargetKind as FfiLabelTargetKind, MentionCapabilityIssueReason, MentionSpan, NatVerdict,
-    Pin as FfiPin, PinConversation as FfiPinConversation,
-    PinConversationResult as FfiPinConversationResult, PinTarget as FfiPinTarget,
-    PinTargetKind as FfiPinTargetKind, ScheduledConversation, StaleFolder as FfiStaleFolder,
-    StaleLabel as FfiStaleLabel, TextFormatBlockKind as FfiTextFormatBlockKind,
-    TextFormatHighlight as FfiTextFormatHighlight, TextFormatStyle as FfiTextFormatStyle,
-    ThemePreference as FfiThemePreference, AUDIO_MAX_BYTES, AUDIO_MEDIA_TYPE,
+    LabelTargetKind as FfiLabelTargetKind, MentionCapabilityIssueReason, MentionSpan,
+    MessageRequest as FfiMessageRequest, MessageRequestTransport as FfiMessageRequestTransport,
+    NatVerdict, NetworkMode as FfiNetworkMode, Pin as FfiPin,
+    PinConversation as FfiPinConversation, PinConversationResult as FfiPinConversationResult,
+    PinTarget as FfiPinTarget, PinTargetKind as FfiPinTargetKind,
+    ProviderDirectoryVerdict as FfiProviderDirectoryVerdict,
+    RendezvousProviderConfig as FfiRendezvousProviderConfig, ScheduledConversation,
+    StaleFolder as FfiStaleFolder, StaleLabel as FfiStaleLabel,
+    TextFormatBlockKind as FfiTextFormatBlockKind, TextFormatHighlight as FfiTextFormatHighlight,
+    TextFormatStyle as FfiTextFormatStyle, ThemePreference as FfiThemePreference,
+    WakeProviderConfig as FfiWakeProviderConfig, AUDIO_MAX_BYTES, AUDIO_MEDIA_TYPE,
     IMAGE_MAX_INPUT_BYTES, IMAGE_MEDIA_TYPE,
 };
 
@@ -333,6 +342,19 @@ fn generate_preview(path: &Path, media_type: &str) -> Result<Option<PrivateTemp>
     Err("image preview could not fit the 256 KiB limit".to_owned())
 }
 
+/// One user-selected post-pairing rendezvous provider.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RendezvousSetting {
+    /// Canonical HTTPS provider origin.
+    pub origin: String,
+    /// SHA-256 of the provider leaf TLS certificate, lowercase hex.
+    pub static_key: String,
+    /// Whether direct Standard access is allowed.
+    pub standard: bool,
+    /// Whether Private mode may reach it through Tor.
+    pub private_via_tor: bool,
+}
+
 /// Network configuration the user can edit on the unlock screen. Persisted
 /// as plain JSON next to the store — it holds the same information as
 /// `kultd`'s command-line flags and **no secrets** (the store passphrase
@@ -340,6 +362,22 @@ fn generate_preview(path: &Path, media_type: &str) -> Result<Option<PrivateTemp>
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct NetworkSettings {
+    /// `standard`, `private`, or `sovereign`.
+    pub mode: String,
+    /// Standard provider disclosure was reviewed before first optional use.
+    pub standard_disclosure_confirmed: bool,
+    /// Advanced Sovereign direct-route publication acknowledgement.
+    pub sovereign_publish_direct_routes: bool,
+    /// Candidate signed provider-directory JSON.
+    pub provider_directory: Option<String>,
+    /// Trusted offline directory keys, lowercase hex.
+    pub provider_directory_roots: Vec<String>,
+    /// User-selected rendezvous providers.
+    pub rendezvous: Vec<RendezvousSetting>,
+    /// User-selected native-wake gateways, never inferred from rendezvous.
+    pub wake: Vec<RendezvousSetting>,
+    /// Explicit loopback Tor SOCKS5 endpoint for Private rendezvous.
+    pub tor_proxy: Option<String>,
     /// Multiaddrs to listen on. The default binds QUIC + TCP on
     /// OS-assigned ports; pin a port here for port-forwarding setups.
     pub listen: Vec<String>,
@@ -370,6 +408,14 @@ pub struct NetworkSettings {
 impl Default for NetworkSettings {
     fn default() -> Self {
         Self {
+            mode: "standard".to_owned(),
+            standard_disclosure_confirmed: false,
+            sovereign_publish_direct_routes: false,
+            provider_directory: None,
+            provider_directory_roots: Vec::new(),
+            rendezvous: Vec::new(),
+            wake: Vec::new(),
+            tor_proxy: None,
             listen: vec![
                 "/ip4/0.0.0.0/udp/0/quic-v1".to_owned(),
                 "/ip4/0.0.0.0/tcp/0".to_owned(),
@@ -399,7 +445,10 @@ impl NetworkSettings {
     pub fn load(data_dir: &Path) -> Result<Self, String> {
         match std::fs::read(Self::path(data_dir)) {
             Ok(bytes) => {
-                serde_json::from_slice(&bytes).map_err(|e| format!("settings.json is corrupt: {e}"))
+                let settings: Self = serde_json::from_slice(&bytes)
+                    .map_err(|e| format!("settings.json is corrupt: {e}"))?;
+                settings.validate()?;
+                Ok(settings)
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
             Err(e) => Err(format!("settings.json: {e}")),
@@ -408,9 +457,27 @@ impl NetworkSettings {
 
     /// Persist to `data_dir` (creating it if needed).
     pub fn save(&self, data_dir: &Path) -> Result<(), String> {
+        self.validate()?;
         std::fs::create_dir_all(data_dir).map_err(|e| format!("data dir: {e}"))?;
         let json = serde_json::to_vec_pretty(self).expect("settings serialize");
-        std::fs::write(Self::path(data_dir), json).map_err(|e| format!("settings.json: {e}"))
+        atomicwrites::AtomicFile::new(Self::path(data_dir), atomicwrites::AllowOverwrite)
+            .write(|file| {
+                file.write_all(&json)?;
+                file.sync_all()
+            })
+            .map_err(|error| format!("settings.json: {}", std::io::Error::from(error)))?;
+        #[cfg(unix)]
+        std::fs::File::open(data_dir)
+            .and_then(|directory| directory.sync_all())
+            .map_err(|error| format!("settings directory: {error}"))?;
+        Ok(())
+    }
+
+    fn validate(&self) -> Result<(), String> {
+        if !matches!(self.mode.as_str(), "standard" | "private" | "sovereign") {
+            return Err("settings.json has an unsupported operating mode".to_owned());
+        }
+        Ok(())
     }
 }
 
@@ -423,6 +490,49 @@ pub struct UiContact {
     pub name: String,
     /// Whether safety numbers were verified out-of-band.
     pub verified: bool,
+}
+
+/// A sealed unknown-sender request awaiting a local decision.
+#[derive(Clone, Debug, Serialize)]
+pub struct UiMessageRequest {
+    /// Stable opaque request id.
+    pub id: String,
+    /// Verified stable sender account.
+    pub account: String,
+    /// Verified exact sender device.
+    pub device: String,
+    /// Bounded first-message preview.
+    pub preview: String,
+    /// Symmetric safety number.
+    pub safety_number: String,
+    /// Local arrival time.
+    pub arrived_at: u64,
+    /// Local expiry time.
+    pub expires_at: u64,
+    /// Privacy-preserving ingress class.
+    pub transport: &'static str,
+}
+
+impl UiMessageRequest {
+    fn from_ffi(request: FfiMessageRequest) -> Self {
+        Self {
+            id: request.id,
+            account: request.account,
+            device: request.device,
+            preview: request.preview,
+            safety_number: request.safety_number,
+            arrived_at: request.arrived_at,
+            expires_at: request.expires_at,
+            transport: match request.transport {
+                FfiMessageRequestTransport::Unknown => "unknown",
+                FfiMessageRequestTransport::Direct => "direct",
+                FfiMessageRequestTransport::Mailbox => "mailbox",
+                FfiMessageRequestTransport::Mesh => "mesh",
+                FfiMessageRequestTransport::Delayed => "delayed",
+                FfiMessageRequestTransport::Bridge => "bridge",
+            },
+        }
+    }
 }
 
 /// One exact UTF-8 source range composed into local formatting.
@@ -1146,6 +1256,69 @@ pub struct UiGroup {
     pub creator: String,
     /// Full roster, this node included (hex peer ids).
     pub members: Vec<String>,
+    /// `upgrade_required`, `upgrading`, or `recipient_authenticated`.
+    pub security: &'static str,
+}
+
+/// An authenticated group proposal awaiting local membership consent.
+#[derive(Clone, Debug, Serialize)]
+pub struct UiGroupInvitation {
+    /// Stable opaque invitation id.
+    pub id: String,
+    /// Proposed group id.
+    pub group: String,
+    /// Pairwise-authenticated inviter.
+    pub inviter: String,
+    /// Exact inviter device.
+    pub inviter_device: String,
+    /// Authenticated proposed name.
+    pub name: String,
+    /// Proposed managing account.
+    pub creator: String,
+    /// Complete proposed roster size.
+    pub member_count: u32,
+    /// Proposed generation.
+    pub generation: u64,
+    /// Whether the capability is scoped to this exact device.
+    pub recipient_scoped: bool,
+    /// Whether signed authority was supplied.
+    pub signed_authority: bool,
+    /// Local arrival time.
+    pub arrived_at: u64,
+    /// Local expiry time.
+    pub expires_at: u64,
+}
+
+impl UiGroupInvitation {
+    fn from_ffi(invitation: FfiGroupInvitation) -> Self {
+        Self {
+            id: invitation.id,
+            group: invitation.group,
+            inviter: invitation.inviter,
+            inviter_device: invitation.inviter_device,
+            name: invitation.name,
+            creator: invitation.creator,
+            member_count: invitation.member_count,
+            generation: invitation.generation,
+            recipient_scoped: invitation.recipient_scoped,
+            signed_authority: invitation.signed_authority,
+            arrived_at: invitation.arrived_at,
+            expires_at: invitation.expires_at,
+        }
+    }
+}
+
+/// Render-safe group recipient-origin upgrade details.
+#[derive(Clone, Debug, Serialize)]
+pub struct UiGroupSecurity {
+    /// Group id (hex).
+    pub group: String,
+    /// `upgrade_required`, `upgrading`, or `recipient_authenticated`.
+    pub level: &'static str,
+    /// Exact device ids that have not completed the exchange.
+    pub pending_devices: Vec<String>,
+    /// Historical rows that remain membership-authenticated.
+    pub legacy_history_rows: u64,
 }
 
 /// One exact member role for desktop rendering and controls.
@@ -1205,6 +1378,24 @@ fn group_role_str(role: FfiGroupRole) -> &'static str {
         FfiGroupRole::Owner => "owner",
         FfiGroupRole::Admin => "admin",
         FfiGroupRole::Member => "member",
+    }
+}
+
+fn group_security_str(level: FfiGroupSecurityLevel) -> &'static str {
+    match level {
+        FfiGroupSecurityLevel::UpgradeRequired => "upgrade_required",
+        FfiGroupSecurityLevel::Upgrading => "upgrading",
+        FfiGroupSecurityLevel::RecipientAuthenticated => "recipient_authenticated",
+    }
+}
+
+fn group_message_authentication_str(authentication: FfiGroupMessageAuthentication) -> &'static str {
+    match authentication {
+        FfiGroupMessageAuthentication::LegacyMembership => "legacy_membership",
+        FfiGroupMessageAuthentication::PendingRecipientAuthentication => {
+            "pending_recipient_authentication"
+        }
+        FfiGroupMessageAuthentication::RecipientAuthenticated => "recipient_authenticated",
     }
 }
 
@@ -1360,6 +1551,8 @@ pub struct UiGroupMessage {
     pub timestamp: u64,
     /// Message text.
     pub body: String,
+    /// `legacy_membership` or `recipient_authenticated`.
+    pub authentication: &'static str,
     /// `legacy_text`, `text`, `unsupported`, or `malformed`.
     pub content_kind: &'static str,
     /// Exact authenticated local expiry for ephemeral content.
@@ -1379,8 +1572,12 @@ pub struct UiGroupMessage {
 /// A point-in-time node snapshot for the status bar.
 #[derive(Clone, Debug, Serialize)]
 pub struct UiStatus {
-    /// This node's human-shareable kult address.
+    /// Stable account fingerprint retained for verification and compatibility.
     pub address: String,
+    /// Capability-scoped share artifact for ordinary first contact.
+    pub connect_code: String,
+    /// Whether mailbox-only stable-address compatibility remains enabled.
+    pub legacy_discovery: bool,
     /// This node's peer id (hex).
     pub peer: String,
     /// Live listen addresses (circuit addresses included once reserved).
@@ -1393,6 +1590,15 @@ pub struct UiStatus {
     pub bootstrap_peers: u64,
     /// `public`, `private`, or `unknown`.
     pub nat: &'static str,
+    /// `standard`, `private`, or `sovereign`.
+    pub mode: &'static str,
+    /// `not_configured`, `current`, `retained_last_valid`, `stale`,
+    /// `conflict`, or `unavailable`.
+    pub provider_directory: &'static str,
+    /// `connected`, `fallback_ready`, or `waiting_for_route`.
+    pub connection: &'static str,
+    /// Live transport pseudonyms; not presence or a delivery receipt.
+    pub connected_peers: u64,
     /// Outbound messages not yet delivered.
     pub queued: u64,
     /// Text waiting for a future UTC activation instant.
@@ -1442,6 +1648,38 @@ pub struct UiLinkedDevice {
     pub current: bool,
 }
 
+/// One durable fail-closed account device-authority conflict.
+#[derive(Clone, Debug, Serialize)]
+pub struct UiDeviceAuthorityConflict {
+    /// `fork` or `recovery`.
+    pub kind: &'static str,
+    /// Locally retained branch tip (hex).
+    pub accepted: String,
+    /// Rejected conflicting branch tip (hex).
+    pub conflicting: String,
+    /// Recovery epoch shared by both claims.
+    pub recovery_epoch: u64,
+    /// Coarse local observation time.
+    pub observed_at: u64,
+}
+
+/// One durable fail-closed conflict presented by a contact account.
+#[derive(Clone, Debug, Serialize)]
+pub struct UiContactAuthorityConflict {
+    /// Stable affected contact account (hex).
+    pub account: String,
+    /// `fork` or `recovery`.
+    pub kind: &'static str,
+    /// Locally retained branch tip (hex).
+    pub accepted: String,
+    /// Rejected conflicting branch tip (hex).
+    pub conflicting: String,
+    /// Recovery epoch shared by both claims.
+    pub recovery_epoch: u64,
+    /// Coarse local observation time.
+    pub observed_at: u64,
+}
+
 /// Per-physical-device delivery state for one outbound message.
 #[derive(Clone, Debug, Serialize)]
 pub struct UiMessageDeviceDelivery {
@@ -1460,6 +1698,8 @@ pub struct UiDeviceLinkOffer {
     pub hex: String,
     /// QR carrying the same bytes in uppercase hex.
     pub qr_svg: String,
+    /// Camera-friendly order-independent frames for larger authority proofs.
+    pub qr_svgs: Vec<String>,
 }
 
 /// Target-side response and human comparison code.
@@ -1662,12 +1902,48 @@ pub enum UiEvent {
     StateResyncRequired,
     /// Account-authorized device list, name, or revocation changed.
     DevicesChanged,
+    /// Concurrent valid ordinary authority branches were retained visibly.
+    DeviceAuthorityFork {
+        /// Locally retained branch tip (hex).
+        accepted: String,
+        /// Rejected conflicting branch tip (hex).
+        conflicting: String,
+        /// Recovery epoch shared by both branches.
+        recovery_epoch: u64,
+    },
+    /// Different root-authorized transitions claimed one recovery epoch.
+    DeviceRecoveryConflict {
+        /// Locally retained recovery branch (hex).
+        accepted: String,
+        /// Rejected conflicting recovery branch (hex).
+        conflicting: String,
+        /// Conflicting recovery epoch.
+        recovery_epoch: u64,
+    },
     /// This pristine installation completed a confirmed account link.
     DeviceLinkCompleted {
         /// Stable account id (hex).
         account: String,
         /// Exact new physical-device id (hex).
         device: String,
+    },
+    /// Authenticated rendezvous state forked at one generation.
+    RendezvousConflict {
+        /// Stable contact account id (hex).
+        peer: String,
+        /// Exact contact device id (hex).
+        device: String,
+        /// Provider-separation id, or zeroes for a provider-set conflict (hex).
+        provider: String,
+    },
+    /// Authenticated native-wake capabilities forked at one generation.
+    WakeConflict {
+        /// Stable contact account id (hex).
+        peer: String,
+        /// Exact contact device id (hex).
+        device: String,
+        /// Conflicting complete-set generation.
+        generation: u64,
     },
     /// A scheduled message was created or edited.
     ScheduledMessageUpdated {
@@ -1712,6 +1988,33 @@ pub enum UiEvent {
         peer: String,
         /// Original canonical Text content id (hex).
         target_content_id: String,
+    },
+    /// A valid unknown sender entered the sealed request inbox.
+    MessageRequestReceived {
+        /// Stable opaque request id.
+        request: String,
+    },
+    /// A request was explicitly accepted.
+    MessageRequestAccepted {
+        /// Stable opaque request id.
+        request: String,
+        /// Verified account now present as a contact.
+        peer: String,
+    },
+    /// A request was explicitly deleted locally.
+    MessageRequestDeleted {
+        /// Stable opaque request id.
+        request: String,
+    },
+    /// A request sender was blocked locally.
+    MessageRequestBlocked {
+        /// Stable opaque request id.
+        request: String,
+    },
+    /// A provisional request expired locally.
+    MessageRequestExpired {
+        /// Stable opaque request id.
+        request: String,
     },
     /// A sealed local-only note was appended.
     NoteToSelfMessageAdded {
@@ -1763,6 +2066,32 @@ pub enum UiEvent {
     CallUpdated {
         /// Current render-safe call snapshot.
         call: UiCall,
+    },
+    /// An authenticated group proposal entered the invitation inbox.
+    GroupInvitationReceived {
+        /// Stable opaque invitation id.
+        invitation: String,
+        /// Proposed group id.
+        group: String,
+        /// Pairwise-authenticated inviter.
+        inviter: String,
+    },
+    /// A group proposal was explicitly accepted.
+    GroupInvitationAccepted {
+        /// Stable opaque invitation id.
+        invitation: String,
+        /// Joined group id.
+        group: String,
+    },
+    /// A group proposal was explicitly deleted.
+    GroupInvitationDeleted {
+        /// Stable opaque invitation id.
+        invitation: String,
+    },
+    /// A group proposal expired without changing membership.
+    GroupInvitationExpired {
+        /// Stable opaque invitation id.
+        invitation: String,
     },
     /// A group was created, joined, re-keyed, re-rostered, or left.
     GroupUpdated {
@@ -1880,9 +2209,45 @@ impl UiEvent {
         match event {
             Event::StateResyncRequired => Self::StateResyncRequired,
             Event::DevicesChanged => Self::DevicesChanged,
+            Event::DeviceAuthorityFork {
+                accepted,
+                conflicting,
+                recovery_epoch,
+            } => Self::DeviceAuthorityFork {
+                accepted,
+                conflicting,
+                recovery_epoch,
+            },
+            Event::DeviceRecoveryConflict {
+                accepted,
+                conflicting,
+                recovery_epoch,
+            } => Self::DeviceRecoveryConflict {
+                accepted,
+                conflicting,
+                recovery_epoch,
+            },
             Event::DeviceLinkCompleted { account, device } => {
                 Self::DeviceLinkCompleted { account, device }
             }
+            Event::RendezvousConflict {
+                peer,
+                device,
+                provider,
+            } => Self::RendezvousConflict {
+                peer,
+                device,
+                provider,
+            },
+            Event::WakeConflict {
+                peer,
+                device,
+                generation,
+            } => Self::WakeConflict {
+                peer,
+                device,
+                generation,
+            },
             Event::ScheduledMessageUpdated { id } => Self::ScheduledMessageUpdated { id },
             Event::ScheduledMessageCancelled { id } => Self::ScheduledMessageCancelled { id },
             Event::ScheduledMessageActivated { id } => Self::ScheduledMessageActivated { id },
@@ -1912,6 +2277,13 @@ impl UiEvent {
                 peer,
                 target_content_id,
             },
+            Event::MessageRequestReceived { request } => Self::MessageRequestReceived { request },
+            Event::MessageRequestAccepted { request, peer } => {
+                Self::MessageRequestAccepted { request, peer }
+            }
+            Event::MessageRequestDeleted { request } => Self::MessageRequestDeleted { request },
+            Event::MessageRequestBlocked { request } => Self::MessageRequestBlocked { request },
+            Event::MessageRequestExpired { request } => Self::MessageRequestExpired { request },
             Event::NoteToSelfMessageAdded {
                 conversation,
                 id,
@@ -1936,6 +2308,24 @@ impl UiEvent {
             Event::CallUpdated { call } => Self::CallUpdated {
                 call: UiCall::from_ffi(call),
             },
+            Event::GroupInvitationReceived {
+                invitation,
+                group,
+                inviter,
+            } => Self::GroupInvitationReceived {
+                invitation,
+                group,
+                inviter,
+            },
+            Event::GroupInvitationAccepted { invitation, group } => {
+                Self::GroupInvitationAccepted { invitation, group }
+            }
+            Event::GroupInvitationDeleted { invitation } => {
+                Self::GroupInvitationDeleted { invitation }
+            }
+            Event::GroupInvitationExpired { invitation } => {
+                Self::GroupInvitationExpired { invitation }
+            }
             Event::GroupUpdated { group } => Self::GroupUpdated { group },
             Event::GroupMessageReceived {
                 group,
@@ -2264,6 +2654,40 @@ impl EventListener for Forwarder {
     }
 }
 
+/// User-reviewed copied-root reset preparation shown before replacement.
+#[derive(Clone, Debug, Serialize)]
+pub struct UiAuthorityResetPreparation {
+    /// Fresh human-shareable account address.
+    pub new_address: String,
+    /// Fresh account public id.
+    pub new_peer: String,
+    /// One-time phrase opening the separately written authority file.
+    pub recovery_mnemonic: String,
+}
+
+/// Visible former-identity archive and remaining contact verification work.
+#[derive(Clone, Debug, Serialize)]
+pub struct UiAuthorityResetHistory {
+    /// Former account id.
+    pub former_peer: String,
+    /// Fresh account id.
+    pub new_peer: String,
+    /// Display-only reset time.
+    pub reset_at: u64,
+    /// Petnames/public identities retained.
+    pub preserved_contacts: u32,
+    /// Former-identity pairwise rows retained as local archive.
+    pub preserved_pairwise_messages: u64,
+    /// Device-local note rows retained.
+    pub preserved_note_messages: u64,
+    /// Active group records deliberately omitted.
+    pub omitted_groups: u64,
+    /// Group history rows deliberately omitted.
+    pub omitted_group_messages: u64,
+    /// Contacts still requiring new safety-number comparison.
+    pub pending_reverification: Vec<String>,
+}
+
 /// A running node plus the shell-side conveniences the UI needs.
 pub struct Session {
     node: Arc<KultNode>,
@@ -2273,6 +2697,47 @@ pub struct Session {
 }
 
 impl Session {
+    /// Write a protected authority for an in-place single-device migration
+    /// while leaving the live profile unchanged.
+    pub fn prepare_alpha_authority_migration(
+        data_dir: &Path,
+        passphrase: String,
+        recovery_path: String,
+    ) -> Result<String, String> {
+        prepare_authority_migration(data_dir.display().to_string(), passphrase, recovery_path)
+            .map_err(|error| error.to_string())
+    }
+
+    /// Write a protected authority for a copied-root new-identity reset while
+    /// leaving the live profile unchanged.
+    pub fn prepare_alpha_authority_reset(
+        data_dir: &Path,
+        passphrase: String,
+        recovery_path: String,
+    ) -> Result<UiAuthorityResetPreparation, String> {
+        prepare_authority_reset(data_dir.display().to_string(), passphrase, recovery_path)
+            .map(|prepared| UiAuthorityResetPreparation {
+                new_address: prepared.new_address,
+                new_peer: prepared.new_peer,
+                recovery_mnemonic: prepared.recovery_mnemonic,
+            })
+            .map_err(|error| error.to_string())
+    }
+
+    /// Write the fresh protected authority required to import a copied-root
+    /// legacy backup as a former-identity local archive.
+    pub fn prepare_legacy_backup_authority_reset(
+        recovery_path: String,
+    ) -> Result<UiAuthorityResetPreparation, String> {
+        prepare_legacy_backup_authority_reset(recovery_path)
+            .map(|prepared| UiAuthorityResetPreparation {
+                new_address: prepared.new_address,
+                new_peer: prepared.new_peer,
+                recovery_mnemonic: prepared.recovery_mnemonic,
+            })
+            .map_err(|error| error.to_string())
+    }
+
     /// Open (or create on first run) the store in `data_dir` and start the
     /// node. Blocking — call off the UI thread. `kdf` is the Argon2id cost
     /// profile for store *creation* (the app passes the desktop profile;
@@ -2285,7 +2750,7 @@ impl Session {
         sink: EventSink,
     ) -> Result<Self, String> {
         cleanup_media_temps_once();
-        let config = build_config(data_dir, passphrase, settings, kdf);
+        let config = build_config(data_dir, passphrase, settings, kdf)?;
         let node = KultNode::start(config, Box::new(Forwarder(sink))).map_err(|e| e.to_string())?;
         Ok(Self {
             node,
@@ -2297,19 +2762,29 @@ impl Session {
 
     /// First run only: restore from an encrypted backup file instead of
     /// creating a fresh identity, then start.
+    #[allow(clippy::too_many_arguments)]
     pub fn restore(
         data_dir: &Path,
         passphrase: String,
         backup_path: String,
         mnemonic: String,
+        recovery_package_path: String,
+        recovery_mnemonic: String,
         settings: &NetworkSettings,
         kdf: KdfChoice,
         sink: EventSink,
     ) -> Result<Self, String> {
         cleanup_media_temps_once();
-        let config = build_config(data_dir, passphrase, settings, kdf);
-        let node = KultNode::restore(config, backup_path, mnemonic, Box::new(Forwarder(sink)))
-            .map_err(|e| e.to_string())?;
+        let config = build_config(data_dir, passphrase, settings, kdf)?;
+        let node = KultNode::restore(
+            config,
+            backup_path,
+            mnemonic,
+            recovery_package_path,
+            recovery_mnemonic,
+            Box::new(Forwarder(sink)),
+        )
+        .map_err(|e| e.to_string())?;
         Ok(Self {
             node,
             network_settings: settings.clone(),
@@ -2318,9 +2793,102 @@ impl Session {
         })
     }
 
+    /// Complete a prepared single-device migration and start the node.
+    pub fn migrate_authority(
+        data_dir: &Path,
+        passphrase: String,
+        recovery_package_path: String,
+        recovery_mnemonic: String,
+        settings: &NetworkSettings,
+        kdf: KdfChoice,
+        sink: EventSink,
+    ) -> Result<Self, String> {
+        cleanup_media_temps_once();
+        let config = build_config(data_dir, passphrase, settings, kdf)?;
+        let node = KultNode::migrate_authority(
+            config,
+            recovery_package_path,
+            recovery_mnemonic,
+            Box::new(Forwarder(sink)),
+        )
+        .map_err(|error| error.to_string())?;
+        Ok(Self {
+            node,
+            network_settings: settings.clone(),
+            pending_images: Mutex::new(HashMap::new()),
+            opened_attachments: Mutex::new(HashMap::new()),
+        })
+    }
+
+    /// Complete a copied-root new-identity reset and start the node.
+    pub fn reset_authority(
+        data_dir: &Path,
+        passphrase: String,
+        recovery_package_path: String,
+        recovery_mnemonic: String,
+        settings: &NetworkSettings,
+        kdf: KdfChoice,
+        sink: EventSink,
+    ) -> Result<Self, String> {
+        cleanup_media_temps_once();
+        let config = build_config(data_dir, passphrase, settings, kdf)?;
+        let node = KultNode::reset_authority(
+            config,
+            recovery_package_path,
+            recovery_mnemonic,
+            Box::new(Forwarder(sink)),
+        )
+        .map_err(|error| error.to_string())?;
+        Ok(Self {
+            node,
+            network_settings: settings.clone(),
+            pending_images: Mutex::new(HashMap::new()),
+            opened_attachments: Mutex::new(HashMap::new()),
+        })
+    }
+
+    /// Visible former-identity archive and remaining safety-number work.
+    pub fn authority_reset_history(&self) -> Result<Option<UiAuthorityResetHistory>, String> {
+        self.node
+            .authority_reset_history()
+            .map(|record| {
+                record.map(|record| UiAuthorityResetHistory {
+                    former_peer: record.former_peer,
+                    new_peer: record.new_peer,
+                    reset_at: record.reset_at,
+                    preserved_contacts: record.preserved_contacts,
+                    preserved_pairwise_messages: record.preserved_pairwise_messages,
+                    preserved_note_messages: record.preserved_note_messages,
+                    omitted_groups: record.omitted_groups,
+                    omitted_group_messages: record.omitted_group_messages,
+                    pending_reverification: record.pending_reverification,
+                })
+            })
+            .map_err(|error| error.to_string())
+    }
+
     /// This node's human-shareable kult address.
     pub fn address(&self) -> String {
         self.node.address()
+    }
+
+    /// Current capability-scoped share artifact.
+    pub fn connect_code(&self) -> Result<String, String> {
+        self.node.connect_code().map_err(|error| error.to_string())
+    }
+
+    /// Rotate reachability while preserving account identity and safety numbers.
+    pub fn rotate_connect_code(&self) -> Result<String, String> {
+        self.node
+            .rotate_connect_code()
+            .map_err(|error| error.to_string())
+    }
+
+    /// Permanently retire stable-address discovery compatibility.
+    pub fn retire_legacy_discovery(&self) -> Result<String, String> {
+        self.node
+            .retire_legacy_discovery()
+            .map_err(|error| error.to_string())
     }
 
     /// Render exact source into the shared bounded and inert text model.
@@ -2342,9 +2910,13 @@ impl Session {
             .map_err(|error| error.to_string())
     }
 
-    /// A QR of the kult address (for adding this node by address).
+    /// A QR of the current capability-scoped Connect code.
     pub fn address_qr(&self) -> Result<String, String> {
-        qr::svg(self.node.address().as_bytes())
+        let code = self
+            .node
+            .connect_code()
+            .map_err(|error| error.to_string())?;
+        qr::svg(code.as_bytes())
     }
 
     /// Status snapshot for the UI's transport indicators.
@@ -2352,6 +2924,8 @@ impl Session {
         let s = self.node.status().map_err(|e| e.to_string())?;
         Ok(UiStatus {
             address: s.address,
+            connect_code: s.connect_code,
+            legacy_discovery: s.legacy_discovery,
             peer: s.peer,
             listen: s.listen,
             lan_peers: s.lan_peers,
@@ -2362,6 +2936,25 @@ impl Session {
                 NatVerdict::Private => "private",
                 NatVerdict::Unknown => "unknown",
             },
+            mode: match s.mode {
+                FfiNetworkMode::Standard => "standard",
+                FfiNetworkMode::Private => "private",
+                FfiNetworkMode::Sovereign => "sovereign",
+            },
+            provider_directory: match s.provider_directory {
+                FfiProviderDirectoryVerdict::NotConfigured => "not_configured",
+                FfiProviderDirectoryVerdict::Current => "current",
+                FfiProviderDirectoryVerdict::RetainedLastValid => "retained_last_valid",
+                FfiProviderDirectoryVerdict::Stale => "stale",
+                FfiProviderDirectoryVerdict::Conflict => "conflict",
+                FfiProviderDirectoryVerdict::Unavailable => "unavailable",
+            },
+            connection: match s.connection {
+                FfiConnectionVerdict::Connected => "connected",
+                FfiConnectionVerdict::FallbackReady => "fallback_ready",
+                FfiConnectionVerdict::WaitingForRoute => "waiting_for_route",
+            },
+            connected_peers: s.connected_peers,
             queued: s.queued,
             scheduled: s.scheduled,
             transit: s.transit,
@@ -2411,6 +3004,72 @@ impl Session {
             .collect())
     }
 
+    /// Unresolved authority forks and recovery conflicts retained on disk.
+    pub fn device_authority_conflicts(&self) -> Result<Vec<UiDeviceAuthorityConflict>, String> {
+        Ok(self
+            .node
+            .device_authority_conflicts()
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .map(|conflict| UiDeviceAuthorityConflict {
+                kind: match conflict.kind {
+                    FfiDeviceAuthorityConflictKind::Fork => "fork",
+                    FfiDeviceAuthorityConflictKind::Recovery => "recovery",
+                },
+                accepted: conflict.accepted,
+                conflicting: conflict.conflicting,
+                recovery_epoch: conflict.recovery_epoch,
+                observed_at: conflict.observed_at,
+            })
+            .collect())
+    }
+
+    /// Contact authority forks and recovery conflicts retained on disk.
+    pub fn contact_authority_conflicts(&self) -> Result<Vec<UiContactAuthorityConflict>, String> {
+        Ok(self
+            .node
+            .contact_authority_conflicts()
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .map(|conflict| UiContactAuthorityConflict {
+                account: conflict.account,
+                kind: match conflict.kind {
+                    FfiDeviceAuthorityConflictKind::Fork => "fork",
+                    FfiDeviceAuthorityConflictKind::Recovery => "recovery",
+                },
+                accepted: conflict.accepted,
+                conflicting: conflict.conflicting,
+                recovery_epoch: conflict.recovery_epoch,
+                observed_at: conflict.observed_at,
+            })
+            .collect())
+    }
+
+    /// Export the pending rename/revocation proposal for another active device.
+    pub fn device_authority_approval_request(&self) -> Result<String, String> {
+        self.node
+            .device_authority_approval_request()
+            .map(|request| hex_encode(&request))
+            .map_err(|error| error.to_string())
+    }
+
+    /// Verify and sign another active device's rename/revocation proposal.
+    pub fn approve_device_authority_request(&self, request_hex: String) -> Result<String, String> {
+        let request = hex_decode(&request_hex).ok_or("authority request must be hex")?;
+        self.node
+            .approve_device_authority_request(request)
+            .map(|approval| hex_encode(&approval))
+            .map_err(|error| error.to_string())
+    }
+
+    /// Merge a detached authority approval and report whether it committed.
+    pub fn accept_device_authority_approval(&self, approval_hex: String) -> Result<bool, String> {
+        let approval = hex_decode(&approval_hex).ok_or("authority approval must be hex")?;
+        self.node
+            .accept_device_authority_approval(approval)
+            .map_err(|error| error.to_string())
+    }
+
     /// Per-physical-device states for one outbound message.
     pub fn message_device_deliveries(
         &self,
@@ -2453,8 +3112,19 @@ impl Session {
             .begin_device_link()
             .map_err(|error| error.to_string())?;
         let hex = hex_encode(&bytes);
-        let qr_svg = qr::svg(hex.to_uppercase().as_bytes())?;
-        Ok(UiDeviceLinkOffer { hex, qr_svg })
+        let qr_svgs = qr::bundle_frames(&bytes)
+            .into_iter()
+            .map(|frame| qr::svg(frame.as_bytes()))
+            .collect::<Result<Vec<_>, _>>()?;
+        let qr_svg = qr_svgs
+            .first()
+            .cloned()
+            .ok_or("device link offer produced no QR frames")?;
+        Ok(UiDeviceLinkOffer {
+            hex,
+            qr_svg,
+            qr_svgs,
+        })
     }
 
     /// Accept a pasted or scanned offer on a pristine target.
@@ -2463,7 +3133,9 @@ impl Session {
         offer_hex: String,
         device_name: String,
     ) -> Result<UiDeviceLinkAcceptance, String> {
-        let offer = hex_decode(&offer_hex).ok_or("device link offer must be hex")?;
+        let offer = qr::decode_bundle_text(&offer_hex)
+            .or_else(|| hex_decode(&offer_hex))
+            .ok_or("device link offer must be hex or Komms QR text")?;
         let accepted = self
             .node
             .accept_device_link(offer, device_name)
@@ -2501,6 +3173,35 @@ impl Session {
                 confirmed,
             )
             .map(|package| hex_encode(&package))
+            .map_err(|error| error.to_string())
+    }
+
+    /// Export a pending add-device proposal when another approval is needed.
+    pub fn device_link_approval_request(&self) -> Result<String, String> {
+        self.node
+            .device_link_approval_request()
+            .map(|request| hex_encode(&request))
+            .map_err(|error| error.to_string())
+    }
+
+    /// Verify and sign another active device's add-device proposal.
+    pub fn approve_device_link_request(&self, request_hex: String) -> Result<String, String> {
+        let request = hex_decode(&request_hex).ok_or("device link approval request must be hex")?;
+        self.node
+            .approve_device_link_request(request)
+            .map(|approval| hex_encode(&approval))
+            .map_err(|error| error.to_string())
+    }
+
+    /// Merge an add-device approval; returns the package once quorum is met.
+    pub fn accept_device_link_approval(
+        &self,
+        approval_hex: String,
+    ) -> Result<Option<String>, String> {
+        let approval = hex_decode(&approval_hex).ok_or("device link approval must be hex")?;
+        self.node
+            .accept_device_link_approval(approval)
+            .map(|package| package.map(|bytes| hex_encode(&bytes)))
             .map_err(|error| error.to_string())
     }
 
@@ -2592,6 +3293,38 @@ impl Session {
                 verified: c.verified,
             })
             .collect())
+    }
+
+    /// Sealed unknown-sender requests, excluding live session material.
+    pub fn message_requests(&self) -> Result<Vec<UiMessageRequest>, String> {
+        Ok(self
+            .node
+            .message_requests()
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .map(UiMessageRequest::from_ffi)
+            .collect())
+    }
+
+    /// Promote one request atomically to a named contact and history.
+    pub fn accept_message_request(&self, request: String, name: String) -> Result<String, String> {
+        self.node
+            .accept_message_request(request, name)
+            .map_err(|error| error.to_string())
+    }
+
+    /// Delete one request without claiming remote deletion.
+    pub fn delete_message_request(&self, request: String) -> Result<(), String> {
+        self.node
+            .delete_message_request(request)
+            .map_err(|error| error.to_string())
+    }
+
+    /// Block the verified sender and remove local request capabilities.
+    pub fn block_message_request(&self, request: String) -> Result<(), String> {
+        self.node
+            .block_message_request(request)
+            .map_err(|error| error.to_string())
     }
 
     /// Every current and briefly retained terminal direct-QUIC call.
@@ -3936,6 +4669,54 @@ impl Session {
             .map_err(|e| e.to_string())
     }
 
+    /// Authenticated group proposals awaiting explicit membership consent.
+    pub fn group_invitations(&self) -> Result<Vec<UiGroupInvitation>, String> {
+        Ok(self
+            .node
+            .group_invitations()
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .map(UiGroupInvitation::from_ffi)
+            .collect())
+    }
+
+    /// Accept one proposal and atomically create its group.
+    pub fn accept_group_invitation(&self, invitation: String) -> Result<String, String> {
+        self.node
+            .accept_group_invitation(invitation)
+            .map_err(|error| error.to_string())
+    }
+
+    /// Delete one proposal without creating group state.
+    pub fn delete_group_invitation(&self, invitation: String) -> Result<(), String> {
+        self.node
+            .delete_group_invitation(invitation)
+            .map_err(|error| error.to_string())
+    }
+
+    /// Visible recipient-origin upgrade state for one group.
+    pub fn group_security(&self, group: String) -> Result<UiGroupSecurity, String> {
+        let FfiGroupSecurity {
+            group,
+            level,
+            pending_devices,
+            legacy_history_rows,
+        } = self.node.group_security(group).map_err(|e| e.to_string())?;
+        Ok(UiGroupSecurity {
+            group,
+            level: group_security_str(level),
+            pending_devices,
+            legacy_history_rows,
+        })
+    }
+
+    /// Start the explicit legacy-group security upgrade.
+    pub fn upgrade_group_security(&self, group: String) -> Result<(), String> {
+        self.node
+            .upgrade_group_security(group)
+            .map_err(|e| e.to_string())
+    }
+
     /// All locally stored groups, excluding every secret and chain value.
     pub fn groups(&self) -> Result<Vec<UiGroup>, String> {
         Ok(self
@@ -3948,6 +4729,7 @@ impl Session {
                 name: group.name,
                 creator: group.creator,
                 members: group.members,
+                security: group_security_str(group.security),
             })
             .collect())
     }
@@ -3966,6 +4748,7 @@ impl Session {
                 outbound: message.direction == Direction::Outbound,
                 timestamp: message.timestamp,
                 body: message.body,
+                authentication: group_message_authentication_str(message.authentication),
                 content_kind: content_kind_str(message.content_kind),
                 expires_at: message.expires_at,
                 mention_spans: message
@@ -4232,6 +5015,26 @@ impl Session {
         self.node.set_hints(peer, hints).map_err(|e| e.to_string())
     }
 
+    /// Coalesce a bounded relationship-route refresh when a conversation is
+    /// opened. This does not change message delivery state.
+    pub fn request_rendezvous_refresh(&self, peer: String) -> Result<(), String> {
+        self.node
+            .request_rendezvous_refresh(peer)
+            .map_err(|e| e.to_string())
+    }
+
+    /// Mark or clear a foreground conversation for bounded near-expiry route
+    /// refresh. This is runtime-only and does not alter delivery state.
+    pub fn set_rendezvous_conversation_active(
+        &self,
+        peer: String,
+        active: bool,
+    ) -> Result<(), String> {
+        self.node
+            .set_rendezvous_conversation_active(peer, active)
+            .map_err(|e| e.to_string())
+    }
+
     /// Publish the prekey bundle on the DHT now.
     pub fn publish(&self) -> Result<(), String> {
         self.node.publish().map_err(|e| e.to_string())
@@ -4241,6 +5044,14 @@ impl Session {
     /// mnemonic. The shell shows it exactly once and keeps no copy.
     pub fn export_backup(&self, path: String) -> Result<String, String> {
         self.node.export_backup(path).map_err(|e| e.to_string())
+    }
+
+    /// First-run only: write the encrypted offline account authority and
+    /// return its separate opening phrase.
+    pub fn export_account_recovery_authority(&self, path: String) -> Result<String, String> {
+        self.node
+            .export_account_recovery_authority(path)
+            .map_err(|e| e.to_string())
     }
 
     /// Stop the node (idempotent).
@@ -4263,9 +5074,41 @@ fn build_config(
     passphrase: String,
     settings: &NetworkSettings,
     kdf: KdfChoice,
-) -> Config {
+) -> Result<Config, String> {
+    settings.validate()?;
     let mut config = default_config(data_dir.display().to_string(), passphrase);
     config.kdf = kdf;
+    config.mode = match settings.mode.as_str() {
+        "standard" => FfiNetworkMode::Standard,
+        "private" => FfiNetworkMode::Private,
+        "sovereign" => FfiNetworkMode::Sovereign,
+        _ => return Err("unsupported operating mode".to_owned()),
+    };
+    config.standard_disclosure_confirmed = settings.standard_disclosure_confirmed;
+    config.sovereign_publish_direct_routes = settings.sovereign_publish_direct_routes;
+    config.provider_directory = settings.provider_directory.clone();
+    config.provider_directory_roots = settings.provider_directory_roots.clone();
+    config.rendezvous = settings
+        .rendezvous
+        .iter()
+        .map(|provider| FfiRendezvousProviderConfig {
+            origin: provider.origin.clone(),
+            static_key: provider.static_key.clone(),
+            standard: provider.standard,
+            private_via_tor: provider.private_via_tor,
+        })
+        .collect();
+    config.wake = settings
+        .wake
+        .iter()
+        .map(|provider| FfiWakeProviderConfig {
+            origin: provider.origin.clone(),
+            static_key: provider.static_key.clone(),
+            standard: provider.standard,
+            private_via_tor: provider.private_via_tor,
+        })
+        .collect();
+    config.tor_proxy = settings.tor_proxy.clone();
     // An emptied-out listen list falls back to the baseline rather than
     // silently starting a node nothing can dial.
     if !settings.listen.is_empty() {
@@ -4280,7 +5123,7 @@ fn build_config(
     config.meshtastic_serial = settings.meshtastic_serial.clone();
     config.meshtastic_tcp = settings.meshtastic_tcp.clone();
     config.bridge = settings.bridge;
-    config
+    Ok(config)
 }
 
 /// Lowercase hex encoding.
@@ -4372,9 +5215,72 @@ mod tests {
     }
 
     #[test]
+    fn operating_mode_settings_fixture_is_shared_across_shells() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("settings.json"),
+            include_bytes!("../../../../fixtures/operating-mode-settings-v1.json"),
+        )
+        .unwrap();
+
+        let settings = NetworkSettings::load(dir.path()).unwrap();
+        assert_eq!(settings.mode, "private");
+        assert!(settings.standard_disclosure_confirmed);
+        assert_eq!(
+            settings.provider_directory.as_deref(),
+            Some("providers.json")
+        );
+        assert_eq!(settings.provider_directory_roots.len(), 1);
+        assert_eq!(
+            settings.rendezvous[0].origin,
+            "https://rendezvous.example.org"
+        );
+        assert!(settings.rendezvous[0].standard);
+        assert!(settings.rendezvous[0].private_via_tor);
+        assert_eq!(settings.wake[0].origin, "https://wake.example.org");
+        assert!(settings.wake[0].standard);
+        assert!(settings.wake[0].private_via_tor);
+        assert_eq!(settings.tor_proxy.as_deref(), Some("127.0.0.1:9050"));
+        assert_eq!(settings.mailboxes.len(), 1);
+    }
+
+    #[test]
+    fn unknown_operating_mode_fails_closed() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("settings.json"), br#"{"mode":"public"}"#).unwrap();
+        assert!(NetworkSettings::load(dir.path())
+            .unwrap_err()
+            .contains("unsupported operating mode"));
+    }
+
+    #[test]
     fn events_serialize_with_type_tags() {
         let resync = serde_json::to_value(UiEvent::StateResyncRequired).unwrap();
         assert_eq!(resync["type"], "state_resync_required");
+
+        let conflict = serde_json::to_value(UiEvent::RendezvousConflict {
+            peer: "01".repeat(32),
+            device: "02".repeat(32),
+            provider: "03".repeat(32),
+        })
+        .unwrap();
+        assert_eq!(conflict["type"], "rendezvous_conflict");
+        assert_eq!(conflict["peer"], "01".repeat(32));
+        assert_eq!(conflict["device"], "02".repeat(32));
+        assert_eq!(conflict["provider"], "03".repeat(32));
+
+        let wake_conflict = serde_json::to_value(UiEvent::WakeConflict {
+            peer: "04".repeat(32),
+            device: "05".repeat(32),
+            generation: 6,
+        })
+        .unwrap();
+        assert_eq!(wake_conflict["type"], "wake_conflict");
+        assert_eq!(wake_conflict["peer"], "04".repeat(32));
+        assert_eq!(wake_conflict["device"], "05".repeat(32));
+        assert_eq!(wake_conflict["generation"], 6);
+        assert!(!wake_conflict.to_string().contains("capability"));
+        assert!(!wake_conflict.to_string().contains("token"));
 
         let json = serde_json::to_value(UiEvent::DeliveryUpdated {
             id: "ab".to_owned(),

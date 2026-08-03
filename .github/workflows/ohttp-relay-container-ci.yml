@@ -1,0 +1,36 @@
+name: OHTTP relay container CI
+
+on:
+  pull_request:
+    paths:
+      - deploy/ohttp-relay/**
+      - crates/kult-ohttp-relay/**
+      - Cargo.toml
+      - Cargo.lock
+      - .github/workflows/ohttp-relay-container-ci.yml
+      - .github/workflows/ohttp-relay-container.yml
+  push:
+    branches: [main]
+    paths:
+      - deploy/ohttp-relay/**
+      - crates/kult-ohttp-relay/**
+      - Cargo.toml
+      - Cargo.lock
+      - .github/workflows/ohttp-relay-container-ci.yml
+      - .github/workflows/ohttp-relay-container.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ohttp-relay-container-ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  container:
+    name: build, harden, restart
+    permissions:
+      contents: read
+    uses: ./.github/workflows/ohttp-relay-container.yml
+    with:
+      push: false

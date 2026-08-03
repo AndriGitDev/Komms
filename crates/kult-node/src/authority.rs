@@ -5,24 +5,37 @@ use sha2::{Digest, Sha256};
 
 use kult_crypto::{
     verify_group_admin_request_signature, verify_group_authority_state_signature,
-    verify_group_owner_transfer_signature, GroupSenderChain, IdentityPublic,
+    verify_group_owner_transfer_signature, DeviceAuthorityManifest, GroupSenderChain,
+    IdentityPublic,
 };
 use kult_protocol::{
     decode_group_authority, encode_group_authority, encode_group_authority_state,
     group_admin_request_signing_bytes, group_authority_state_signing_bytes,
-    owner_transfer_signing_bytes, DecodedGroupAuthority, GroupAdminAction, GroupAdminRequest,
-    GroupAdminResult, GroupAuthorityAnnounce, GroupAuthorityMember, GroupControlPayload,
-    GroupMemberInfo, GroupRole, OwnerTransferCertificate, SignedGroupAuthorityState,
-    CONTENT_KIND_GROUP_AUTHORITY, MAX_GROUP_ADMIN_REQUESTS, MAX_GROUP_NAME_LEN,
+    owner_transfer_device_signing_bytes, owner_transfer_signing_bytes, DecodedGroupAuthority,
+    GroupAdminAction, GroupAdminRequest, GroupAdminResult, GroupAuthorityAnnounce,
+    GroupAuthorityMember, GroupControlPayload, GroupMemberInfo, GroupRole,
+    OwnerTransferCertificate, SignedGroupAuthorityState, CONTENT_KIND_GROUP_AUTHORITY,
+    GROUP_AUTHORITY_VERSION, LEGACY_GROUP_AUTHORITY_VERSION, MAX_GROUP_ADMIN_REQUESTS,
+    MAX_GROUP_NAME_LEN,
 };
 use kult_store::{
     ContactTransition, DeferredControlRecord, GroupAuthorityRecord, GroupAuthorityStateTransition,
     GroupChainStateTransition, GroupMember, GroupRecord, GroupStatePlan, GroupStateTransition,
 };
 
+use crate::groups::{
+    AuthenticatedGroupSender, GroupControlAnnounceContext, GroupReceiverChainMaterial,
+};
 use crate::{CommitPlan, Event, GroupAuthorityInfo, GroupMemberRoleInfo, Node, NodeError, Result};
 
 const ID_RETRY_LIMIT: usize = 16;
+
+pub(crate) struct AuthorityInvitationSummary {
+    pub(crate) name: String,
+    pub(crate) creator: [u8; 32],
+    pub(crate) members: usize,
+    pub(crate) generation: u64,
+}
 
 impl Node {
     /// Current render-safe C6 authority, synthesizing legacy creator/member roles.
@@ -31,7 +44,7 @@ impl Node {
             .store
             .get_group(group)?
             .ok_or(NodeError::UnknownGroup)?;
-        let me = self.identity.public().ed;
+        let me = self.account.ed;
         if let Some(stored) = self.store.get_group_authority(group)? {
             let state = decode_stored(&stored)?;
             let members = state
@@ -98,7 +111,7 @@ impl Node {
             .store
             .get_group(group)?
             .ok_or(NodeError::UnknownGroup)?;
-        let me = self.identity.public().ed;
+        let me = self.account.ed;
         if rec.creator != me {
             return Err(NodeError::NotGroupOwner);
         }
@@ -106,6 +119,7 @@ impl Node {
         let mut secret = [0u8; 32];
         rng.fill_bytes(&mut secret);
         let state = SignedGroupAuthorityState {
+            version: GROUP_AUTHORITY_VERSION,
             group: *group,
             generation: rec
                 .generation
@@ -115,6 +129,8 @@ impl Node {
             original_owner: me,
             owner: me,
             signer: me,
+            signer_device: self.device_id(),
+            signer_authority: self.device_state.manifest.encode()?,
             prior_state_id: [0; 16],
             name: rec.name.clone(),
             members: authority_members(&rec, me),
@@ -142,7 +158,7 @@ impl Node {
             .get_group_authority(group)?
             .ok_or(NodeError::InvalidGroupAuthority)?;
         let mut state = decode_stored(&stored)?;
-        let me = self.identity.public().ed;
+        let me = self.account.ed;
         if state.owner != me {
             if state
                 .members
@@ -245,13 +261,17 @@ impl Node {
             .generation
             .checked_add(1)
             .ok_or(NodeError::InvalidGroupAuthority)?;
-        let transfer_bytes = owner_transfer_signing_bytes(
+        let from_device = self.device_id();
+        let from_authority = self.device_state.manifest.encode()?;
+        let transfer_bytes = owner_transfer_device_signing_bytes(
             *group,
             epoch,
             generation,
             stored.state_id,
             state.owner,
             new_owner,
+            from_device,
+            &from_authority,
         )
         .map_err(|_| NodeError::InvalidGroupAuthority)?;
         state.transfers.push(OwnerTransferCertificate {
@@ -261,7 +281,11 @@ impl Node {
             prior_state_id: stored.state_id,
             from_owner: state.owner,
             to_owner: new_owner,
-            signature: self.identity.sign_group_owner_transfer(&transfer_bytes),
+            from_device,
+            from_authority,
+            signature: self
+                .device_identity
+                .sign_group_owner_transfer(&transfer_bytes),
         });
         for member in &mut state.members {
             if member.peer == state.owner {
@@ -271,7 +295,7 @@ impl Node {
             }
         }
         state.owner = new_owner;
-        state.signer = self.identity.public().ed;
+        state.signer = self.account.ed;
         state.owner_epoch = epoch;
         state.generation = generation;
         state.prior_state_id = stored.state_id;
@@ -280,14 +304,7 @@ impl Node {
         state.secret_hash = hash_secret(&secret);
         // The transfer state itself is still authorized by the old owner.
         state.signature = [0; 64];
-        self.commit_authority_state_signed_by(
-            state,
-            secret,
-            now,
-            rng,
-            self.identity.public().ed,
-            None,
-        )
+        self.commit_authority_state_signed_by(state, secret, now, rng, self.account.ed, None)
     }
 
     pub(crate) fn group_authority_add_member(
@@ -303,7 +320,7 @@ impl Node {
             .get_group_authority(group)?
             .ok_or(NodeError::InvalidGroupAuthority)?;
         let mut state = decode_stored(&stored)?;
-        let me = self.identity.public().ed;
+        let me = self.account.ed;
         if state.owner != me {
             if state
                 .members
@@ -350,7 +367,7 @@ impl Node {
             .get_group_authority(group)?
             .ok_or(NodeError::InvalidGroupAuthority)?;
         let mut state = decode_stored(&stored)?;
-        let me = self.identity.public().ed;
+        let me = self.account.ed;
         let target_role = state
             .members
             .iter()
@@ -440,7 +457,10 @@ impl Node {
         };
         let signing = group_admin_request_signing_bytes(&request)
             .map_err(|_| NodeError::InvalidGroupAuthority)?;
-        request.signature = self.identity.sign_group_admin_request(&signing).to_vec();
+        request.signature = self
+            .device_identity
+            .sign_group_admin_request(&signing)
+            .to_vec();
         self.queue_group_control(
             &state.owner,
             &GroupControlPayload::AdminRequest(request),
@@ -463,7 +483,7 @@ impl Node {
     }
 
     fn require_owner(&self, state: &SignedGroupAuthorityState) -> Result<()> {
-        if state.owner != self.identity.public().ed {
+        if state.owner != self.account.ed {
             return Err(NodeError::NotGroupOwner);
         }
         Ok(())
@@ -488,7 +508,7 @@ impl Node {
     }
 
     fn ensure_group_role_support(&self, rec: &GroupRecord) -> Result<()> {
-        let me = self.identity.public().ed;
+        let me = self.account.ed;
         for peer in rec
             .members
             .iter()
@@ -534,13 +554,16 @@ impl Node {
         signer: [u8; 32],
         consumed_request: Option<[u8; 16]>,
     ) -> Result<[u8; 16]> {
-        if signer != self.identity.public().ed {
+        if signer != self.account.ed {
             return Err(NodeError::NotGroupOwner);
         }
+        state.version = GROUP_AUTHORITY_VERSION;
+        state.signer_device = self.device_id();
+        state.signer_authority = self.device_state.manifest.encode()?;
         let id = self.mint_authority_id(&state.group, rng)?;
         let signing = group_authority_state_signing_bytes(&state)
             .map_err(|_| NodeError::InvalidGroupAuthority)?;
-        state.signature = self.identity.sign_group_authority_state(&signing);
+        state.signature = self.device_identity.sign_group_authority_state(&signing);
         verify_authority_state(&state, Some(&secret))?;
         let payload =
             encode_group_authority_state(&state).map_err(|_| NodeError::InvalidGroupAuthority)?;
@@ -601,15 +624,47 @@ impl Node {
         Err(NodeError::InvalidGroupAuthority)
     }
 
+    pub(crate) fn authority_invitation_summary(
+        &self,
+        peer: [u8; 32],
+        announce: &GroupAuthorityAnnounce,
+    ) -> Result<Option<AuthorityInvitationSummary>> {
+        let DecodedGroupAuthority::State(state) = decode_group_authority(&announce.state_payload)
+        else {
+            return Ok(None);
+        };
+        if state.group != announce.group
+            || !state.members.iter().any(|member| member.peer == peer)
+            || !state
+                .members
+                .iter()
+                .any(|member| member.peer == self.account.ed)
+            || verify_authority_state(&state, Some(&announce.secret)).is_err()
+        {
+            return Ok(None);
+        }
+        Ok(Some(AuthorityInvitationSummary {
+            name: state.name,
+            creator: state.owner,
+            members: state.members.len(),
+            generation: state.generation,
+        }))
+    }
+
     pub(crate) fn apply_authority_announce(
         &mut self,
-        peer: [u8; 32],
-        peer_device: [u8; 32],
+        sender: AuthenticatedGroupSender,
         announce: &GroupAuthorityAnnounce,
-        control: &DeferredControlRecord,
+        context: GroupControlAnnounceContext<'_>,
         rng: &mut impl CryptoRngCore,
         established: &mut bool,
     ) -> Result<(bool, bool)> {
+        let GroupControlAnnounceContext {
+            origin,
+            control,
+            accept_invitation,
+        } = context;
+        let peer = sender.account;
         let DecodedGroupAuthority::State(state) = decode_group_authority(&announce.state_payload)
         else {
             return Ok((true, false));
@@ -620,7 +675,7 @@ impl Node {
         {
             return Ok((true, false));
         }
-        let me = self.identity.public().ed;
+        let me = self.account.ed;
         if !state.members.iter().any(|member| member.peer == me) {
             return Ok((false, false));
         }
@@ -664,8 +719,11 @@ impl Node {
         let mut rec = match before_group.as_ref() {
             Some(rec) => rec.clone(),
             None => {
-                if !adopt {
-                    return Err(NodeError::CorruptState);
+                if !adopt || !accept_invitation {
+                    if !adopt {
+                        return Err(NodeError::CorruptState);
+                    }
+                    return Ok((false, false));
                 }
                 let chain = GroupSenderChain::generate(rng);
                 GroupRecord {
@@ -711,7 +769,11 @@ impl Node {
             rec.creator = state.owner;
             rec.members = state_members(&state);
             rec.generation = state.generation;
-            self.rotate_group(&mut rec, rng)?;
+            if origin.is_some() && self.can_initialize_group_origins(&rec.members)? {
+                self.rotate_group_origin(&mut rec, rng)?;
+            } else {
+                self.rotate_group(&mut rec, rng)?;
+            }
             authority_after = Some(GroupAuthorityRecord {
                 group: state.group,
                 state_id: announce.state_id,
@@ -727,11 +789,13 @@ impl Node {
         }
         let (before_chain, after_chain) = self.prepare_group_receiver_chain(
             &state.group,
-            peer,
-            peer_device,
-            announce.key_id,
-            &announce.chain_key,
-            announce.iteration,
+            sender,
+            GroupReceiverChainMaterial {
+                key_id: announce.key_id,
+                chain_key: announce.chain_key,
+                iteration: announce.iteration,
+                origin,
+            },
         )?;
         let removed_chain_rows = self
             .store
@@ -785,13 +849,25 @@ impl Node {
         if adopt {
             events.push(Event::GroupUpdated { group: state.group });
         }
+        if origin.is_some()
+            && group_transitions.is_empty()
+            && chain_transitions.is_empty()
+            && contact_transitions.is_empty()
+            && authority_transitions.is_empty()
+        {
+            return Ok((true, false));
+        }
         let receipt = self.store.commit_plan(
             CommitPlan::GroupState(GroupStatePlan {
                 groups: &group_transitions,
                 chains: &chain_transitions,
                 contacts: &contact_transitions,
                 authorities: &authority_transitions,
-                delete_controls: core::slice::from_ref(control),
+                delete_controls: if origin.is_some() && !accept_invitation {
+                    &[]
+                } else {
+                    core::slice::from_ref(control)
+                },
                 presentation_changed: !events.is_empty(),
             }),
             rng,
@@ -800,7 +876,7 @@ impl Node {
         if after_chain.is_some() {
             *established = true;
         }
-        Ok((true, true))
+        Ok((true, origin.is_none() || accept_invitation))
     }
 
     pub(crate) fn apply_authority_remove(
@@ -820,7 +896,7 @@ impl Node {
             || state
                 .members
                 .iter()
-                .any(|member| member.peer == self.identity.public().ed)
+                .any(|member| member.peer == self.account.ed)
             || verify_authority_state(&state, None).is_err()
         {
             return Ok((true, false));
@@ -888,10 +964,14 @@ impl Node {
                 .base_generation
                 .checked_add(1)
                 .is_some_and(|generation| generation == state.generation);
-        let authorized = state.owner == self.identity.public().ed
+        let authorized = state.owner == self.account.ed
             && (request.base_generation == state.generation || moderation_resume)
             && is_admin
-            && verify_group_admin_request_signature(&peer, &signing, &signature).is_ok();
+            && self
+                .contact_device_authorizes(&peer, &control.peer_device)
+                .unwrap_or(false)
+            && verify_group_admin_request_signature(&control.peer_device, &signing, &signature)
+                .is_ok();
         if !authorized {
             return self
                 .finish_admin_request(peer, request, control, &stored, false, None, 2, now, rng);
@@ -1143,6 +1223,20 @@ impl Node {
         );
         Ok((true, true))
     }
+
+    fn contact_device_authorizes(&self, account: &[u8; 32], device: &[u8; 32]) -> Result<bool> {
+        let Some(endpoint) = self
+            .store
+            .contact_devices_for(account)?
+            .into_iter()
+            .find(|endpoint| endpoint.device == *device && endpoint.revoked_at.is_none())
+        else {
+            return Ok(false);
+        };
+        let manifest = DeviceAuthorityManifest::decode(&endpoint.authority)
+            .map_err(|_| NodeError::InvalidDeviceManifest)?;
+        Ok(manifest.account().ed == *account && manifest.active_certificate(device).is_some())
+    }
 }
 
 pub(crate) fn decode_stored(record: &GroupAuthorityRecord) -> Result<SignedGroupAuthorityState> {
@@ -1158,20 +1252,61 @@ pub(crate) fn verify_authority_state(
 ) -> Result<()> {
     let signing =
         group_authority_state_signing_bytes(state).map_err(|_| NodeError::InvalidGroupAuthority)?;
-    verify_group_authority_state_signature(&state.signer, &signing, &state.signature)
-        .map_err(|_| NodeError::InvalidGroupAuthority)?;
-    for transfer in &state.transfers {
-        let bytes = owner_transfer_signing_bytes(
-            transfer.group,
-            transfer.epoch,
-            transfer.generation,
-            transfer.prior_state_id,
-            transfer.from_owner,
-            transfer.to_owner,
-        )
-        .map_err(|_| NodeError::InvalidGroupAuthority)?;
-        verify_group_owner_transfer_signature(&transfer.from_owner, &bytes, &transfer.signature)
+    if state.version == LEGACY_GROUP_AUTHORITY_VERSION {
+        verify_group_authority_state_signature(&state.signer, &signing, &state.signature)
             .map_err(|_| NodeError::InvalidGroupAuthority)?;
+    } else if state.version == GROUP_AUTHORITY_VERSION {
+        verify_group_device_authority(
+            &state.signer,
+            &state.signer_device,
+            &state.signer_authority,
+        )?;
+        verify_group_authority_state_signature(&state.signer_device, &signing, &state.signature)
+            .map_err(|_| NodeError::InvalidGroupAuthority)?;
+    } else {
+        return Err(NodeError::InvalidGroupAuthority);
+    }
+    for transfer in &state.transfers {
+        if transfer.from_authority.is_empty() {
+            let bytes = owner_transfer_signing_bytes(
+                transfer.group,
+                transfer.epoch,
+                transfer.generation,
+                transfer.prior_state_id,
+                transfer.from_owner,
+                transfer.to_owner,
+            )
+            .map_err(|_| NodeError::InvalidGroupAuthority)?;
+            verify_group_owner_transfer_signature(
+                &transfer.from_owner,
+                &bytes,
+                &transfer.signature,
+            )
+            .map_err(|_| NodeError::InvalidGroupAuthority)?;
+        } else {
+            verify_group_device_authority(
+                &transfer.from_owner,
+                &transfer.from_device,
+                &transfer.from_authority,
+            )?;
+            let bytes = owner_transfer_device_signing_bytes(
+                transfer.group,
+                transfer.epoch,
+                transfer.generation,
+                transfer.prior_state_id,
+                transfer.from_owner,
+                transfer.to_owner,
+                transfer.from_device,
+                &transfer.from_authority,
+            )
+            .map_err(|_| NodeError::InvalidGroupAuthority)?;
+            verify_group_owner_transfer_signature(
+                &transfer.from_device,
+                &bytes,
+                &transfer.signature,
+            )
+            .map_err(|_| NodeError::InvalidGroupAuthority)?;
+        }
     }
     for member in &state.members {
         let identity: IdentityPublic =
@@ -1181,6 +1316,19 @@ pub(crate) fn verify_authority_state(
         }
     }
     if secret.is_some_and(|value| hash_secret(value) != state.secret_hash) {
+        return Err(NodeError::InvalidGroupAuthority);
+    }
+    Ok(())
+}
+
+fn verify_group_device_authority(
+    account: &[u8; 32],
+    device: &[u8; 32],
+    encoded: &[u8],
+) -> Result<()> {
+    let manifest =
+        DeviceAuthorityManifest::decode(encoded).map_err(|_| NodeError::InvalidGroupAuthority)?;
+    if manifest.account().ed != *account || manifest.active_certificate(device).is_none() {
         return Err(NodeError::InvalidGroupAuthority);
     }
     Ok(())
@@ -1259,6 +1407,8 @@ mod tests {
             prior_state_id: [epoch as u8; 16],
             from_owner: [from_owner; 32],
             to_owner: [to_owner; 32],
+            from_device: [0; 32],
+            from_authority: Vec::new(),
             signature: [signature; 64],
         }
     }

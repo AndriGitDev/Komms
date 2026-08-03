@@ -55,7 +55,7 @@ final class ScannerController: UIViewController, AVCaptureMetadataOutputObjectsD
         preview.videoGravity = .resizeAspectFill
         view.layer.addSublayer(preview)
 
-        progressLabel.text = "Point at a Komms QR"
+        progressLabel.text = L10n.text("scan_qr_ready")
         progressLabel.textColor = .white
         progressLabel.backgroundColor = UIColor.black.withAlphaComponent(0.8)
         progressLabel.font = .preferredFont(forTextStyle: .headline)
@@ -115,7 +115,10 @@ final class ScannerController: UIViewController, AVCaptureMetadataOutputObjectsD
             let progress = bundleAssembler.accept(text)
         else { return }
         guard let complete = progress.completeText else {
-            progressLabel.text = "Pairing frames \(progress.received) of \(progress.total)"
+            progressLabel.text = L10n.text(
+                "scan_qr_progress",
+                Int(clamping: progress.received),
+                Int(clamping: progress.total))
             return
         }
         delivered = true

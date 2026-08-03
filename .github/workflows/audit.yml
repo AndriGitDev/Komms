@@ -11,6 +11,9 @@ on:
     - cron: "17 6 * * 1"
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
 
@@ -19,13 +22,13 @@ jobs:
     name: cargo-deny advisories
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: core workspace
-        uses: EmbarkStudios/cargo-deny-action@v2
+        uses: EmbarkStudios/cargo-deny-action@b66acf5e9fe20f8aba065be86778a8a4c846f902 # v2
         with:
           command: check advisories
       - name: desktop app workspace
-        uses: EmbarkStudios/cargo-deny-action@v2
+        uses: EmbarkStudios/cargo-deny-action@b66acf5e9fe20f8aba065be86778a8a4c846f902 # v2
         with:
           command: check advisories
           manifest-path: apps/desktop/src-tauri/Cargo.toml
@@ -36,9 +39,11 @@ jobs:
     env:
       RUSTFLAGS: "-D warnings"
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
       - name: tests
         run: cargo test --workspace --all-features
 
@@ -48,9 +53,11 @@ jobs:
     env:
       RUSTFLAGS: "-D warnings"
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
       - name: 100k and 1m messages
         run: scripts/store-scale-gate.sh
 
@@ -61,18 +68,22 @@ jobs:
     runs-on: ubuntu-latest
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master
         with:
+          toolchain: stable
           components: llvm-tools-preview
-      - uses: Swatinem/rust-cache@v2
-      - uses: taiki-e/install-action@cargo-llvm-cov
+      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
+      - uses: taiki-e/install-action@6a1bd70eaac3c8bdf093356838d7ee09fda951cf # main
+        with:
+          tool: cargo-llvm-cov@0.8.7
       - name: coverage summary
         run: cargo llvm-cov --workspace --all-features --summary-only >> "$GITHUB_STEP_SUMMARY"
       - name: lcov report
         run: cargo llvm-cov report --lcov --output-path lcov.info
       - name: upload lcov artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: coverage-lcov
           path: lcov.info
+          retention-days: 30

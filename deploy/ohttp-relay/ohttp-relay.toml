@@ -1,0 +1,30 @@
+version = 1
+tls_certificate_file = "/run/komms-ohttp-service-keys/tls.crt"
+tls_private_key_file = "/run/komms-ohttp-service-keys/tls.key"
+gateway_ca_certificate_file = "/run/komms-ohttp-gateway-ca/roots.pem"
+
+[network]
+listen = "0.0.0.0:8445"
+health_listen = "127.0.0.1:8083"
+public_authority = "relay.example"
+public_resource = "/ohttp"
+max_connections = 256
+max_requests_per_minute = 30000
+max_requests_per_source_per_minute = 120
+max_bytes_per_minute = 268435456
+max_source_buckets = 65536
+tls_handshake_timeout_seconds = 5
+request_timeout_seconds = 15
+
+[upstream]
+connect_host = "gateway.example"
+port = 443
+tls_server_name = "gateway.example"
+resource = "/ohttp-gateway"
+encapsulated_request_bytes = 4096
+encapsulated_response_bytes = 4096
+max_response_header_bytes = 8192
+timeout_seconds = 10
+
+[runtime]
+shutdown_grace_seconds = 10

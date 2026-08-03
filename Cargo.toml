@@ -6,6 +6,12 @@ members = [
     "crates/kult-transport",
     "crates/kult-store",
     "crates/kult-node",
+    "crates/kult-rendezvous",
+    "crates/kult-reference-service",
+    "crates/kult-mailbox",
+    "crates/kult-wake",
+    "crates/kult-ohttp-relay",
+    "crates/kult-conformance",
     "crates/kult-ffi",
     "crates/kultd",
 ]

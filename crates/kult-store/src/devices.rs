@@ -8,7 +8,10 @@ use rand_core::CryptoRngCore;
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
-use kult_crypto::{DeviceCertificate, DeviceManifest, Identity, MAX_LINKED_DEVICES};
+use kult_crypto::{
+    DeviceAuthorityCertificate, DeviceAuthorityManifest, DeviceCertificate, DeviceManifest,
+    Identity, IdentityPublic, MAX_AUTHORITY_DEVICES, MAX_LINKED_DEVICES,
+};
 use kult_protocol::{DeviceSyncEvent, DeviceSyncNamespace};
 
 use crate::{
@@ -18,10 +21,34 @@ use crate::{
 };
 
 const DEVICE_SYNC_DIGEST_DOMAIN: &[u8] = b"Komms-Store-Device-Sync-Digest-v2";
+const DEVICE_AUTHORITY_STATE_MAGIC: &[u8; 4] = b"KDS2";
 /// Maximum authenticated sync-event bytes stored in one row.
 pub const MAX_DEVICE_SYNC_EVENT_BYTES: usize = 1024 * 1024;
 /// Maximum durable sync events before compaction must make progress.
 pub const MAX_DEVICE_SYNC_EVENTS: usize = 100_000;
+/// Maximum unresolved authority fork/recovery-conflict notices retained.
+pub const MAX_DEVICE_AUTHORITY_CONFLICTS: usize = 16;
+
+/// Sealed account-scoped ADR-0031 reachability state.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DiscoveryCapabilityState {
+    /// Random bearer capability; all-zero only during one-time Alpha migration.
+    pub capability: [u8; 32],
+    /// Monotonic local publication/rotation generation.
+    pub generation: u64,
+    /// Whether the visible time-bounded Alpha v1 mailbox-only bridge remains enabled.
+    pub legacy_v1_enabled: bool,
+}
+
+impl Default for DiscoveryCapabilityState {
+    fn default() -> Self {
+        Self {
+            capability: [0u8; 32],
+            generation: 0,
+            legacy_v1_enabled: true,
+        }
+    }
+}
 
 /// User-controlled initial history transfer selection.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -64,6 +91,9 @@ pub struct DeviceTransferGroup {
 /// Opaque-to-crypto selected state encrypted inside a confirmed link package.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeviceTransferSnapshot {
+    /// Account-scoped Connect capability copied only inside the confirmed,
+    /// encrypted proximate link package.
+    pub discovery: DiscoveryCapabilityState,
     /// Selected contact records.
     pub contacts: Vec<ContactRecord>,
     /// Per-device contact endpoints for fresh independent sessions.
@@ -128,13 +158,24 @@ pub struct ContactDeviceRecord {
     pub name: Option<String>,
     /// Encoded account certificate, empty only for a legacy account=device endpoint.
     pub certificate: Vec<u8>,
+    /// Complete encoded authority proof for visible fork and epoch checks.
+    ///
+    /// Empty only for a pre-ADR-0026 contact awaiting an explicit upgrade.
+    pub authority: Vec<u8>,
     /// Latest device-signed raw prekey bundle, possibly empty until announced.
     pub bundle: Vec<u8>,
     /// Opaque endpoint-specific delivery hints.
     pub hints: Vec<Vec<u8>>,
+    /// Authenticated account-scoped ADR-0031 capability used only to address
+    /// a fresh introduction to this exact device.
+    #[serde(default)]
+    pub introduction_capability: Option<[u8; 32]>,
+    /// Greatest authenticated discovery-control generation applied.
+    #[serde(default)]
+    pub introduction_generation: u64,
     /// Latest account manifest generation authenticating this endpoint.
     pub manifest_generation: u64,
-    /// Deterministic id of that exact signed manifest state for fork ordering.
+    /// Deterministic id of that exact authority state; never a fork tiebreaker.
     pub manifest_state_id: [u8; 32],
     /// Coarse authenticated observation time.
     pub last_seen: u64,
@@ -214,6 +255,124 @@ impl DeviceStateRecord {
     }
 }
 
+/// Visible fail-closed authority conflict category.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DeviceAuthorityConflictKind {
+    /// Concurrent valid ordinary children of one accepted parent.
+    Fork,
+    /// Different root transitions claim the same recovery epoch.
+    Recovery,
+}
+
+/// Bounded durable evidence that a conflicting authority branch was observed.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeviceAuthorityConflictRecord {
+    /// Conflict category shown by clients.
+    pub kind: DeviceAuthorityConflictKind,
+    /// Locally retained branch tip.
+    pub accepted_state: [u8; 32],
+    /// Rejected conflicting branch tip.
+    pub conflicting_state: [u8; 32],
+    /// Recovery epoch shared by the conflicting claims.
+    pub recovery_epoch: u64,
+    /// Coarse local observation time.
+    pub observed_at: u64,
+}
+
+/// Live ADR-0026 state containing only the public account and local device key.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeviceAuthorityStateRecord {
+    /// [`Identity::to_bytes`] for this physical device only.
+    pub local_device_secret: Vec<u8>,
+    /// Immutable candidate-owned local device certificate.
+    pub local_certificate: DeviceAuthorityCertificate,
+    /// Latest accepted bounded append-only authority proof.
+    pub manifest: DeviceAuthorityManifest,
+    /// Next device-authored synchronization operation counter.
+    pub sync_counter: u64,
+    /// Pairwise device-sync channel roots, sorted by peer device id.
+    pub channels: Vec<DeviceChannelRecord>,
+    /// Greatest accepted recovery epoch, persisted against stale restore.
+    pub accepted_recovery_epoch: u64,
+    /// Genesis or root-recovery transition anchoring the accepted epoch.
+    pub accepted_recovery_anchor: [u8; 32],
+    /// Bounded visible fork and recovery-conflict evidence.
+    pub conflicts: Vec<DeviceAuthorityConflictRecord>,
+    /// Sealed capability-scoped first-contact discovery state.
+    #[serde(default)]
+    pub discovery: DiscoveryCapabilityState,
+}
+
+impl DeviceAuthorityStateRecord {
+    pub(crate) fn validate(&self, account: &IdentityPublic) -> Result<()> {
+        self.manifest.verify()?;
+        self.local_certificate.verify()?;
+        let device_bytes: Zeroizing<[u8; 64]> = Zeroizing::new(
+            self.local_device_secret
+                .as_slice()
+                .try_into()
+                .map_err(|_| StoreError::Serialization)?,
+        );
+        let local_device = Identity::from_bytes(&device_bytes);
+        let local_id = local_device.public().ed;
+        if self.manifest.account() != account
+            || self.local_certificate.account != *account
+            || self.local_certificate.device != local_device.public()
+            || self
+                .manifest
+                .active_certificate(&local_id)
+                .is_none_or(|certificate| certificate != &self.local_certificate)
+            || self.accepted_recovery_epoch != self.manifest.recovery_epoch()
+            || self.accepted_recovery_anchor != self.manifest.recovery_anchor_id()
+            || self.conflicts.len() > MAX_DEVICE_AUTHORITY_CONFLICTS
+            || (self.discovery.capability == [0u8; 32]) != (self.discovery.generation == 0)
+        {
+            return Err(StoreError::Serialization);
+        }
+        let mut prior = None;
+        for channel in &self.channels {
+            if channel.peer_device == local_id
+                || channel.root == [0u8; 32]
+                || prior.is_some_and(|value| value >= channel.peer_device)
+                || self
+                    .manifest
+                    .active_certificate(&channel.peer_device)
+                    .is_none()
+            {
+                return Err(StoreError::Serialization);
+            }
+            prior = Some(channel.peer_device);
+        }
+        let mut prior_conflict = None;
+        for conflict in &self.conflicts {
+            if conflict.accepted_state == [0u8; 32]
+                || conflict.conflicting_state == [0u8; 32]
+                || conflict.accepted_state == conflict.conflicting_state
+                || conflict.recovery_epoch > self.accepted_recovery_epoch
+                || prior_conflict.is_some_and(|prior| {
+                    prior
+                        >= (
+                            conflict.recovery_epoch,
+                            conflict.accepted_state,
+                            conflict.conflicting_state,
+                        )
+                })
+            {
+                return Err(StoreError::Serialization);
+            }
+            prior_conflict = Some((
+                conflict.recovery_epoch,
+                conflict.accepted_state,
+                conflict.conflicting_state,
+            ));
+        }
+        if self.channels.len() > MAX_AUTHORITY_DEVICES.saturating_sub(1) {
+            return Err(StoreError::RecordBounds);
+        }
+        Ok(())
+    }
+}
+
 impl Store {
     /// Build a semantic snapshot for one confirmed proximate link. Live
     /// ratchets, prekeys, queues, drafts, media, and active ephemeral
@@ -222,16 +381,20 @@ impl Store {
         &self,
         selection: DeviceTransferSelection,
     ) -> Result<DeviceTransferSnapshot> {
-        let mut terminal = self.ephemeral_records()?;
+        let all_ephemeral = self.ephemeral_records()?;
+        let mut terminal = all_ephemeral.clone();
         terminal.retain(|record| record.state != EphemeralState::Active);
+        for record in &mut terminal {
+            record.transfer_ids.clear();
+        }
         let ephemeral_pairwise = |message: &MessageRecord| {
-            terminal.iter().any(|record| {
+            all_ephemeral.iter().any(|record| {
                 record.conversation == crate::EphemeralConversation::Pairwise(message.peer)
                     && record.content_id == message.id
             })
         };
         let ephemeral_group = |message: &GroupMessageRecord| {
-            terminal.iter().any(|record| {
+            all_ephemeral.iter().any(|record| {
                 record.conversation == crate::EphemeralConversation::Group(message.group)
                     && record.author == message.sender
                     && record.content_id == message.id
@@ -281,6 +444,7 @@ impl Store {
                     | DeviceSyncNamespace::GroupPolls => selection.history,
                     DeviceSyncNamespace::Groups => selection.history || selection.organization,
                     DeviceSyncNamespace::ExpiryTombstones => true,
+                    DeviceSyncNamespace::AccountCapabilities => true,
                 };
                 Ok(selected.then_some(encoded))
             })
@@ -289,6 +453,10 @@ impl Store {
             .flatten()
             .collect();
         Ok(DeviceTransferSnapshot {
+            discovery: self
+                .get_device_authority_state()?
+                .ok_or(StoreError::NotAStore)?
+                .discovery,
             contacts: if selection.contacts {
                 self.contacts()?
             } else {
@@ -303,6 +471,13 @@ impl Store {
                 self.all_messages()?
                     .into_iter()
                     .filter(|message| !ephemeral_pairwise(message))
+                    .map(|mut message| {
+                        message.wire_id = None;
+                        if matches!(message.state, DeliveryState::Queued | DeliveryState::Sent) {
+                            message.state = DeliveryState::Failed;
+                        }
+                        message
+                    })
                     .collect()
             } else {
                 Vec::new()
@@ -311,9 +486,18 @@ impl Store {
             group_messages: if selection.history {
                 self.all_group_messages()?
                     .into_iter()
-                    .filter(|message| !ephemeral_group(message))
+                    .filter(|message| {
+                        !ephemeral_group(message) && message.origin.is_recipient_authenticated()
+                    })
                     .map(|mut message| {
                         message.wire_body = None;
+                        for delivery in &mut message.deliveries {
+                            delivery.wire_id = None;
+                            if matches!(delivery.state, DeliveryState::Queued | DeliveryState::Sent)
+                            {
+                                delivery.state = DeliveryState::Failed;
+                            }
+                        }
                         message
                     })
                     .collect()
@@ -355,6 +539,29 @@ impl Store {
         Ok(())
     }
 
+    /// Atomically replace the complete live ADR-0026 device authority state.
+    pub fn put_device_authority_state(
+        &self,
+        state: &DeviceAuthorityStateRecord,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<()> {
+        let account = self.get_account_identity()?.ok_or(StoreError::NotAStore)?;
+        state.validate(&account)?;
+        let encoded = postcard::to_allocvec(state).map_err(|_| StoreError::Serialization)?;
+        let mut plain = Zeroizing::new(Vec::with_capacity(
+            DEVICE_AUTHORITY_STATE_MAGIC.len() + encoded.len(),
+        ));
+        plain.extend_from_slice(DEVICE_AUTHORITY_STATE_MAGIC);
+        plain.extend_from_slice(&encoded);
+        self.put_equality::<store_v2::DeviceStateRows>(
+            &store_v2::SingletonKey,
+            &plain,
+            store_v2::IndexKeys::none(),
+            rng,
+        )?;
+        Ok(())
+    }
+
     /// Insert or replace one sealed contact-device endpoint.
     pub fn put_contact_device(
         &self,
@@ -366,6 +573,8 @@ impl Store {
             || (endpoint.certificate.is_empty() && endpoint.account != endpoint.device)
             || (endpoint.manifest_generation == 0) != (endpoint.manifest_state_id == [0u8; 32])
             || endpoint.revoked_at.is_some() != endpoint.revoked_after_counter.is_some()
+            || endpoint.introduction_capability == Some([0u8; 32])
+            || endpoint.introduction_capability.is_some() != (endpoint.introduction_generation > 0)
         {
             return Err(StoreError::Serialization);
         }
@@ -523,8 +732,27 @@ impl Store {
             return Ok(None);
         };
         row.verify_key(&store_v2::SingletonKey)?;
+        if row.payload.starts_with(DEVICE_AUTHORITY_STATE_MAGIC) {
+            return Ok(None);
+        }
         let state: DeviceStateRecord = decode_exact(&row.payload)?;
         let account = self.get_identity()?.ok_or(StoreError::NotAStore)?;
+        state.validate(&account)?;
+        Ok(Some(state))
+    }
+
+    /// Load and validate the live ADR-0026 device authority state.
+    pub fn get_device_authority_state(&self) -> Result<Option<DeviceAuthorityStateRecord>> {
+        let Some(row) = self.get_equality::<store_v2::DeviceStateRows>(&store_v2::SingletonKey)?
+        else {
+            return Ok(None);
+        };
+        row.verify_key(&store_v2::SingletonKey)?;
+        let Some(encoded) = row.payload.strip_prefix(DEVICE_AUTHORITY_STATE_MAGIC) else {
+            return Ok(None);
+        };
+        let state: DeviceAuthorityStateRecord = decode_exact(encoded)?;
+        let account = self.get_account_identity()?.ok_or(StoreError::NotAStore)?;
         state.validate(&account)?;
         Ok(Some(state))
     }
@@ -634,14 +862,21 @@ impl Store {
     }
 
     pub(crate) fn validate_device_logical_rows(&self) -> Result<()> {
-        let account = self.get_identity()?;
+        let legacy_account = self.get_identity()?;
+        let live_account = self.get_account_identity()?;
         self.validate_rows::<store_v2::DeviceStateRows, _>(|row| {
             row.verify_key(&store_v2::SingletonKey)?;
             row.verify_indexes(&store_v2::IndexKeys::none())?;
-            let state: DeviceStateRecord = decode_exact(&row.payload)?;
-            state.validate(account.as_ref().ok_or(StoreError::NotAStore)?)
+            if let Some(encoded) = row.payload.strip_prefix(DEVICE_AUTHORITY_STATE_MAGIC) {
+                let state: DeviceAuthorityStateRecord = decode_exact(encoded)?;
+                state.validate(live_account.as_ref().ok_or(StoreError::NotAStore)?)
+            } else {
+                let state: DeviceStateRecord = decode_exact(&row.payload)?;
+                state.validate(legacy_account.as_ref().ok_or(StoreError::NotAStore)?)
+            }
         })?;
-        let device_state = self.get_device_state()?;
+        let legacy_device_state = self.get_device_state()?;
+        let live_device_state = self.get_device_authority_state()?;
         self.validate_rows::<store_v2::DeviceSyncRows, _>(|row| {
             if row.payload.is_empty() || row.payload.len() > MAX_DEVICE_SYNC_EVENT_BYTES {
                 return Err(StoreError::Serialization);
@@ -684,20 +919,34 @@ impl Store {
             validate_device_link_recovery(&recovery)?;
             row.verify_key(&store_v2::AccountKey::new(recovery.target_device))?;
             row.verify_indexes(&store_v2::IndexKeys::none())?;
-            let state = device_state.as_ref().ok_or(StoreError::NotAStore)?;
-            if !state.manifest.devices.iter().any(|entry| {
-                entry.certificate.device_id() == recovery.target_device
-                    && entry.revoked_at.is_none()
-            }) || !state
-                .channels
-                .iter()
-                .any(|channel| channel.peer_device == recovery.target_device)
-            {
+            let active_and_linked = if let Some(state) = &live_device_state {
+                state
+                    .manifest
+                    .active_certificate(&recovery.target_device)
+                    .is_some()
+                    && state
+                        .channels
+                        .iter()
+                        .any(|channel| channel.peer_device == recovery.target_device)
+            } else if let Some(state) = &legacy_device_state {
+                state.manifest.devices.iter().any(|entry| {
+                    entry.certificate.device_id() == recovery.target_device
+                        && entry.revoked_at.is_none()
+                }) && state
+                    .channels
+                    .iter()
+                    .any(|channel| channel.peer_device == recovery.target_device)
+            } else {
+                false
+            };
+            if !active_and_linked {
                 return Err(StoreError::LogicalKeyMismatch);
             }
             Ok(())
         })?;
-        if self.count_rows::<store_v2::DeviceLinkRecoveryRows>()? > MAX_LINKED_DEVICES as u64 {
+        if self.count_rows::<store_v2::DeviceLinkRecoveryRows>()?
+            > MAX_LINKED_DEVICES.max(MAX_AUTHORITY_DEVICES) as u64
+        {
             return Err(StoreError::RecordBounds);
         }
         Ok(())

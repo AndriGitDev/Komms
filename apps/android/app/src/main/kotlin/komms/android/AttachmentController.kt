@@ -328,18 +328,30 @@ class AttachmentController(
         }
         val content = LinearLayout(activity).apply {
             orientation = LinearLayout.VERTICAL
-            addView(text("Review ${selected.displayName ?: "attachment"} before explicitly sending it."))
-            addView(text("Type: ${selected.mediaType}"))
+            addView(
+                text(
+                    activity.getString(
+                        R.string.attachment_review_selected,
+                        selected.displayName
+                            ?: activity.getString(R.string.attachment_default_name),
+                    ),
+                ),
+            )
+            addView(
+                text(activity.getString(R.string.attachment_type_value, selected.mediaType)),
+            )
             addView(viewOnce)
             addView(lifetime)
             addView(honesty)
             addView(carrierText)
         }
         val dialog = AlertDialog.Builder(activity)
-            .setTitle("Review attachment")
+            .setTitle(activity.localizedSource("Review attachment"))
             .setView(content)
-            .setNegativeButton("Discard") { _, _ -> selected.file.delete() }
-            .setPositiveButton("Send attachment", null)
+            .setNegativeButton(activity.localizedSource("Discard")) { _, _ ->
+                selected.file.delete()
+            }
+            .setPositiveButton(activity.localizedSource("Send attachment"), null)
             .create()
         activeDialog = dialog
         dialog.setOnDismissListener {
@@ -382,7 +394,10 @@ class AttachmentController(
                         is ConfirmationResult.Changed -> {
                             snapshot = result.explanation
                             carrierText.text = result.explanation
-                            activity.toast("Carrier state changed. Review the updated explanation and confirm again.")
+                            activity.toast(
+                                activity.getString(
+                                    R.string.attachment_carrier_changed_confirm),
+                            )
                             dialog.getButton(AlertDialog.BUTTON_POSITIVE).isEnabled = true
                         }
                         ConfirmationResult.Sent -> {
@@ -404,10 +419,15 @@ class AttachmentController(
             orientation = LinearLayout.VERTICAL
             setPadding(16, 12, 16, 12)
         }
-        column.addView(text("Edits are local. The original is never sent. Review the exact final PNG before sending."))
+        column.addView(
+            text(
+                activity.localizedSource(
+                    "Edits happen locally. The original is never sent. Crop coordinates use oriented pixels; privacy regions use the rotated final canvas."),
+            ),
+        )
         val preview = ImageView(activity).apply {
             adjustViewBounds = true
-            contentDescription = "Exact final edited image review"
+            contentDescription = activity.localizedSource("Exact final edited image review")
             minimumHeight = 240
         }
         val infoText = text("").apply { accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE }
@@ -416,58 +436,71 @@ class AttachmentController(
 
         val preset = Spinner(activity)
         val presets = listOf("Original", "Free", "Square 1:1", "4:3", "16:9")
+            .map(activity::localizedSource)
         preset.adapter = ArrayAdapter(activity, android.R.layout.simple_spinner_dropdown_item, presets)
-        preset.contentDescription = "Crop preset"
+        preset.contentDescription = activity.localizedSource("Crop preset")
         column.addView(preset)
-        val cropX = numberField("Crop X", 0u)
-        val cropY = numberField("Crop Y", 0u)
-        val cropWidth = numberField("Crop width", draft.orientedWidth)
-        val cropHeight = numberField("Crop height", draft.orientedHeight)
+        val cropX = numberField(activity.localizedSource("Crop X"), 0u)
+        val cropY = numberField(activity.localizedSource("Crop Y"), 0u)
+        val cropWidth = numberField(activity.localizedSource("Crop width"), draft.orientedWidth)
+        val cropHeight = numberField(activity.localizedSource("Crop height"), draft.orientedHeight)
         listOf(cropX, cropY, cropWidth, cropHeight).forEach(column::addView)
 
         val controls = LinearLayout(activity).apply { orientation = LinearLayout.HORIZONTAL }
-        val applyCrop = Button(activity).apply { text = "Apply crop" }
+        val applyCrop = Button(activity).apply {
+            text = activity.localizedSource("Apply crop")
+        }
         val rotateLeft = Button(activity).apply {
-            text = "Rotate left"
-            contentDescription = "Rotate 90 degrees counter-clockwise"
+            text = activity.localizedSource("Rotate left")
+            contentDescription =
+                activity.localizedSource("Rotate 90 degrees counter-clockwise")
         }
         val rotateRight = Button(activity).apply {
-            text = "Rotate right"
-            contentDescription = "Rotate 90 degrees clockwise"
+            text = activity.localizedSource("Rotate right")
+            contentDescription = activity.localizedSource("Rotate 90 degrees clockwise")
         }
         controls.addView(applyCrop)
         controls.addView(rotateLeft)
         controls.addView(rotateRight)
         column.addView(controls)
 
-        column.addView(text("Add a user-positioned privacy region on the current final canvas."))
+        column.addView(
+            text(
+                activity.localizedSource(
+                    "Add a user-positioned privacy region on the current final canvas."),
+            ),
+        )
         val regionKind = Spinner(activity).apply {
             adapter = ArrayAdapter(
                 activity,
                 android.R.layout.simple_spinner_dropdown_item,
-                listOf("Blur", "Pixelate"),
+                listOf("Blur", "Pixelate").map(activity::localizedSource),
             )
-            contentDescription = "Privacy operation"
+            contentDescription = activity.localizedSource("Privacy operation")
         }
         column.addView(regionKind)
-        val regionX = numberField("Region X", 0u)
-        val regionY = numberField("Region Y", 0u)
-        val regionWidth = numberField("Region width", minOf(64u, draft.info.width))
-        val regionHeight = numberField("Region height", minOf(64u, draft.info.height))
-        val regionStrength = numberField("Region strength", 8u)
+        val regionX = numberField(activity.localizedSource("Region X"), 0u)
+        val regionY = numberField(activity.localizedSource("Region Y"), 0u)
+        val regionWidth =
+            numberField(activity.localizedSource("Region width"), minOf(64u, draft.info.width))
+        val regionHeight =
+            numberField(activity.localizedSource("Region height"), minOf(64u, draft.info.height))
+        val regionStrength = numberField(activity.localizedSource("Region strength"), 8u)
         listOf(regionX, regionY, regionWidth, regionHeight, regionStrength).forEach(column::addView)
-        val addRegion = Button(activity).apply { text = "Add privacy region" }
-        val regionList = text("No privacy regions")
+        val addRegion = Button(activity).apply {
+            text = activity.localizedSource("Add privacy region")
+        }
+        val regionList = text(activity.localizedSource("No privacy regions"))
         column.addView(addRegion)
         column.addView(regionList)
         val historyControls = LinearLayout(activity).apply { orientation = LinearLayout.HORIZONTAL }
-        val undo = Button(activity).apply { text = "Undo" }
-        val reset = Button(activity).apply { text = "Reset" }
+        val undo = Button(activity).apply { text = activity.localizedSource("Undo") }
+        val reset = Button(activity).apply { text = activity.localizedSource("Reset") }
         historyControls.addView(undo)
         historyControls.addView(reset)
         column.addView(historyControls)
         val filename = IncognitoEditText(activity).apply {
-            hint = "Display filename"
+            hint = activity.localizedSource("Display filename")
             setText(draft.filename)
         }
         val viewOnce = CheckBox(activity).apply { text = activity.getString(R.string.ephemeral_view_once) }
@@ -504,12 +537,33 @@ class AttachmentController(
             reviewBitmap = replacement
             preview.setImageBitmap(replacement)
             old?.recycle()
-            infoText.text = "${draft.info.width} × ${draft.info.height} pixels · ${draft.info.encodedBytes} bytes · exact metadata-free PNG"
+            infoText.text = activity.getString(
+                R.string.attachment_image_summary,
+                draft.info.width.toLong(),
+                draft.info.height.toLong(),
+                draft.info.encodedBytes.toLong(),
+            )
             regionList.text = if (draft.recipe.regions.isEmpty()) {
-                "No privacy regions"
+                activity.localizedSource("No privacy regions")
             } else {
                 draft.recipe.regions.mapIndexed { index, region ->
-                    "${index + 1}. ${region.kind.name.lowercase()} x ${region.x}, y ${region.y}, ${region.width} × ${region.height}, strength ${region.strength}"
+                    val kind = activity.localizedSource(
+                        if (region.kind == ImageEditRegionKind.BLUR) "Blur" else "Pixelate",
+                    )
+                    val summary = activity.getString(
+                        R.string.attachment_privacy_region_summary,
+                        kind,
+                        region.x.toLong(),
+                        region.y.toLong(),
+                        region.width.toLong(),
+                        region.height.toLong(),
+                        region.strength.toLong(),
+                    )
+                    activity.getString(
+                        R.string.attachment_region_numbered,
+                        index + 1,
+                        summary,
+                    )
                 }.joinToString("\n")
             }
         }
@@ -565,7 +619,7 @@ class AttachmentController(
 
         applyCrop.setOnClickListener {
             runCatching { draft.recipe.copy(crop = chosenCrop()) }
-                .fold(::renderRecipe) { activity.toast(errorText(it)) }
+                .fold(::renderRecipe) { activity.toast(activity.errorText(it)) }
         }
         rotateLeft.setOnClickListener {
             renderRecipe(
@@ -599,7 +653,7 @@ class AttachmentController(
                 )
             }.fold(
                 { region -> renderRecipe(draft.recipe.copy(regions = draft.recipe.regions + region)) },
-                { activity.toast(errorText(it)) },
+                { activity.toast(activity.errorText(it)) },
             )
         }
         undo.setOnClickListener {
@@ -611,10 +665,10 @@ class AttachmentController(
         }
 
         val dialog = AlertDialog.Builder(activity)
-            .setTitle("Edit and review image")
+            .setTitle(activity.localizedSource("Edit and review image"))
             .setView(scroll)
-            .setNegativeButton("Discard", null)
-            .setPositiveButton("Send exact final image", null)
+            .setNegativeButton(activity.localizedSource("Discard"), null)
+            .setPositiveButton(activity.localizedSource("Send exact final image"), null)
             .create()
         activeDialog = dialog
         dialog.setOnDismissListener {
@@ -661,7 +715,10 @@ class AttachmentController(
                         is ConfirmationResult.Changed -> {
                             draft.carrierSnapshot = result.explanation
                             carrierText.text = result.explanation
-                            activity.toast("Carrier state changed. Review the updated explanation and confirm again.")
+                            activity.toast(
+                                activity.getString(
+                                    R.string.attachment_carrier_changed_confirm),
+                            )
                             dialog.getButton(AlertDialog.BUTTON_POSITIVE).isEnabled = true
                         }
                         ConfirmationResult.Sent -> {
@@ -751,7 +808,8 @@ class AttachmentController(
                         copied += read
                         require(copied <= maxBytes) {
                             if (maxBytes == IMAGE_SOURCE_LIMIT) {
-                                "This image exceeds the 32 MiB editor limit"
+                                activity.getString(
+                                    R.string.attachment_image_editor_too_large)
                             } else {
                                 activity.getString(R.string.attachment_too_large)
                             }
@@ -867,7 +925,7 @@ class AttachmentController(
                 refresh()
             } catch (error: Throwable) {
                 protected.delete()
-                activity.toast(error.message ?: activity.getString(R.string.attachment_open_failed))
+                activity.toast(activity.getString(R.string.attachment_open_failed))
             }
         }
     }
@@ -902,7 +960,7 @@ class AttachmentController(
                 openedFiles += protected
             } catch (error: Throwable) {
                 protected.delete()
-                activity.toast(error.message ?: activity.getString(R.string.attachment_open_failed))
+                activity.toast(activity.getString(R.string.attachment_open_failed))
             }
         }
     }
@@ -979,7 +1037,11 @@ private class AttachmentAdapter(
             primary?.filename ?: context.getString(R.string.attachment_default_name),
         )
         view.findViewById<TextView>(R.id.attachment_title).text =
-            if (attachment.viewOnce) "View once · $displayName" else displayName
+            if (attachment.viewOnce) {
+                context.getString(R.string.attachment_view_once_filename, displayName)
+            } else {
+                displayName
+            }
         view.findViewById<TextView>(R.id.attachment_state).text = context.getString(
             R.string.attachment_direction_state,
             context.getString(

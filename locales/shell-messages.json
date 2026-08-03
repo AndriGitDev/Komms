@@ -1,0 +1,3257 @@
+{
+  "aliases": {},
+  "intentionally_unchanged": {
+    "device_default_ios_name": "Apple product name used as the editable default device label.",
+    "ui_application_octet_stream": "Registered MIME media type.",
+    "ui_broadcast": "Canonical mesh routing token.",
+    "ui_dev_ttyusb0": "Literal example filesystem path.",
+    "ui_dns4_host_udp_4001_quic_v1_p2p_12d3": "Literal multiaddr example.",
+    "ui_dns4_p2p": "Literal multiaddr example.",
+    "ui_kc2": "Versioned Connect-code prefix.",
+    "ui_kult_add": "Literal command name.",
+    "ui_mesh": "Canonical carrier-kind token.",
+    "ui_multiaddr": "Protocol data-type name.",
+    "ui_n": "Language-neutral generated avatar glyph.",
+    "ui_nat": "Standard network acronym and pending value.",
+    "ui_offline_path_account_authority_kra": "Literal example filesystem path.",
+    "ui_offline_path_komms_account_authority_kra": "Literal example filesystem path.",
+    "ui_path_to_backup_kkr": "Literal example filesystem path.",
+    "ui_path_to_providers_json": "Literal example filesystem path.",
+    "ui_x": "Language-neutral coordinate label.",
+    "ui_y": "Language-neutral coordinate label."
+  },
+  "intentionally_unlocalized": {},
+  "messages": {
+    "accessibility_error": {
+      "en-US": "Error: %1$s",
+      "is": "Villa: %1$s"
+    },
+    "folder_rename_heading": {
+      "en-US": "Rename folder",
+      "is": "Endurnefna möppu"
+    },
+    "hint_mesh_value": {
+      "en-US": "node number or broadcast",
+      "is": "hnútnúmer eða útsending til allra"
+    },
+    "hint_value": {
+      "en-US": "value",
+      "is": "gildi"
+    },
+    "label_edit_heading": {
+      "en-US": "Edit label",
+      "is": "Breyta merki"
+    },
+    "settings_changes_after_unlock": {
+      "en-US": "Changes apply after the next lock and unlock.",
+      "is": "Breytingar taka gildi eftir næstu læsingu og aflæsingu."
+    },
+    "settings_saved_without_secrets": {
+      "en-US": "Saved next to the encrypted store. No secrets are included.",
+      "is": "Vistað við hlið dulkóðuðu gagnageymslunnar. Engin leyndarmál fylgja."
+    },
+    "gate_authority_preparing": {
+      "en-US": "Preparing protected offline authority…",
+      "is": "Undirbý varða ótengda heimild…"
+    },
+    "gate_authority_save_another": {
+      "en-US": "Save another offline copy…",
+      "is": "Vista annað ótengt eintak…"
+    },
+    "gate_authority_save_action": {
+      "en-US": "Save offline authority…",
+      "is": "Vista ótengda heimild…"
+    },
+    "gate_authority_save_first": {
+      "en-US": "Save the .kra file before continuing.",
+      "is": "Vistaðu .kra-skrána áður en þú heldur áfram."
+    },
+    "gate_choose_authority_file": {
+      "en-US": "Choose offline authority file (.kra)",
+      "is": "Velja ótengda heimildarskrá (.kra)"
+    },
+    "gate_choose_authority_first": {
+      "en-US": "Choose the separately held offline authority file.",
+      "is": "Veldu ótengdu heimildarskrána sem er geymd sér."
+    },
+    "gate_choose_backup_file": {
+      "en-US": "Choose backup file (.kkr)",
+      "is": "Velja öryggisafrit (.kkr)"
+    },
+    "gate_choose_backup_first": {
+      "en-US": "Choose a backup file first.",
+      "is": "Veldu fyrst öryggisafrit."
+    },
+    "gate_create_passphrase": {
+      "en-US": "Create a passphrase",
+      "is": "Búa til lykilsetningu"
+    },
+    "gate_create_passphrase_help_exact": {
+      "en-US": "This passphrase protects the new encrypted store on this device.",
+      "is": "Þessi lykilsetning verndar nýju dulkóðuðu gagnageymsluna í þessu tæki."
+    },
+    "gate_legacy_backup_heading": {
+      "en-US": "Legacy copied-root backup",
+      "is": "Eldra öryggisafrit með afritaðri rót"
+    },
+    "gate_restore_honesty": {
+      "en-US": "The backup excludes live device, session, rendezvous, and offline-authority secrets. Stable-identity recovery requires both separately held files and their different phrases.",
+      "is": "Öryggisafritið inniheldur ekki virk leyndarmál tækis, lotu, rendezvous eða ótengdrar heimildar. Endurheimt varanlegs auðkennis krefst beggja skráa sem eru geymdar sér og ólíkra orðasyrpa þeirra."
+    },
+    "gate_restore_passphrase_help_exact": {
+      "en-US": "Your restored store will be sealed with this passphrase.",
+      "is": "Endurheimta gagnageymslan verður innsigluð með þessari lykilsetningu."
+    },
+    "gate_restore_start": {
+      "en-US": "Restore and start",
+      "is": "Endurheimta og ræsa"
+    },
+    "gate_root_free_backup_heading": {
+      "en-US": "Root-free encrypted backup",
+      "is": "Dulkóðað öryggisafrit án rótarlykils"
+    },
+    "gate_unlock_komms": {
+      "en-US": "Unlock Komms",
+      "is": "Aflæsa Komms"
+    },
+    "gate_upgrade_import_action": {
+      "en-US": "Create new identity and import archive",
+      "is": "Stofna nýtt auðkenni og flytja inn safn"
+    },
+    "gate_upgrade_legacy_explanation": {
+      "en-US": "This legacy backup contains an account root that may have been copied, so the former address cannot safely resume. Komms will decrypt it only into an unpublished migration projection, then publish a fresh account containing cleared petnames and accurately labelled local pairwise/note history. Groups, routes, sessions, devices, queues, and service capabilities will not transfer. Every retained contact must be re-verified.",
+      "is": "Þetta eldra öryggisafrit inniheldur reikningsrót sem kann að hafa verið afrituð og því er ekki öruggt að halda fyrra vistfangi áfram. Komms afkóðar það aðeins í óbirta flutningsmynd og birtir síðan nýjan reikning með hreinsuðum gælunöfnum og nákvæmlega merktri staðbundinni sögu einkasamtala og minnispunkta. Hópar, leiðir, lotur, tæki, biðraðir og þjónustuheimildir flytjast ekki. Staðfesta þarf alla varðveitta tengiliði aftur."
+    },
+    "gate_upgrade_legacy_title": {
+      "en-US": "Recover legacy backup with a new identity",
+      "is": "Endurheimta eldra öryggisafrit með nýju auðkenni"
+    },
+    "gate_upgrade_migration_explanation": {
+      "en-US": "Komms found no linked-device root copy in this store. Keep this address only if you also never exported or copied a legacy KKR7 backup. If you did, choose the conservative new-identity reset below. In-place migration keeps this device, petnames, and history after you save the root as a separate offline authority.",
+      "is": "Komms fann ekkert afrit reikningsrótar fyrir tengt tæki í þessari gagnageymslu. Haltu þessu vistfangi aðeins ef þú fluttir heldur aldrei út eða afritaðir eldra KKR7-öryggisafrit. Ef þú gerðir það skaltu velja varfærnu endurstillinguna með nýju auðkenni hér að neðan. Flutningur á staðnum varðveitir þetta tæki, gælunöfn og sögu eftir að rótin hefur verið vistuð sem aðskilin ótengd heimild."
+    },
+    "gate_upgrade_migration_title": {
+      "en-US": "Required device-authority migration",
+      "is": "Nauðsynlegur flutningur tækjaheimildar"
+    },
+    "authority_upgrade_confirmation_required": {
+      "en-US": "Confirm the security statement before continuing.",
+      "is": "Staðfestu öryggisyfirlýsinguna áður en þú heldur áfram."
+    },
+    "authority_upgrade_migration_confirmation": {
+      "en-US": "I stored the authority file and its words separately",
+      "is": "Ég geymdi heimildarskrána og orð hennar aðskilin"
+    },
+    "authority_upgrade_reset_confirmation": {
+      "en-US": "I stored both parts separately and understand my address and every safety number will change",
+      "is": "Ég geymdi báða hlutana aðskilda og skil að vistfangið mitt og öll öryggisnúmer munu breytast"
+    },
+    "gate_upgrade_prepare_fresh": {
+      "en-US": "Prepare fresh recovery authority",
+      "is": "Undirbúa nýja endurheimtarheimild"
+    },
+    "gate_upgrade_publishing": {
+      "en-US": "Publishing the upgraded profile…",
+      "is": "Birti uppfærða sniðið…"
+    },
+    "gate_upgrade_reset_explanation": {
+      "en-US": "This Alpha profile copied its account root to another device. Revoking that device cannot erase its copy. The safe upgrade creates a new account, clears live routes, sessions, device/group authority and delivery work, and keeps only clearly marked local pairwise/note history and petnames. Every retained contact must be re-verified.",
+      "is": "Þetta Alpha-snið afritaði reikningsrótina í annað tæki. Afturköllun þess tækis getur ekki eytt afritinu. Örugga uppfærslan stofnar nýjan reikning, hreinsar virkar leiðir, lotur, tækja- og hópheimildir og afhendingarvinnu og varðveitir aðeins skýrt merkta staðbundna sögu einkasamtala og minnispunkta ásamt gælunöfnum. Staðfesta þarf alla varðveitta tengiliði aftur."
+    },
+    "gate_upgrade_reset_title": {
+      "en-US": "Required new-identity security reset",
+      "is": "Nauðsynleg öryggisendurstilling með nýju auðkenni"
+    },
+    "gate_upgrade_reset_words": {
+      "en-US": "These words open the new account authority. The old safety number and device revocations are not preserved.",
+      "is": "Þessi orð opna nýju reikningsheimildina. Gamla öryggisnúmerið og afturkallanir tækja varðveitast ekki."
+    },
+    "gate_upgrade_same_identity_words": {
+      "en-US": "These words open the offline authority for the same account.",
+      "is": "Þessi orð opna ótengdu heimildina fyrir sama reikning."
+    },
+    "add_paste_hex": {
+      "en-US": "Paste hex",
+      "is": "Líma hexagildi"
+    },
+    "note_unknown_local_conversation": {
+      "en-US": "Unknown local conversation",
+      "is": "Óþekkt staðbundið samtal"
+    },
+    "note_time_local_only": {
+      "en-US": "%1$s · local only",
+      "is": "%1$s · aðeins staðbundið"
+    },
+    "call_audio_foreground_exit": {
+      "en-US": "Komms left the foreground",
+      "is": "Komms fór úr forgrunni"
+    },
+    "call_audio_interrupted": {
+      "en-US": "the system interrupted the live audio session",
+      "is": "kerfið rauf virku hljóðlotuna"
+    },
+    "call_audio_service_restarted": {
+      "en-US": "the system audio service restarted",
+      "is": "hljóðþjónusta kerfisins endurræsti"
+    },
+    "call_audio_stopped_notice": {
+      "en-US": "Live call audio stopped: %1$s",
+      "is": "Hljóð símtals stöðvaðist: %1$s"
+    },
+    "device_authority_fork_notice": {
+      "en-US": "A device-authority fork was detected in recovery epoch %1$d. Authority is fail-closed; review Linked devices.",
+      "is": "Klofningur í tækjaheimild fannst á endurheimtartímabili %1$d. Heimildin lokast við bilun; yfirfarðu Tengd tæki."
+    },
+    "device_authority_recovery_notice": {
+      "en-US": "Conflicting recoveries claim epoch %1$d. Authority is fail-closed; review Linked devices.",
+      "is": "Misvísandi endurheimtir gera tilkall til tímabils %1$d. Heimildin lokast við bilun; yfirfarðu Tengd tæki."
+    },
+    "group_admin_request_accepted": {
+      "en-US": "The owner accepted your group administration request.",
+      "is": "Eigandinn samþykkti beiðni þína um hópstjórnun."
+    },
+    "group_admin_request_rejected": {
+      "en-US": "The owner rejected your group administration request.",
+      "is": "Eigandinn hafnaði beiðni þinni um hópstjórnun."
+    },
+    "message_held_notice": {
+      "en-US": "A message is held — it will send when a faster link exists.",
+      "is": "Skilaboð eru í bið — þau verða send þegar hraðari tenging er tiltæk."
+    },
+    "native_wake_temporarily_unavailable": {
+      "en-US": "Native wake is unavailable right now. Ordinary delivery and fallbacks remain active.",
+      "is": "Innbyggð vakning er ekki tiltæk núna. Venjuleg afhending og varaleiðir eru áfram virkar."
+    },
+    "group_authority_security_summary": {
+      "en-US": "%1$s · %2$s owns this group · generation %3$d · %4$s · %5$s.",
+      "is": "%1$s · %2$s á þennan hóp · kynslóð %3$d · %4$s · %5$s."
+    },
+    "group_leave_named_title": {
+      "en-US": "Leave %1$s?",
+      "is": "Yfirgefa %1$s?"
+    },
+    "group_history_stays_after_leaving": {
+      "en-US": "Message history stays stored on this device after leaving.",
+      "is": "Skilaboðasagan verður áfram vistuð í þessu tæki eftir að hópurinn er yfirgefinn."
+    },
+    "hint_kind_mesh": {
+      "en-US": "Mesh",
+      "is": "Möskvi"
+    },
+    "hint_kind_multiaddr": {
+      "en-US": "Direct address",
+      "is": "Beint vistfang"
+    },
+    "hint_kind_relay": {
+      "en-US": "Relay",
+      "is": "Endurvarpi"
+    },
+    "hint_kind_spool": {
+      "en-US": "Spool",
+      "is": "Biðgeymsla"
+    },
+    "group_member_disambiguated": {
+      "en-US": "%1$s, group member %2$d",
+      "is": "%1$s, hópmeðlimur %2$d"
+    },
+    "group_member_position": {
+      "en-US": "Group member %1$d",
+      "is": "Hópmeðlimur %1$d"
+    },
+    "group_member_unavailable": {
+      "en-US": "Unavailable group member",
+      "is": "Ótiltækur hópmeðlimur"
+    },
+    "group_origin_authenticated": {
+      "en-US": "recipient-authenticated origins",
+      "is": "upprunar staðfestir fyrir hvern viðtakanda"
+    },
+    "group_origin_upgrade_in_progress": {
+      "en-US": "origin upgrade in progress",
+      "is": "uppfærsla upprunastaðfestingar í gangi"
+    },
+    "group_origin_upgrade_required": {
+      "en-US": "security upgrade required",
+      "is": "öryggisuppfærsla nauðsynleg"
+    },
+    "group_role_admin": {
+      "en-US": "admin",
+      "is": "stjórnandi"
+    },
+    "group_role_owner": {
+      "en-US": "owner",
+      "is": "eigandi"
+    },
+    "mention_blocker": {
+      "en-US": "%1$s (%2$s)",
+      "is": "%1$s (%2$s)"
+    },
+    "mention_capability_unknown": {
+      "en-US": "capability unknown",
+      "is": "heimild óþekkt"
+    },
+    "mention_capability_unsupported": {
+      "en-US": "mentions unsupported",
+      "is": "tilvísanir ekki studdar"
+    },
+    "mention_removed_with_text": {
+      "en-US": "Mention of %1$s removed with its visible text.",
+      "is": "Tilvísun í %1$s fjarlægð ásamt sýnilegum texta hennar."
+    },
+    "poll_visible_vote_row": {
+      "en-US": "%1$s → %2$s",
+      "is": "%1$s → %2$s"
+    },
+    "device_approval_change_body": {
+      "en-US": "Verify and sign an exact pending rename or revocation proposal from another active installation.",
+      "is": "Staðfestu og undirritaðu nákvæma tillögu um nafnbreytingu eða afturköllun sem bíður á annarri virkri uppsetningu."
+    },
+    "device_approval_link_body": {
+      "en-US": "Verify and sign an exact pending add-device proposal from another active installation.",
+      "is": "Staðfestu og undirritaðu nákvæma tillögu um viðbót tækis sem bíður á annarri virkri uppsetningu."
+    },
+    "device_approval_more_required": {
+      "en-US": "Approval accepted; another active device is still required.",
+      "is": "Samþykki móttekið; enn þarf annað virkt tæki."
+    },
+    "device_authority_committed": {
+      "en-US": "Device authority change committed.",
+      "is": "Breyting tækjaheimildar staðfest."
+    },
+    "device_compare_required": {
+      "en-US": "Compare and confirm the six digits first.",
+      "is": "Berðu fyrst saman og staðfestu tölustafina sex."
+    },
+    "device_default_android_name": {
+      "en-US": "Android device",
+      "is": "Android-tæki"
+    },
+    "device_default_ios_name": {
+      "en-US": "iPhone",
+      "is": "iPhone"
+    },
+    "device_export_sync_action": {
+      "en-US": "Export sync for %1$s",
+      "is": "Flytja út samstillingu fyrir %1$s"
+    },
+    "device_imported_sync_events": {
+      "en-US": {
+        "one": "Imported %1$d new sync event.",
+        "other": "Imported %1$d new sync events."
+      },
+      "is": {
+        "one": "Flutti inn %1$d nýjan samstillingaratburð.",
+        "other": "Flutti inn %1$d nýja samstillingaratburði."
+      }
+    },
+    "device_linked_success": {
+      "en-US": "Device linked with independent keys.",
+      "is": "Tæki tengt með sjálfstæðum lyklum."
+    },
+    "device_rename_action": {
+      "en-US": "Rename %1$s",
+      "is": "Endurnefna %1$s"
+    },
+    "device_revoke_action": {
+      "en-US": "Permanently revoke %1$s",
+      "is": "Afturkalla %1$s varanlega"
+    },
+    "device_row_accessibility": {
+      "en-US": "%1$s, %2$s%3$s",
+      "is": "%1$s, %2$s%3$s"
+    },
+    "device_row_current": {
+      "en-US": "this device",
+      "is": "þetta tæki"
+    },
+    "device_row_linked": {
+      "en-US": "linked device",
+      "is": "tengt tæki"
+    },
+    "device_row_revoked_suffix": {
+      "en-US": ", permanently revoked",
+      "is": ", varanlega afturkallað"
+    },
+    "device_transfer_only_intended": {
+      "en-US": "Transfer only to the intended linked installation.",
+      "is": "Flyttu aðeins í fyrirhugaða tengda uppsetningu."
+    },
+    "device_approval_change_title": {
+      "en-US": "Approve device change",
+      "is": "Samþykkja breytingu tækis"
+    },
+    "device_approval_link_title": {
+      "en-US": "Approve device link",
+      "is": "Samþykkja tengingu tækis"
+    },
+    "device_generic_name": {
+      "en-US": "device",
+      "is": "tæki"
+    },
+    "device_authority_contact_fork": {
+      "en-US": "Contact %1$s presented concurrent device-authority branches in recovery epoch %2$d. The accepted branch was retained; offline recovery is required.",
+      "is": "Tengiliðurinn %1$s framvísaði samhliða greinum tækjaheimildar á endurheimtartímabili %2$d. Samþykkta greinin var varðveitt; ótengd endurheimt er nauðsynleg."
+    },
+    "device_authority_contact_recovery_conflict": {
+      "en-US": "Contact %1$s presented different recoveries for epoch %2$d. The accepted branch was retained and verification was cleared.",
+      "is": "Tengiliðurinn %1$s framvísaði mismunandi endurheimtum fyrir tímabil %2$d. Samþykkta greinin var varðveitt og staðfesting hreinsuð."
+    },
+    "device_authority_fork": {
+      "en-US": "Concurrent device-authority branches were detected in recovery epoch %1$d. Authority is fail-closed and requires offline recovery.",
+      "is": "Samhliða greinar tækjaheimildar fundust á endurheimtartímabili %1$d. Heimildin lokast við bilun og krefst ótengdrar endurheimtar."
+    },
+    "device_authority_recovery_conflict": {
+      "en-US": "Different recoveries claim epoch %1$d. Authority is fail-closed; re-verify contacts after resolving with offline recovery.",
+      "is": "Mismunandi endurheimtir gera tilkall til tímabils %1$d. Heimildin lokast við bilun; staðfestu tengiliði aftur eftir úrlausn með ótengdri endurheimt."
+    },
+    "device_link_frame_accessibility": {
+      "en-US": "Device link frame %1$d of %2$d",
+      "is": "Rammi %1$d af %2$d fyrir tengingu tækis"
+    },
+    "device_link_frame_caption": {
+      "en-US": "Device link frame %1$d of %2$d · keep the scanner pointed here",
+      "is": "Rammi %1$d af %2$d fyrir tengingu tækis · haltu skannanum beint hingað"
+    },
+    "device_link_offer_accessibility": {
+      "en-US": "Device link offer QR",
+      "is": "QR-kóði fyrir boð um tengingu tækis"
+    },
+    "device_link_offer_caption": {
+      "en-US": "Device link offer",
+      "is": "Boð um tengingu tækis"
+    },
+    "device_revoke_confirmation": {
+      "en-US": "Permanently revoke %1$s?",
+      "is": "Afturkalla %1$s varanlega?"
+    },
+    "icons_bundled_saved": {
+      "en-US": "Bundled %1$s icon saved locally.",
+      "is": "Innbyggða táknið %1$s var vistað staðbundið."
+    },
+    "icons_contact_target": {
+      "en-US": "Contact · %1$s",
+      "is": "Tengiliður · %1$s"
+    },
+    "icons_folder_target": {
+      "en-US": "Folder %1$d · %2$s",
+      "is": "Mappa %1$d · %2$s"
+    },
+    "icons_group_target": {
+      "en-US": "Group · %1$s",
+      "is": "Hópur · %1$s"
+    },
+    "input_privacy_android_limitation_compromised": {
+      "en-US": "A compromised device, accessibility or overlay abuse, a malicious input method, and external observation remain outside this guarantee.",
+      "is": "Tæki sem hefur verið tekið yfir, misnotkun aðgengis eða yfirlagna, skaðleg innsláttaraðferð og ytri athugun eru utan þessarar tryggingar."
+    },
+    "input_privacy_android_limitation_ime": {
+      "en-US": "Android documents IME_FLAG_NO_PERSONALIZED_LEARNING as a request, not a guarantee; an input method may ignore it.",
+      "is": "Android skilgreinir IME_FLAG_NO_PERSONALIZED_LEARNING sem beiðni, ekki tryggingu; innsláttaraðferð kann að hunsa hana."
+    },
+    "input_privacy_android_mechanism": {
+      "en-US": "Every Komms text editor requests Android no-personalized-learning and no-suggestions behavior; passphrases and recovery mnemonics are masked.",
+      "is": "Sérhver textaritill Komms biður Android um enga persónubundna lyklaborðsnáms- eða tillöguhegðun; lykilorð og endurheimtarorð eru hulin."
+    },
+    "input_privacy_desktop_limitation_hints": {
+      "en-US": "Desktop HTML input attributes are hints that the webview, operating system, input method, or writing tools may ignore.",
+      "is": "HTML-innsláttareiginleikar á borðtölvu eru vísbendingar sem vefglugginn, stýrikerfið, innsláttaraðferðin eða ritverkfæri kunna að hunsa."
+    },
+    "input_privacy_desktop_limitation_privileged": {
+      "en-US": "Privileged software, a compromised host, physical keyboards with their own storage, and external observation remain outside this guarantee.",
+      "is": "Forrit með aukin réttindi, vél sem hefur verið tekin yfir, lyklaborð með eigin geymslu og ytri athugun eru utan þessarar tryggingar."
+    },
+    "input_privacy_desktop_mechanism": {
+      "en-US": "Every Komms textual webview input disables autocomplete, autocorrect, autocapitalization, and spellcheck; secrets use password inputs.",
+      "is": "Sérhver textainnsláttur Komms í vefglugga slekkur á sjálfvirkri útfyllingu, leiðréttingu, hástöfun og stafsetningarprófun; leyndarmál nota lykilorðareiti."
+    },
+    "input_privacy_ios_limitation_keyboards": {
+      "en-US": "Non-secure fields still depend on system and third-party keyboards respecting text-input traits; secure fields use the system keyboard.",
+      "is": "Óvarðir reitir reiða sig enn á að kerfis- og utanaðkomandi lyklaborð virði eiginleika textainnsláttar; varðir reitir nota kerfislyklaborðið."
+    },
+    "input_privacy_ios_limitation_learning": {
+      "en-US": "iOS exposes no public per-field switch that guarantees personalized keyboard learning is disabled.",
+      "is": "iOS býður engan opinberan rofa fyrir hvern reit sem tryggir að slökkt sé á persónubundnu lyklaborðsnámi."
+    },
+    "input_privacy_ios_mechanism": {
+      "en-US": "Every Komms text editor disables autocorrection; passphrases and recovery mnemonics use SecureField.",
+      "is": "Sérhver textaritill Komms slekkur á sjálfvirkri leiðréttingu; lykilorð og endurheimtarorð nota SecureField."
+    },
+    "screen_security_android_limitation_capture_callback": {
+      "en-US": "Android does not provide Komms a reliable callback for every blocked capture attempt.",
+      "is": "Android veitir Komms ekki áreiðanlega tilkynningu um hverja hindraða tilraun til skjáupptöku."
+    },
+    "screen_security_android_limitation_compromised": {
+      "en-US": "A compromised device, accessibility or overlay abuse, and an external camera remain outside this guarantee.",
+      "is": "Tæki sem hefur verið tekið yfir, misnotkun aðgengis eða yfirlagna og ytri myndavél eru utan þessarar tryggingar."
+    },
+    "screen_security_android_mechanism": {
+      "en-US": "Android FLAG_SECURE protects every Komms activity.",
+      "is": "Android FLAG_SECURE verndar alla skjái Komms."
+    },
+    "screen_security_desktop_limitation_environment": {
+      "en-US": "Desktop capture and task-preview protection depends on the operating system, window server, and compositor.",
+      "is": "Vörn gegn skjáupptöku og verkforskoðun á borðtölvu ræðst af stýrikerfi, gluggaþjóni og samsetjara."
+    },
+    "screen_security_desktop_limitation_privileged": {
+      "en-US": "Other software with sufficient privilege and an external camera remain outside this guarantee.",
+      "is": "Önnur forrit með næg réttindi og ytri myndavél eru utan þessarar tryggingar."
+    },
+    "screen_security_desktop_mechanism": {
+      "en-US": "Komms requests native content protection and locks immediately with Ctrl/Cmd+Shift+L.",
+      "is": "Komms biður um innbyggða efnisvörn og læsir strax með Ctrl/Cmd+Shift+L."
+    },
+    "screen_security_ios_limitation_capture_timing": {
+      "en-US": "Capture notification can arrive after recording or mirroring has begun.",
+      "is": "Tilkynning um upptöku getur borist eftir að skjáupptaka eða speglun hefst."
+    },
+    "screen_security_ios_limitation_screenshots": {
+      "en-US": "iOS does not let Komms universally block still screenshots.",
+      "is": "iOS leyfir Komms ekki að loka almennt fyrir skjámyndir."
+    },
+    "screen_security_ios_mechanism": {
+      "en-US": "Komms covers inactive scenes and live captured screens with a privacy shield.",
+      "is": "Komms hylur óvirkar senur og skjái sem verið er að taka upp með friðhelgishlíf."
+    },
+    "screen_shield_capture_accessibility": {
+      "en-US": "Komms protected. Sensitive content hidden during screen capture.",
+      "is": "Komms er varið. Viðkvæmt efni er falið meðan skjáupptaka stendur yfir."
+    },
+    "screen_shield_capture_message": {
+      "en-US": "Sensitive content is hidden while iOS reports screen capture.",
+      "is": "Viðkvæmt efni er falið meðan iOS tilkynnir um skjáupptöku."
+    },
+    "screen_shield_inactive_accessibility": {
+      "en-US": "Komms protected. Sensitive content hidden outside the active app.",
+      "is": "Komms er varið. Viðkvæmt efni er falið utan virka forritsins."
+    },
+    "screen_shield_inactive_message": {
+      "en-US": "Sensitive content is hidden outside the active app.",
+      "is": "Viðkvæmt efni er falið utan virka forritsins."
+    },
+    "attachment_audio_summary": {
+      "en-US": "%1$s · mono PCM WAV · 16 kHz",
+      "is": "%1$s · mónó PCM WAV · 16 kHz"
+    },
+    "attachment_carrier_accessibility": {
+      "en-US": "Current attachment carrier policy: %1$s",
+      "is": "Núverandi flutningsstefna viðhengis: %1$s"
+    },
+    "attachment_carrier_changed_confirm": {
+      "en-US": "Carrier state changed. Review the updated explanation and confirm again.",
+      "is": "Staða flutningsleiðar breyttist. Yfirfarðu uppfærðu skýringuna og staðfestu aftur."
+    },
+    "attachment_carrier_loading": {
+      "en-US": "Loading current carrier policy…",
+      "is": "Hleð núverandi flutningsstefnu…"
+    },
+    "attachment_default_edited_filename": {
+      "en-US": "edited-image.png",
+      "is": "unnin-mynd.png"
+    },
+    "attachment_error_accessibility": {
+      "en-US": "Attachment error: %1$s",
+      "is": "Villa í viðhengi: %1$s"
+    },
+    "attachment_image_summary": {
+      "en-US": "%1$d × %2$d pixels · %3$d bytes · PNG re-encoded without source metadata",
+      "is": "%1$d × %2$d mynddílar · %3$d bæti · PNG endurkóðað án lýsigagna upprunans"
+    },
+    "attachment_image_editor_too_large": {
+      "en-US": "This image exceeds the 32 MiB editor limit.",
+      "is": "Myndin fer yfir 32 MiB mörk myndritilsins."
+    },
+    "attachment_manual_region_instruction": {
+      "en-US": "Add a user-positioned privacy region on the current final canvas.",
+      "is": "Bættu við persónuverndarsvæði sem þú staðsetur á núverandi lokamyndfleti."
+    },
+    "attachment_no_privacy_regions": {
+      "en-US": "No privacy regions",
+      "is": "Engin persónuverndarsvæði"
+    },
+    "attachment_privacy_operation": {
+      "en-US": "Privacy operation",
+      "is": "Persónuverndaraðgerð"
+    },
+    "attachment_privacy_region_summary": {
+      "en-US": "%1$s, x %2$d, y %3$d, %4$d × %5$d, strength %6$d",
+      "is": "%1$s, x %2$d, y %3$d, %4$d × %5$d, styrkur %6$d"
+    },
+    "attachment_region_strength": {
+      "en-US": "Region strength",
+      "is": "Styrkur svæðis"
+    },
+    "attachment_region_numbered": {
+      "en-US": "%1$d. %2$s",
+      "is": "%1$d. %2$s"
+    },
+    "attachment_review_selected": {
+      "en-US": "Review %1$s before explicitly sending it.",
+      "is": "Yfirfarðu %1$s áður en þú sendir það sérstaklega."
+    },
+    "attachment_type_value": {
+      "en-US": "Type: %1$s",
+      "is": "Tegund: %1$s"
+    },
+    "attachment_remove_privacy_region": {
+      "en-US": "Remove %1$s region",
+      "is": "Fjarlægja %1$s-svæði"
+    },
+    "attachment_audio_message": {
+      "en-US": "Audio message",
+      "is": "Hljóðskilaboð"
+    },
+    "attachment_crop_height": {
+      "en-US": "Crop height",
+      "is": "Hæð skurðar"
+    },
+    "attachment_crop_width": {
+      "en-US": "Crop width",
+      "is": "Breidd skurðar"
+    },
+    "attachment_crop_x": {
+      "en-US": "Crop X",
+      "is": "X-hnit skurðar"
+    },
+    "attachment_crop_y": {
+      "en-US": "Crop Y",
+      "is": "Y-hnit skurðar"
+    },
+    "attachment_preparing_audio": {
+      "en-US": "Preparing protected audio playback…",
+      "is": "Undirbý varða hljóðspilun…"
+    },
+    "attachment_region_height": {
+      "en-US": "Region height",
+      "is": "Hæð svæðis"
+    },
+    "attachment_region_width": {
+      "en-US": "Region width",
+      "is": "Breidd svæðis"
+    },
+    "attachment_region_x": {
+      "en-US": "Region X",
+      "is": "X-hnit svæðis"
+    },
+    "attachment_region_y": {
+      "en-US": "Region Y",
+      "is": "Y-hnit svæðis"
+    },
+    "attachment_record_audio": {
+      "en-US": "Record audio message",
+      "is": "Taka upp hljóðskilaboð"
+    },
+    "attachment_stop_recording": {
+      "en-US": "Stop recording and review",
+      "is": "Stöðva upptöku og yfirfara"
+    },
+    "attachment_review_image_title": {
+      "en-US": "Edit and review image",
+      "is": "Breyta og yfirfara mynd"
+    },
+    "attachment_review_title": {
+      "en-US": "Review attachment",
+      "is": "Yfirfara viðhengi"
+    },
+    "attachment_send_exact_final": {
+      "en-US": "Send exact final",
+      "is": "Senda nákvæma lokaútgáfu"
+    },
+    "attachment_type": {
+      "en-US": "Type",
+      "is": "Tegund"
+    },
+    "attachment_view_once_filename": {
+      "en-US": "View once · %1$s",
+      "is": "Birta einu sinni · %1$s"
+    },
+    "call_available": {
+      "en-US": "Direct call available",
+      "is": "Beint símtal tiltækt"
+    },
+    "call_checking_route": {
+      "en-US": "Checking direct call route…",
+      "is": "Athuga beina símtalsleið…"
+    },
+    "comparison_code_accessibility": {
+      "en-US": "Comparison code %1$s",
+      "is": "Samanburðarkóði %1$s"
+    },
+    "folder_delete_unfile": {
+      "en-US": "Delete folder and unfile %1$d conversations",
+      "is": "Eyða möppu og taka %1$d samtöl úr möppu"
+    },
+    "icons_private_bytes": {
+      "en-US": "Private local icon · %1$d encoded bytes",
+      "is": "Einkatákn á tækinu · %1$d kóðuð bæti"
+    },
+    "icons_use_bundled_glyph": {
+      "en-US": "Use bundled %1$s glyph",
+      "is": "Nota innbyggða táknið %1$s"
+    },
+    "icon_glyph_compass": {
+      "en-US": "Compass",
+      "is": "Áttaviti"
+    },
+    "icon_glyph_folder": {
+      "en-US": "Folder",
+      "is": "Mappa"
+    },
+    "icon_glyph_group": {
+      "en-US": "Group",
+      "is": "Hópur"
+    },
+    "icon_glyph_heart": {
+      "en-US": "Heart",
+      "is": "Hjarta"
+    },
+    "icon_glyph_note": {
+      "en-US": "Note",
+      "is": "Minnismiði"
+    },
+    "icon_glyph_person": {
+      "en-US": "Person",
+      "is": "Persóna"
+    },
+    "icon_glyph_shield": {
+      "en-US": "Shield",
+      "is": "Skjöldur"
+    },
+    "icon_glyph_star": {
+      "en-US": "Star",
+      "is": "Stjarna"
+    },
+    "icon_glyph_unknown": {
+      "en-US": "Icon",
+      "is": "Tákn"
+    },
+    "label_applies_exactly": {
+      "en-US": "Applies to exactly %1$s",
+      "is": "Gildir nákvæmlega um %1$s"
+    },
+    "label_delete_assignments": {
+      "en-US": "Delete label and %1$d assignments",
+      "is": "Eyða merki og %1$d úthlutunum"
+    },
+    "mention_label": {
+      "en-US": "Mention: %1$s",
+      "is": "Merking: %1$s"
+    },
+    "mention_disappearing_removed": {
+      "en-US": "Semantic mentions were removed because disappearing text is a distinct authenticated content type.",
+      "is": "Merkingar einstaklinga voru fjarlægðar því texti sem hverfur er sérstök sannvottuð efnistegund."
+    },
+    "mention_highlighted": {
+      "en-US": "Highlighted mention",
+      "is": "Auðkennd merking"
+    },
+    "mention_invalid_unicode": {
+      "en-US": "The draft contains invalid Unicode and cannot be sent.",
+      "is": "Drögin innihalda ógilt Unicode og ekki er hægt að senda þau."
+    },
+    "mention_of": {
+      "en-US": "Mention of %1$s",
+      "is": "Merking á %1$s"
+    },
+    "message_version_history": {
+      "en-US": {
+        "one": "Version history (%1$d version)",
+        "other": "Version history (%1$d versions)"
+      },
+      "is": {
+        "one": "Útgáfusaga (%1$d útgáfa)",
+        "other": "Útgáfusaga (%1$d útgáfur)"
+      }
+    },
+    "mode_accessibility": {
+      "en-US": "%1$s mode. %2$s",
+      "is": "%1$s-hamur. %2$s"
+    },
+    "poll_accessibility": {
+      "en-US": "Poll: %1$s",
+      "is": "Könnun: %1$s"
+    },
+    "poll_error_accessibility": {
+      "en-US": "Poll error: %1$s",
+      "is": "Villa í könnun: %1$s"
+    },
+    "poll_option_accessibility": {
+      "en-US": {
+        "one": "%1$s, %2$d vote%3$s",
+        "other": "%1$s, %2$d votes%3$s"
+      },
+      "is": {
+        "one": "%1$s, %2$d atkvæði%3$s",
+        "other": "%1$s, %2$d atkvæði%3$s"
+      }
+    },
+    "pending_requests_count": {
+      "en-US": {
+        "one": "%1$d pending request",
+        "other": "%1$d pending requests"
+      },
+      "is": {
+        "one": "%1$d beiðni bíður",
+        "other": "%1$d beiðnir bíða"
+      }
+    },
+    "poll_remove_choice": {
+      "en-US": "Remove choice %1$d",
+      "is": "Fjarlægja valkost %1$d"
+    },
+    "poll_unavailable_choice": {
+      "en-US": "unavailable choice",
+      "is": "ótiltækur valkostur"
+    },
+    "input_privacy_status_unavailable": {
+      "en-US": "Input privacy status unavailable.",
+      "is": "Staða innsláttarverndar er ekki tiltæk."
+    },
+    "screen_security_status_unavailable": {
+      "en-US": "Screen security status unavailable.",
+      "is": "Staða skjávarnar er ekki tiltæk."
+    },
+    "poll_your_choice_suffix": {
+      "en-US": ", your choice",
+      "is": ", þitt val"
+    },
+    "queued_count": {
+      "en-US": {
+        "one": "%1$d queued",
+        "other": "%1$d queued"
+      },
+      "is": {
+        "one": "%1$d í biðröð",
+        "other": "%1$d í biðröð"
+      }
+    },
+    "recording_elapsed": {
+      "en-US": {
+        "one": "Recording audio, %1$d second elapsed.",
+        "other": "Recording audio, %1$d seconds elapsed."
+      },
+      "is": {
+        "one": "Tek upp hljóð, %1$d sekúnda liðin.",
+        "other": "Tek upp hljóð, %1$d sekúndur liðnar."
+      }
+    },
+    "removes_prefix": {
+      "en-US": "Removes ",
+      "is": "Fjarlægist "
+    },
+    "removes_at": {
+      "en-US": "Removes %1$s",
+      "is": "Fjarlægist %1$s"
+    },
+    "request_accepted_status": {
+      "en-US": "Request accepted. Its first message is now in conversation history.",
+      "is": "Beiðnin var samþykkt. Fyrstu skilaboðin eru nú í samtalasögunni."
+    },
+    "request_blocked_status": {
+      "en-US": "Sender blocked locally.",
+      "is": "Sendandanum var lokað staðbundið."
+    },
+    "request_deleted_status": {
+      "en-US": "Request deleted locally.",
+      "is": "Beiðninni var eytt staðbundið."
+    },
+    "request_name_required": {
+      "en-US": "Choose a private contact name.",
+      "is": "Veldu einkagælunafn tengiliðar."
+    },
+    "request_no_preview": {
+      "en-US": "No text preview",
+      "is": "Engin textaforskoðun"
+    },
+    "group_invitation_accepted_status": {
+      "en-US": "Group invitation accepted.",
+      "is": "Hópboðið var samþykkt."
+    },
+    "group_invitation_deleted_status": {
+      "en-US": "Group invitation deleted locally.",
+      "is": "Hópboðinu var eytt staðbundið."
+    },
+    "group_unnamed": {
+      "en-US": "Unnamed group",
+      "is": "Ónefndur hópur"
+    },
+    "revision_short": {
+      "en-US": "edited r%1$d",
+      "is": "breytt r%1$d"
+    },
+    "screen_limitation_bullet": {
+      "en-US": "• %1$s",
+      "is": "• %1$s"
+    },
+    "ui_accept_detached_approval": {
+      "en-US": "Accept detached approval",
+      "is": "Samþykkja aðskilið samþykki"
+    },
+    "ui_accept_offer": {
+      "en-US": "Accept offer",
+      "is": "Samþykkja boð"
+    },
+    "ui_add": {
+      "en-US": "+ Add",
+      "is": "+ Bæta við"
+    },
+    "ui_add_hint": {
+      "en-US": "Add hint",
+      "is": "Bæta við leiðarvísun"
+    },
+    "ui_add_manual_privacy_region": {
+      "en-US": "Add manual privacy region",
+      "is": "Bæta við handvirku persónuverndarsvæði"
+    },
+    "ui_add_privacy_region": {
+      "en-US": "Add privacy region",
+      "is": "Bæta við persónuverndarsvæði"
+    },
+    "ui_add_region": {
+      "en-US": "Add region",
+      "is": "Bæta við svæði"
+    },
+    "ui_additional_active_device_approval": {
+      "en-US": "Additional active-device approval",
+      "is": "Viðbótarsamþykki virks tækis"
+    },
+    "ui_advanced": {
+      "en-US": "Advanced",
+      "is": "Ítarlegt"
+    },
+    "ui_another_active_device_must_approve_this_exact_proposal_move": {
+      "en-US": "Another active device must approve this exact proposal. Move the request to that device, then paste its returned approval here.",
+      "is": "Annað virkt tæki verður að samþykkja nákvæmlega þessa tillögu. Flyttu beiðnina í það tæki og límdu síðan samþykkið sem það skilar hingað."
+    },
+    "ui_anyone_holding_both_this_encrypted_file_and_its_24": {
+      "en-US": "Anyone holding both this encrypted file and its 24 words can take over your stable identity and revoke every current device. Save the file on offline or removable storage, separate from the words. It is not a routine backup.",
+      "is": "Hver sem hefur bæði þessa dulkóðuðu skrá og 24 orð hennar getur tekið yfir varanlega auðkennið þitt og afturkallað öll núverandi tæki. Vistaðu skrána á ótengdum eða færanlegum miðli, aðskilda frá orðunum. Þetta er ekki venjulegt öryggisafrit."
+    },
+    "ui_application_octet_stream": {
+      "en-US": "application/octet-stream",
+      "is": "application/octet-stream"
+    },
+    "ui_apply_approval": {
+      "en-US": "Apply approval",
+      "is": "Beita samþykki"
+    },
+    "ui_apply_crop": {
+      "en-US": "Apply crop",
+      "is": "Beita skurði"
+    },
+    "ui_approval_from_another_active_device": {
+      "en-US": "Approval from another active device",
+      "is": "Samþykki frá öðru virku tæki"
+    },
+    "ui_approval_request": {
+      "en-US": "Approval request",
+      "is": "Samþykkisbeiðni"
+    },
+    "ui_approve_and_create_package": {
+      "en-US": "Approve and create package",
+      "is": "Samþykkja og búa til pakka"
+    },
+    "ui_approve_another_devices_change": {
+      "en-US": "Approve another device’s change",
+      "is": "Samþykkja breytingu annars tækis"
+    },
+    "ui_approve_another_devices_link": {
+      "en-US": "Approve another device’s link",
+      "is": "Samþykkja tengingu annars tækis"
+    },
+    "ui_attach_file": {
+      "en-US": "Attach file",
+      "is": "Hengja skrá við"
+    },
+    "ui_attachment_transfers": {
+      "en-US": "Attachment transfers",
+      "is": "Flutningur viðhengja"
+    },
+    "ui_audio": {
+      "en-US": "Audio",
+      "is": "Hljóð"
+    },
+    "ui_authenticated_end_to_end_encrypted_audio_uses_only_a": {
+      "en-US": "Authenticated end-to-end encrypted audio uses only a direct QUIC route and is never stored in message history.",
+      "is": "Sannvottað enda-í-enda dulkóðað hljóð notar aðeins beina QUIC-leið og er aldrei vistað í skilaboðasögu."
+    },
+    "ui_background_only": {
+      "en-US": "Background only",
+      "is": "Aðeins í bakgrunni"
+    },
+    "ui_backup": {
+      "en-US": "Backup",
+      "is": "Öryggisafrit…"
+    },
+    "ui_backup_file_kkr": {
+      "en-US": "Backup file (.kkr)",
+      "is": "Öryggisafrit (.kkr)"
+    },
+    "ui_backup_mnemonic_24_words": {
+      "en-US": "Backup mnemonic (24 words)",
+      "is": "Endurheimtarorð öryggisafrits (24 orð)"
+    },
+    "ui_blocking_removes_this_senders_local_capabilities_and_queues": {
+      "en-US": "Blocking removes this sender’s local capabilities and queues.",
+      "is": "Lokun fjarlægir staðbundnar heimildir og biðraðir þessa sendanda."
+    },
+    "ui_blur": {
+      "en-US": "Blur",
+      "is": "Móða"
+    },
+    "ui_bootstrap_peers_one_multiaddr_per_line": {
+      "en-US": "Bootstrap peers (one multiaddr per line)",
+      "is": "Upphafsjafningjar (eitt multiaddr í hverri línu)"
+    },
+    "ui_bootstrap_peers_one_per_line": {
+      "en-US": "Bootstrap peers (one per line)",
+      "is": "Upphafsjafningjar (einn í hverri línu)"
+    },
+    "ui_bridge_mesh_internet_traffic_when_a_radio_is_attached": {
+      "en-US": "Bridge mesh ↔ internet traffic when a radio is attached",
+      "is": "Brúa mesh ↔ internetumferð þegar talstöð er tengd"
+    },
+    "ui_bridging_0": {
+      "en-US": "Bridging: 0",
+      "is": "Brúun: 0"
+    },
+    "ui_broadcast": {
+      "en-US": "broadcast",
+      "is": "broadcast"
+    },
+    "ui_bundle_hex_paste_into_add_contact_or": {
+      "en-US": "Bundle (hex, paste into “Add contact” or",
+      "is": "Pakki (hex, límdu í „Bæta við tengilið“ eða"
+    },
+    "ui_bundle_qr": {
+      "en-US": "Bundle QR",
+      "is": "QR-kóði pakka"
+    },
+    "ui_bundled_glyph": {
+      "en-US": "Bundled glyph",
+      "is": "Innbyggt tákn"
+    },
+    "ui_cancel_edit": {
+      "en-US": "Cancel edit",
+      "is": "Hætta við breytingu"
+    },
+    "ui_cancel_rename": {
+      "en-US": "Cancel rename",
+      "is": "Hætta við endurnefningu"
+    },
+    "ui_cancel_this_scheduled_message": {
+      "en-US": "Cancel this scheduled message?",
+      "is": "Hætta við þessi tímasettu skilaboð?"
+    },
+    "ui_candidate_json_path_optional": {
+      "en-US": "Candidate JSON path (optional)",
+      "is": "Slóð að JSON-tilboði (valfrjálst)"
+    },
+    "ui_checking": {
+      "en-US": "Checking…",
+      "is": "Athuga…"
+    },
+    "ui_choices": {
+      "en-US": "Choices",
+      "is": "Valkostir"
+    },
+    "ui_choose_local_image": {
+      "en-US": "Choose local image…",
+      "is": "Velja staðbundna mynd"
+    },
+    "ui_choose_stored_contacts_for_this_sender_key_group_membership": {
+      "en-US": "Choose stored contacts for this sender-key group. Membership changes are announced over each member's existing encrypted session.",
+      "is": "Veldu vistaða tengiliði í þennan sendandalyklahóp. Breytingar á aðild eru tilkynntar um fyrirliggjandi dulkóðaða lotu hvers meðlims."
+    },
+    "ui_cleanup_removes_only_the_selected_stale_local_assignment": {
+      "en-US": "Cleanup removes only the selected stale local assignment.",
+      "is": "Hreinsun fjarlægir aðeins valda úrelta staðbundna úthlutun."
+    },
+    "ui_clear": {
+      "en-US": "Clear",
+      "is": "Hreinsa"
+    },
+    "ui_clear_all_filters": {
+      "en-US": "Clear all filters",
+      "is": "Hreinsa allar síur"
+    },
+    "ui_close": {
+      "en-US": "Close",
+      "is": "Loka"
+    },
+    "ui_close_dialog": {
+      "en-US": "Close dialog",
+      "is": "Loka glugga"
+    },
+    "ui_close_poll": {
+      "en-US": "Close poll",
+      "is": "Loka könnun…"
+    },
+    "ui_color": {
+      "en-US": "Color",
+      "is": "Litur"
+    },
+    "ui_color_is_never_the_only_delivery_or_security_cue": {
+      "en-US": "Color is never the only delivery or security cue.",
+      "is": "Litur er aldrei eina vísbendingin um afhendingu eða öryggi."
+    },
+    "ui_compare_on_both_devices": {
+      "en-US": "Compare on both devices",
+      "is": "Bera saman á báðum tækjum"
+    },
+    "ui_compare_these_digits_or_qr_with_your_contact_they": {
+      "en-US": "Compare these digits (or QR) with your contact — they must be identical on both screens.",
+      "is": "Berðu þessa tölustafi (eða QR-kóða) saman við tengiliðinn — þeir verða að vera eins á báðum skjám."
+    },
+    "ui_compare_this_30_digit_code_over_a_channel_you": {
+      "en-US": "Compare this 30-digit code over a channel you trust, or scan each other’s QR. The spoken code provides about 100 bits of comparison security; the QR compares the full 256-bit value.",
+      "is": "Berið þennan 30 stafa kóða saman um rás sem þið treystið eða skannið QR-kóða hvort annars. Upplesni kóðinn veitir um 100 bita samanburðaröryggi; QR-kóðinn ber saman öll 256 bitin."
+    },
+    "ui_complete_device_link": {
+      "en-US": "Complete device link",
+      "is": "Ljúka tækjatengingu"
+    },
+    "ui_complete_security_upgrade": {
+      "en-US": "Complete security upgrade",
+      "is": "Ljúka öryggisuppfærslu"
+    },
+    "ui_connect_code": {
+      "en-US": "Connect code",
+      "is": "Connect-kóði"
+    },
+    "ui_connect_qr": {
+      "en-US": "Connect QR",
+      "is": "Connect QR-kóði"
+    },
+    "ui_contact_security_conflicts": {
+      "en-US": "Contact security conflicts",
+      "is": "Öryggisárekstrar tengiliða"
+    },
+    "ui_contacts_and_verification": {
+      "en-US": "Contacts and verification",
+      "is": "Tengiliðir og staðfesting"
+    },
+    "ui_contacts_groups_folders_and_note_to_self_each_have": {
+      "en-US": "Contacts, groups, folders, and note-to-self each have one independent icon.",
+      "is": "Tengiliðir, hópar, möppur og minnismiðar hafa hvert sitt óháða tákn."
+    },
+    "ui_continue_device_change": {
+      "en-US": "Continue device change",
+      "is": "Halda tækjabreytingu áfram"
+    },
+    "ui_continue_pending_device_change": {
+      "en-US": "Continue pending device change",
+      "is": "Halda tækjabreytingu í bið áfram"
+    },
+    "ui_continue_with_approval": {
+      "en-US": "Continue with approval",
+      "is": "Halda áfram með samþykki"
+    },
+    "ui_conversation": {
+      "en-US": "Conversation",
+      "is": "Samtal"
+    },
+    "ui_conversation_folders": {
+      "en-US": "Conversation folders",
+      "is": "Samtalamöppur"
+    },
+    "ui_conversation_messages": {
+      "en-US": "Conversation messages",
+      "is": "Skilaboð samtals"
+    },
+    "ui_copy": {
+      "en-US": "Copy",
+      "is": "Afrita"
+    },
+    "ui_copy_approval": {
+      "en-US": "Copy approval",
+      "is": "Afrita samþykki"
+    },
+    "ui_copy_approval_request": {
+      "en-US": "Copy approval request",
+      "is": "Afrita samþykkisbeiðni"
+    },
+    "ui_copy_bundle": {
+      "en-US": "Copy bundle",
+      "is": "Afrita pakka"
+    },
+    "ui_copy_connect_code": {
+      "en-US": "Copy Connect code",
+      "is": "Afrita Connect-kóða"
+    },
+    "ui_copy_detached_approval": {
+      "en-US": "Copy detached approval",
+      "is": "Afrita aðskilið samþykki"
+    },
+    "ui_copy_encrypted_package": {
+      "en-US": "Copy encrypted package",
+      "is": "Afrita dulkóðaðan pakka"
+    },
+    "ui_copy_offer": {
+      "en-US": "Copy offer",
+      "is": "Afrita boð"
+    },
+    "ui_copy_package": {
+      "en-US": "Copy package",
+      "is": "Afrita pakka"
+    },
+    "ui_copy_request": {
+      "en-US": "Copy request",
+      "is": "Afrita beiðni"
+    },
+    "ui_copy_response": {
+      "en-US": "Copy response",
+      "is": "Afrita svar"
+    },
+    "ui_copy_sync": {
+      "en-US": "Copy sync",
+      "is": "Afrita samstillingu"
+    },
+    "ui_create_backup": {
+      "en-US": "Create backup",
+      "is": "Búa til öryggisafrit"
+    },
+    "ui_create_unlock": {
+      "en-US": "Create / Unlock",
+      "is": "Búa til / aflæsa"
+    },
+    "ui_crop_in_oriented_pixels": {
+      "en-US": "Crop in oriented pixels",
+      "is": "Skera í réttsnúnum mynddílum"
+    },
+    "ui_crop_preset": {
+      "en-US": "Crop preset",
+      "is": "Forsnið skurðar"
+    },
+    "ui_current_carrier_policy": {
+      "en-US": "Current carrier policy",
+      "is": "Núverandi flutningsstefna"
+    },
+    "ui_current_group_members": {
+      "en-US": "Current group members",
+      "is": "Núverandi hópmeðlimir"
+    },
+    "ui_data_directory": {
+      "en-US": "Data directory",
+      "is": "Gagnamappa"
+    },
+    "ui_decrypting_and_starting_your_node": {
+      "en-US": "Decrypting and starting your node",
+      "is": "Afkóða og ræsi hnútinn þinn"
+    },
+    "ui_decrypting_the_store_and_starting_the_node": {
+      "en-US": "Decrypting the store and starting the node",
+      "is": "Afkóða gagnageymsluna og ræsi hnútinn"
+    },
+    "ui_delete_private_folder": {
+      "en-US": "Delete private folder?",
+      "is": "Eyða einkamöppu?"
+    },
+    "ui_delivery": {
+      "en-US": "Delivery",
+      "is": "Afhending"
+    },
+    "ui_delivery_hints_how_to_reach_them": {
+      "en-US": "Delivery hints (how to reach them)",
+      "is": "Afhendingarleiðir (hvernig má ná sambandi)"
+    },
+    "ui_delivery_settings": {
+      "en-US": "Delivery settings",
+      "is": "Afhendingarstillingar"
+    },
+    "ui_detached_approval": {
+      "en-US": "Detached approval",
+      "is": "Aðskilið samþykki"
+    },
+    "ui_detached_approval_from_another_active_device": {
+      "en-US": "Detached approval from another active device",
+      "is": "Aðskilið samþykki frá öðru virku tæki"
+    },
+    "ui_detached_approval_to_return": {
+      "en-US": "Detached approval to return",
+      "is": "Aðskilið samþykki til að skila"
+    },
+    "ui_dev_ttyusb0": {
+      "en-US": "/dev/ttyUSB0",
+      "is": "/dev/ttyUSB0"
+    },
+    "ui_device_actions": {
+      "en-US": "Device actions",
+      "is": "Aðgerðir tækis"
+    },
+    "ui_devices": {
+      "en-US": "Devices",
+      "is": "Tæki"
+    },
+    "ui_discover_peers_on_the_local_network_mdns": {
+      "en-US": "Discover peers on the local network (mDNS)",
+      "is": "Finna jafningja á staðarnetinu (mDNS)"
+    },
+    "ui_display_filename": {
+      "en-US": "Display filename",
+      "is": "Sýnt skráarheiti"
+    },
+    "ui_dns4_host_udp_4001_quic_v1_p2p_12d3": {
+      "en-US": "/dns4/host/udp/4001/quic-v1/p2p/12D3…",
+      "is": "/dns4/host/udp/4001/quic-v1/p2p/12D3…"
+    },
+    "ui_dns4_p2p": {
+      "en-US": "/dns4/…/p2p/…",
+      "is": "/dns4/…/p2p/…"
+    },
+    "ui_each_installation_has_independent_authenticated_keys_revocati": {
+      "en-US": "Each installation has independent authenticated keys. Revocation is permanent and immediately excludes that exact device from new delivery and sync.",
+      "is": "Hver uppsetning hefur sjálfstæða sannvottaða lykla. Afturköllun er varanleg og útilokar þetta tiltekna tæki tafarlaust frá nýrri afhendingu og samstillingu."
+    },
+    "ui_each_installation_has_its_own_authenticated_keys_revocation_i": {
+      "en-US": "Each installation has its own authenticated keys. Revocation is permanent and immediately excludes that exact device from new delivery and sync.",
+      "is": "Hver uppsetning hefur sína eigin sannvottuðu lykla. Afturköllun er varanleg og útilokar þetta tiltekna tæki tafarlaust frá nýrri afhendingu og samstillingu."
+    },
+    "ui_edit_history": {
+      "en-US": "Edit history",
+      "is": "Breytingasaga"
+    },
+    "ui_edit_this_group_message": {
+      "en-US": "Edit this group message",
+      "is": "Breyta þessum hópskilaboðum"
+    },
+    "ui_edit_this_message": {
+      "en-US": "Edit this message",
+      "is": "Breyta þessum skilaboðum"
+    },
+    "ui_edits_happen_locally_the_original_is_never_sent_crop": {
+      "en-US": "Edits happen locally. The original is never sent. Crop coordinates use oriented pixels; privacy regions use the rotated final canvas.",
+      "is": "Breytingar fara fram staðbundið. Frummyndin er aldrei send. Skurðarhnit nota réttsnúna mynddíla; persónuverndarsvæði nota snúinn lokaferil."
+    },
+    "ui_edits_stay_on_this_device_the_original_is_never": {
+      "en-US": "Edits stay on this device. The original is never sent.",
+      "is": "Breytingar verða áfram á þessu tæki. Frummyndin er aldrei send."
+    },
+    "ui_encrypted_device_sync_bundle": {
+      "en-US": "Encrypted device sync bundle",
+      "is": "Dulkóðaður tækjasamstillingarpakki"
+    },
+    "ui_encrypted_locally": {
+      "en-US": "Encrypted locally",
+      "is": "Dulkóðað staðbundið"
+    },
+    "ui_encrypted_package_for_new_device": {
+      "en-US": "Encrypted package for new device",
+      "is": "Dulkóðaður pakki fyrir nýtt tæki"
+    },
+    "ui_encrypted_package_for_the_new_device": {
+      "en-US": "Encrypted package for the new device",
+      "is": "Dulkóðaður pakki fyrir nýja tækið"
+    },
+    "ui_encrypted_package_from_the_source": {
+      "en-US": "Encrypted package from the source",
+      "is": "Dulkóðaður pakki frá upprunatækinu"
+    },
+    "ui_everyday_messaging_stays_simple_recovery_device_organization": {
+      "en-US": "Everyday messaging stays simple. Recovery, device, organization, and high-threat controls remain available here.",
+      "is": "Dagleg skilaboð haldast einföld. Endurheimt, tæki, skipulag og stýringar fyrir mikla áhættu eru áfram tiltækar hér."
+    },
+    "ui_exact_file": {
+      "en-US": "Exact file",
+      "is": "Nákvæm skrá"
+    },
+    "ui_exact_final_edited_image_review": {
+      "en-US": "Exact final edited image review",
+      "is": "Yfirfara nákvæma lokaútgáfu breyttrar myndar"
+    },
+    "ui_exact_final_review": {
+      "en-US": "Exact final review",
+      "is": "Yfirfara nákvæma lokaútgáfu"
+    },
+    "ui_exact_poll_question": {
+      "en-US": "Exact poll question",
+      "is": "Nákvæm könnunarspurning"
+    },
+    "ui_exact_request_from_the_proposing_active_device": {
+      "en-US": "Exact request from the proposing active device",
+      "is": "Nákvæm beiðni frá virka tækinu sem leggur breytinguna til"
+    },
+    "ui_exactly_once": {
+      "en-US": "exactly once",
+      "is": "nákvæmlega einu sinni"
+    },
+    "ui_export_backup": {
+      "en-US": "Export backup",
+      "is": "Flytja út öryggisafrit"
+    },
+    "ui_export_identity_contacts_and_history": {
+      "en-US": "Export identity, contacts, and history",
+      "is": "Flytja út auðkenni, tengiliði og sögu"
+    },
+    "ui_floods_recipients_recognize_their_own_traffic": {
+      "en-US": "floods; recipients recognize their own traffic).",
+      "is": "flæðir; viðtakendur þekkja sína eigin umferð)."
+    },
+    "ui_folder": {
+      "en-US": "Folder",
+      "is": "Mappa"
+    },
+    "ui_folders_labels_pins_icons_and_appearance": {
+      "en-US": "Folders, labels, pins, icons, and appearance",
+      "is": "Möppur, merki, festingar, tákn og útlit"
+    },
+    "ui_folders_stay_sealed_on_this_device_duplicate_exact_names": {
+      "en-US": "Folders stay sealed on this device. Duplicate exact names remain distinct; order is changed atomically with the keyboard controls.",
+      "is": "Möppur haldast innsiglaðar á þessu tæki. Sams konar nákvæm heiti haldast aðskilin; röðinni er breytt óskiptanlega með lyklaborðsstýringum."
+    },
+    "ui_free": {
+      "en-US": "Free",
+      "is": "Frjálst"
+    },
+    "ui_from_bundle": {
+      "en-US": "From bundle",
+      "is": "Úr pakka"
+    },
+    "ui_from_connect_code": {
+      "en-US": "From Connect code",
+      "is": "Úr Connect-kóða"
+    },
+    "ui_generated_initials_fallback": {
+      "en-US": "Generated initials fallback",
+      "is": "Sjálfgefnir upphafsstafir"
+    },
+    "ui_group_invitations": {
+      "en-US": "Group invitations",
+      "is": "Hópboð"
+    },
+    "ui_group_members": {
+      "en-US": "Group members",
+      "is": "Hópmeðlimir"
+    },
+    "ui_group_message": {
+      "en-US": "Group message",
+      "is": "Hópskilaboð"
+    },
+    "ui_group_polls": {
+      "en-US": "Group polls",
+      "is": "Hópkannanir"
+    },
+    "ui_group_security_upgrade_required": {
+      "en-US": "Group security upgrade required",
+      "is": "Öryggisuppfærsla hóps er nauðsynleg"
+    },
+    "ui_height": {
+      "en-US": "Height",
+      "is": "Hæð"
+    },
+    "ui_hint": {
+      "en-US": "+ hint",
+      "is": "+ leið"
+    },
+    "ui_how_komms_connects": {
+      "en-US": "How Komms connects",
+      "is": "Hvernig Komms tengist"
+    },
+    "ui_i_compared_the_six_digits": {
+      "en-US": "I compared the six digits",
+      "is": "Ég bar saman tölustafina sex"
+    },
+    "ui_i_compared_the_six_digits_on_both_devices": {
+      "en-US": "I compared the six digits on both devices",
+      "is": "Ég bar saman tölustafina sex á báðum tækjum"
+    },
+    "ui_i_exported_or_copied_a_legacy_backup": {
+      "en-US": "I exported or copied a legacy backup",
+      "is": "Ég flutti út eða afritaði eldra öryggisafrit"
+    },
+    "ui_i_exported_or_copied_a_legacy_kkr7_backup": {
+      "en-US": "I exported or copied a legacy KKR7 backup",
+      "is": "Ég flutti út eða afritaði eldra KKR7-öryggisafrit"
+    },
+    "ui_i_stored_this_file_and_these_24_words_separately": {
+      "en-US": "I stored this file and these 24 words separately",
+      "is": "Ég geymdi þessa skrá og þessi 24 orð aðskilin"
+    },
+    "ui_i_understand_configured_convenience_providers_can_observe_net": {
+      "en-US": "I understand configured convenience providers can observe network addresses, timing, and availability, but not message content.",
+      "is": "Ég skil að stilltar þægindaþjónustur geta séð netföng, tímasetningar og tiltækileika, en ekki innihald skilaboða."
+    },
+    "ui_i_understand_my_address_and_every_safety_number_will": {
+      "en-US": "I understand my address and every safety number will change",
+      "is": "Ég skil að vistfangið mitt og öll öryggisnúmer munu breytast"
+    },
+    "ui_icons_stay_sealed_on_this_device_selected_jpeg_png": {
+      "en-US": "Icons stay sealed on this device. Selected JPEG/PNG files are cropped, resized to 256×256, and re-encoded without metadata. Icons are never fetched from URLs or sent to peers.",
+      "is": "Tákn haldast innsigluð á þessu tæki. Valdar JPEG/PNG-skrár eru skornar, kvarðaðar í 256×256 og endurkóðaðar án lýsigagna. Tákn eru aldrei sótt af vefslóðum eða send jafningjum."
+    },
+    "ui_icons_stay_sealed_on_this_device_selected_jpeg_png_025639": {
+      "en-US": "Icons stay sealed on this device. Selected JPEG/PNG files are cropped, resized to 256×256, re-encoded without metadata, and never sent to peers or fetched from URLs.",
+      "is": "Tákn haldast innsigluð á þessu tæki. Valdar JPEG/PNG-skrár eru skornar, kvarðaðar í 256×256 og endurkóðaðar án lýsigagna og eru aldrei sendar jafningjum eða sóttar af vefslóðum."
+    },
+    "ui_identity": {
+      "en-US": "Identity",
+      "is": "Auðkenni"
+    },
+    "ui_import_device_sync": {
+      "en-US": "Import device sync",
+      "is": "Flytja inn tækjasamstillingu"
+    },
+    "ui_import_encrypted_sync": {
+      "en-US": "Import encrypted sync",
+      "is": "Flytja inn dulkóðaða samstillingu"
+    },
+    "ui_import_sync": {
+      "en-US": "Import sync",
+      "is": "Flytja inn samstillingu"
+    },
+    "ui_in_sovereign_mode_publish_direct_routes_to_connect_code": {
+      "en-US": "In Sovereign mode, publish direct routes to Connect-code holders (advanced metadata warning)",
+      "is": "Í Sovereign-ham má birta beinar leiðir handhöfum Connect-kóða (ítarleg viðvörun um lýsigögn)"
+    },
+    "ui_initial_encrypted_transfer": {
+      "en-US": "Initial encrypted transfer",
+      "is": "Fyrsti dulkóðaði flutningur"
+    },
+    "ui_ios_transfers_continue_only_while_the_system_allows_backgroun": {
+      "en-US": "iOS transfers continue only while the system allows background execution; verified progress resumes when Komms returns to the foreground.",
+      "is": "Flutningar á iOS halda aðeins áfram meðan kerfið leyfir bakgrunnsvinnslu; staðfest framvinda heldur áfram þegar Komms kemur aftur í forgrunn."
+    },
+    "ui_ip4_quic_v1_p2p_or_broadcast": {
+      "en-US": "/ip4/…/quic-v1/p2p/… or broadcast",
+      "is": "/ip4/…/quic-v1/p2p/… eða broadcast"
+    },
+    "ui_joining_creates_group_state_only_after_you_accept": {
+      "en-US": "Joining creates group state only after you accept.",
+      "is": "Hópstaða verður aðeins til eftir að þú samþykkir að ganga í hópinn."
+    },
+    "ui_kc2": {
+      "en-US": "kc2…",
+      "is": "kc2…"
+    },
+    "ui_keep_scheduled": {
+      "en-US": "Keep scheduled",
+      "is": "Halda tímasettum"
+    },
+    "ui_kind": {
+      "en-US": "Kind",
+      "is": "Tegund"
+    },
+    "ui_komms_can_use_the_internet_your_local_network_or": {
+      "en-US": "Komms can use the internet, your local network, or an attached mesh radio. Transport details remain under your control.",
+      "is": "Komms getur notað internetið, staðarnetið þitt eða tengda mesh-talstöð. Þú ræður áfram flutningsupplýsingunum."
+    },
+    "ui_komms_hides_inactive_app_switcher_snapshots_and_responds_to": {
+      "en-US": "Komms hides inactive app-switcher snapshots and responds to live-capture notifications. iOS still screenshots cannot be universally blocked.",
+      "is": "Komms felur forskoðun óvirks forrits í forritaskiptinum og bregst við tilkynningum um virka skjáupptöku. Ekki er hægt að hindra kyrrmyndir af skjá alls staðar í iOS."
+    },
+    "ui_komms_is_protected": {
+      "en-US": "Komms is protected",
+      "is": "Komms er varið"
+    },
+    "ui_komms_protected_sensitive_content_hidden_while_the_window_is": {
+      "en-US": "Komms protected. Sensitive content hidden while the window is inactive.",
+      "is": "Komms er varið. Viðkvæmt efni er falið þegar glugginn er óvirkur."
+    },
+    "ui_kult_add": {
+      "en-US": "kult add",
+      "is": "kult add"
+    },
+    "ui_label_filter_matching": {
+      "en-US": "Label filter matching",
+      "is": "Samsvörun merkjasíu"
+    },
+    "ui_labels_stay_sealed_on_this_device_duplicate_names_are": {
+      "en-US": "Labels stay sealed on this device. Duplicate names are distinct and shown with color and insertion order.",
+      "is": "Merki haldast innsigluð á þessu tæki. Sams konar heiti eru aðskilin og birt með lit og ísetningarröð."
+    },
+    "ui_lan_0": {
+      "en-US": "LAN: 0",
+      "is": "Staðarnet: 0"
+    },
+    "ui_legacy_backups_cannot_safely_resume_their_former_identity_kom": {
+      "en-US": "Legacy backups cannot safely resume their former identity. Komms will require a fresh address, preserve only a clearly marked local archive and petnames, clear routes and trust, and require every contact to compare a new safety number.",
+      "is": "Eldri öryggisafrit geta ekki haldið fyrra auðkenni sínu áfram á öruggan hátt. Komms krefst nýs vistfangs, varðveitir aðeins skýrt merkt staðbundið safn og gælunöfn, hreinsar leiðir og traust og krefst þess að öryggisnúmer séu borin saman aftur við alla tengiliði."
+    },
+    "ui_legacy_group_origin": {
+      "en-US": "Legacy group origin",
+      "is": "eldri hópuppruni"
+    },
+    "ui_link_another_device": {
+      "en-US": "Link another device",
+      "is": "Tengja annað tæki"
+    },
+    "ui_link_this_new_device": {
+      "en-US": "Link this new device",
+      "is": "Tengja þetta nýja tæki"
+    },
+    "ui_listen_addresses_one_multiaddr_per_line_port_0_os": {
+      "en-US": "Listen addresses (one multiaddr per line; port 0 = OS-assigned)",
+      "is": "Hlustunarvistföng (eitt multiaddr í hverri línu; gátt 0 = úthlutað af stýrikerfi)"
+    },
+    "ui_live_sessions_device_keys_rendezvous_secrets_and_the_offline": {
+      "en-US": ". Live sessions, device keys, rendezvous secrets, and the offline account authority are excluded. Restoring the stable identity also requires the separately held authority package and its different mnemonic.",
+      "is": ". Virkar lotur, tækjalyklar, rendezvous-leyndarmál og ótengd reikningsheimild eru undanskilin. Endurheimt varanlega auðkennisins krefst einnig heimildarpakkans sem er geymdur sér og annarra endurheimtarorða hans."
+    },
+    "ui_local_conversations": {
+      "en-US": "Local conversations",
+      "is": "Staðbundin samtöl"
+    },
+    "ui_local_only": {
+      "en-US": "Local only",
+      "is": "aðeins staðbundið"
+    },
+    "ui_local_only_until_every_recipient_wrapper_is_authenticated_and": {
+      "en-US": "Local only until every recipient wrapper is authenticated and queued",
+      "is": "Aðeins staðbundið þar til umslag hvers viðtakanda hefur verið sannvottað og sett í biðröð"
+    },
+    "ui_mailbox_relay": {
+      "en-US": "mailbox relay",
+      "is": "pósthólfsmiðlari"
+    },
+    "ui_mailbox_relays_one_multiaddr_per_line": {
+      "en-US": "Mailbox relays (one multiaddr per line)",
+      "is": "Pósthólfsmiðlarar (eitt multiaddr í hverri línu)"
+    },
+    "ui_manage": {
+      "en-US": "Manage",
+      "is": "Stjórna"
+    },
+    "ui_manual_native_wake_gateways_one_per_line": {
+      "en-US": "Manual native-wake gateways, one per line",
+      "is": "Handvaldar native-wake-gáttir, ein í hverri línu"
+    },
+    "ui_manual_privacy_region": {
+      "en-US": "Manual privacy region",
+      "is": "Handvirkt persónuverndarsvæði"
+    },
+    "ui_manual_rendezvous_providers_one_per_line": {
+      "en-US": "Manual rendezvous providers, one per line",
+      "is": "Handvaldar rendezvous-þjónustur (ein í hverri línu)"
+    },
+    "ui_match_all": {
+      "en-US": "Match all",
+      "is": "Samsvara öllum"
+    },
+    "ui_match_any": {
+      "en-US": "Match any",
+      "is": "Samsvara einhverju"
+    },
+    "ui_matching": {
+      "en-US": "Matching",
+      "is": "Samsvörun"
+    },
+    "ui_maximum_256_utf_8_bytes_exact_text_is_preserved": {
+      "en-US": "Maximum 256 UTF-8 bytes; exact text is preserved",
+      "is": "Að hámarki 256 UTF-8 bæti; nákvæmur texti varðveitist"
+    },
+    "ui_maximum_256_utf_8_bytes_fixed_pattern_white_space": {
+      "en-US": "Maximum 256 UTF-8 bytes. Fixed Pattern White Space-only names are rejected.",
+      "is": "Að hámarki 256 UTF-8 bæti. Heitum sem innihalda aðeins fasta Pattern White Space-stafi er hafnað."
+    },
+    "ui_maximum_256_utf_8_bytes_whitespace_only_names_are": {
+      "en-US": "Maximum 256 UTF-8 bytes. Whitespace-only names are rejected.",
+      "is": "Að hámarki 256 UTF-8 bæti. Heitum sem innihalda aðeins bilstafi er hafnað."
+    },
+    "ui_membership": {
+      "en-US": "Membership",
+      "is": "Aðild"
+    },
+    "ui_membership_authenticated_history_not_proof_of_the_individual": {
+      "en-US": "Membership-authenticated history; not proof of the individual sender",
+      "is": "Saga sannvottuð með hópaðild; ekki sönnun um einstakan sendanda"
+    },
+    "ui_mention_an_exact_current_group_member": {
+      "en-US": "Mention an exact current group member",
+      "is": "Nefna nákvæmlega núverandi hópmeðlim"
+    },
+    "ui_mesh": {
+      "en-US": "mesh",
+      "is": "mesh"
+    },
+    "ui_meshtastic_radio_network_api_host_4403": {
+      "en-US": "Meshtastic radio, network API (host:4403)",
+      "is": "Meshtastic-talstöð, netviðmót (hýsill:4403)"
+    },
+    "ui_meshtastic_radio_usb_serial_port": {
+      "en-US": "Meshtastic radio, USB serial port",
+      "is": "Meshtastic-talstöð, USB-raðtengi"
+    },
+    "ui_message_history_stays_stored_on_this_device": {
+      "en-US": "Message history stays stored on this device.",
+      "is": "Skilaboðasagan er áfram vistuð á þessu tæki."
+    },
+    "ui_mime_type": {
+      "en-US": "MIME type",
+      "is": "MIME-gerð"
+    },
+    "ui_mode": {
+      "en-US": "Mode",
+      "is": "Hamur"
+    },
+    "ui_more": {
+      "en-US": "More",
+      "is": "Meira"
+    },
+    "ui_most_people_never_need_to_change_these_komms_chooses": {
+      "en-US": "Most people never need to change these. Komms chooses safe defaults automatically.",
+      "is": "Flestir þurfa aldrei að breyta þessu. Komms velur öruggar sjálfgefnar stillingar sjálfkrafa."
+    },
+    "ui_move": {
+      "en-US": "Move",
+      "is": "Færa"
+    },
+    "ui_move_down": {
+      "en-US": "Move down",
+      "is": "Færa niður"
+    },
+    "ui_move_to": {
+      "en-US": "Move to",
+      "is": "Færa í"
+    },
+    "ui_move_to_folder": {
+      "en-US": "Move to folder",
+      "is": "Færa í möppu"
+    },
+    "ui_move_up": {
+      "en-US": "Move up",
+      "is": "Færa upp"
+    },
+    "ui_moving_replaces_the_prior_folder_assignment_labels_remain_ind": {
+      "en-US": "Moving replaces the prior folder assignment; labels remain independent.",
+      "is": "Flutningur kemur í stað fyrri möppuúthlutunar; merki haldast óháð."
+    },
+    "ui_multiaddr": {
+      "en-US": "multiaddr",
+      "is": "multiaddr"
+    },
+    "ui_my_pairing_qr": {
+      "en-US": "My pairing QR",
+      "is": "Pörunar-QR-kóðinn minn"
+    },
+    "ui_n": {
+      "en-US": "N",
+      "is": "N"
+    },
+    "ui_name": {
+      "en-US": "Name",
+      "is": "Heiti"
+    },
+    "ui_name_for_this_device": {
+      "en-US": "Name for this device",
+      "is": "Heiti þessa tækis"
+    },
+    "ui_nat": {
+      "en-US": "NAT: …",
+      "is": "NAT: …"
+    },
+    "ui_native_content_protection_and_private_input_safeguards_stay_o": {
+      "en-US": "Native content protection and private-input safeguards stay on automatically",
+      "is": "Innbyggð efnisvörn og varnir fyrir einkainnslátt haldast sjálfkrafa virkar"
+    },
+    "ui_native_content_protection_is_starting": {
+      "en-US": "Native content protection is starting…",
+      "is": "Innbyggð efnisvörn er að ræsast…"
+    },
+    "ui_native_wake": {
+      "en-US": "Native wake",
+      "is": "Innbyggð vakning"
+    },
+    "ui_native_wake_gateways": {
+      "en-US": "Native-wake gateways",
+      "is": "Gáttir fyrir innbyggða vakningu"
+    },
+    "ui_native_wake_gateways_separate_service_keys_origin_leaf_certif": {
+      "en-US": "Native-wake gateways (separate service keys; origin,leaf-certificate-sha256,standard|private|both)",
+      "is": "Gáttir fyrir innbyggða vakningu (aðskildir þjónustulyklar; origin,leaf-certificate-sha256,standard|private|both)"
+    },
+    "ui_network_settings": {
+      "en-US": "Network settings",
+      "is": "Netstillingar"
+    },
+    "ui_network_transports": {
+      "en-US": "Network & transports",
+      "is": "Net og flutningsleiðir"
+    },
+    "ui_new": {
+      "en-US": "+ New",
+      "is": "+ Nýr"
+    },
+    "ui_new_account_address": {
+      "en-US": "New account address",
+      "is": "Nýtt reikningsvistfang"
+    },
+    "ui_new_address": {
+      "en-US": "New address:",
+      "is": "Nýtt vistfang:"
+    },
+    "ui_new_messages_and_author_sensitive_actions_stay_blocked_until": {
+      "en-US": "New messages and author-sensitive actions stay blocked until every current device receives a fresh recipient-specific origin capability.",
+      "is": "Ný skilaboð og aðgerðir sem ráðast af höfundi haldast lokuð þar til hvert núverandi tæki fær nýja viðtakandasértæka upprunaheimild."
+    },
+    "ui_new_requests_will_remain_separate_until_you_decide": {
+      "en-US": "New requests will remain separate until you decide.",
+      "is": "Nýjar beiðnir haldast aðskildar þar til þú ákveður."
+    },
+    "ui_no_central_account": {
+      "en-US": "No central account",
+      "is": "Enginn miðlægur reikningur"
+    },
+    "ui_no_contacts_yet_pair_with_a_friend_s_qr": {
+      "en-US": "No contacts yet — pair with a friend's QR code.",
+      "is": "Engir tengiliðir enn — paraðu við QR-kóða vinar."
+    },
+    "ui_no_folders_yet": {
+      "en-US": "No folders yet.",
+      "is": "Engar möppur enn."
+    },
+    "ui_no_groups_yet_create_one_from_stored_contacts": {
+      "en-US": "No groups yet — create one from stored contacts.",
+      "is": "Engir hópar enn. Stofnaðu hóp úr vistuðum tengiliðum."
+    },
+    "ui_no_labels_exist_create_one_in_manage_labels_first": {
+      "en-US": "No labels exist. Create one in Manage labels first.",
+      "is": "Engin merki eru til. Búðu fyrst til merki undir Stjórna merkjum."
+    },
+    "ui_no_labels_yet": {
+      "en-US": "No labels yet",
+      "is": "Engin merki enn"
+    },
+    "ui_no_labels_yet_a3a46c": {
+      "en-US": "No labels yet.",
+      "is": "Engin merki enn."
+    },
+    "ui_no_pending_requests": {
+      "en-US": "No pending requests",
+      "is": "Engar beiðnir bíða."
+    },
+    "ui_no_pinned_conversations": {
+      "en-US": "No pinned conversations",
+      "is": "Engin fest samtöl"
+    },
+    "ui_non_ephemeral_history": {
+      "en-US": "Non-ephemeral history",
+      "is": "Saga sem eyðist ekki sjálfkrafa"
+    },
+    "ui_note": {
+      "en-US": "Note",
+      "is": "Minnismiði"
+    },
+    "ui_notices": {
+      "en-US": "Notices",
+      "is": "Tilkynningar"
+    },
+    "ui_offer": {
+      "en-US": "Offer",
+      "is": "Boð"
+    },
+    "ui_offer_cannot_be_rendered": {
+      "en-US": "Offer cannot be rendered",
+      "is": "Ekki er hægt að birta boðið"
+    },
+    "ui_offline_account_authority_file_kra": {
+      "en-US": "Offline account authority file (.kra)",
+      "is": "Ótengd reikningsheimildarskrá (.kra)"
+    },
+    "ui_offline_authority_mnemonic_24_different_words": {
+      "en-US": "Offline authority mnemonic (24 different words)",
+      "is": "Endurheimtarorð ótengdrar heimildar (24 önnur orð)"
+    },
+    "ui_offline_path_account_authority_kra": {
+      "en-US": "/offline/path/account-authority.kra",
+      "is": "/offline/path/account-authority.kra"
+    },
+    "ui_offline_path_komms_account_authority_kra": {
+      "en-US": "/offline/path/komms-account-authority.kra",
+      "is": "/offline/path/komms-account-authority.kra"
+    },
+    "ui_ok": {
+      "en-US": "OK",
+      "is": "Í lagi"
+    },
+    "ui_old_codes_stop_finding_you_after_their_bounded_records": {
+      "en-US": "Old codes stop finding you after their bounded records expire. Identity and safety numbers remain unchanged.",
+      "is": "Eldri kóðar hætta að finna þig þegar tímabundnar færslur þeirra renna út. Auðkenni og öryggisnúmer breytast ekki."
+    },
+    "ui_on_the_new_pristine_installation_scan_or_paste_this": {
+      "en-US": "On the new pristine installation, scan or paste this ten-minute offer. Nothing transfers until both screens show the same six digits and you explicitly approve.",
+      "is": "Skannaðu eða límdu þetta tíu mínútna boð í nýju hreinu uppsetningunni. Ekkert flyst fyrr en báðir skjáir sýna sömu sex tölustafina og þú samþykkir sérstaklega."
+    },
+    "ui_one_per_line_https_host_leaf_sha256_standard_private": {
+      "en-US": "One per line: https://host,leaf_sha256,standard|private|both. Private access requires an explicit loopback Tor endpoint.",
+      "is": "Eitt í hverri línu: https://host,leaf_sha256,standard|private|both. Private-aðgangur krefst sérstaklega tilgreinds Tor-endapunkts á loopback."
+    },
+    "ui_open_completed_file": {
+      "en-US": "Open completed file?",
+      "is": "Opna fullbúna skrá"
+    },
+    "ui_open_with_the_system_viewer": {
+      "en-US": "Open with the system viewer",
+      "is": "Opna með kerfisskoðara"
+    },
+    "ui_opening_your_encrypted_store_and_starting_the_node_can": {
+      "en-US": "Opening your encrypted store and starting the node can take up to 30 seconds. Keep Komms open while it securely joins the network.",
+      "is": "Það getur tekið allt að 30 sekúndur að opna dulkóðuðu gagnageymsluna og ræsa hnútinn. Hafðu Komms opið meðan það tengist netinu á öruggan hátt."
+    },
+    "ui_operation": {
+      "en-US": "Operation",
+      "is": "Aðgerð"
+    },
+    "ui_optional_multiaddr_hint": {
+      "en-US": "Optional multiaddr hint",
+      "is": "Valfrjáls multiaddr-leiðarvísun"
+    },
+    "ui_optional_provider_defaults_are_signed_replaceable_and_never_r": {
+      "en-US": "Optional provider defaults are signed, replaceable, and never required for core messaging routes.",
+      "is": "Valfrjálsar sjálfgefnar þjónustur eru undirritaðar, útskiptanlegar og aldrei nauðsynlegar fyrir grunnleiðir skilaboða."
+    },
+    "ui_optional_rendezvous": {
+      "en-US": "Optional rendezvous",
+      "is": "Valfrjálst rendezvous"
+    },
+    "ui_or_share_the_hex_interoperable_with_the_desktop_app": {
+      "en-US": "Or share the hex (interoperable with the desktop app and `kult add`):",
+      "is": "Eða deildu hex-gildinu (samhæft við skjáborðsforritið og `kult add`):"
+    },
+    "ui_pairing_bundle": {
+      "en-US": "Pairing bundle",
+      "is": "Pörunarpakki"
+    },
+    "ui_passphrase": {
+      "en-US": "Passphrase",
+      "is": "Aðgangssetning"
+    },
+    "ui_passphrases_and_recovery_mnemonics_use_secure_fields_other_fi": {
+      "en-US": "Passphrases and recovery mnemonics use secure fields. Other fields disable autocorrection, but iOS has no per-field personalized-learning guarantee.",
+      "is": "Aðgangssetningar og endurheimtarorð nota örugga reiti. Sjálfvirk leiðrétting er óvirk í öðrum reitum, en iOS getur ekki tryggt að persónusniðin orðalærdómur sé óvirkur í einstökum reitum."
+    },
+    "ui_paste_an_encrypted_convergence_bundle_exported_by_another_act": {
+      "en-US": "Paste an encrypted convergence bundle exported by another active linked device. Replays and bundles for a different device are rejected.",
+      "is": "Límdu dulkóðaðan samleitnipakka sem annað virkt tengt tæki flutti út. Endurtekningum og pökkum fyrir annað tæki er hafnað."
+    },
+    "ui_paste_an_encrypted_convergence_bundle_exported_for_this_exact": {
+      "en-US": "Paste an encrypted convergence bundle exported for this exact active device. Replays are rejected.",
+      "is": "Límdu dulkóðaðan samleitnipakka sem var fluttur út fyrir nákvæmlega þetta virka tæki. Endurtekningum er hafnað."
+    },
+    "ui_path_to_backup_kkr": {
+      "en-US": "/path/to/backup.kkr",
+      "is": "/path/to/backup.kkr"
+    },
+    "ui_path_to_providers_json": {
+      "en-US": "/path/to/providers.json",
+      "is": "/path/to/providers.json"
+    },
+    "ui_people_you_have_not_accepted_stay_separate_from_contacts": {
+      "en-US": "People you have not accepted stay separate from contacts and",
+      "is": "Fólk sem þú hefur ekki samþykkt er aðskilið frá tengiliðum og"
+    },
+    "ui_petname": {
+      "en-US": "Petname",
+      "is": "Gælunafn"
+    },
+    "ui_pin": {
+      "en-US": "Pin",
+      "is": "Festa"
+    },
+    "ui_pinned_conversations": {
+      "en-US": "Pinned conversations",
+      "is": "Fest samtöl"
+    },
+    "ui_pins": {
+      "en-US": "Pins",
+      "is": "Festingar"
+    },
+    "ui_pins_stay_sealed_on_this_device_they_change_presentation": {
+      "en-US": "Pins stay sealed on this device. They change presentation order only and create no delivery work.",
+      "is": "Festingar haldast innsiglaðar á þessu tæki. Þær breyta aðeins birtingarröð og skapa enga afhendingarvinnu."
+    },
+    "ui_pixelate": {
+      "en-US": "Pixelate",
+      "is": "Mynddíla"
+    },
+    "ui_playback_never_starts_automatically": {
+      "en-US": "Playback never starts automatically",
+      "is": "Spilun hefst aldrei sjálfkrafa"
+    },
+    "ui_prepare_without_changing_this_profile": {
+      "en-US": "Prepare without changing this profile",
+      "is": "Undirbúa án þess að breyta þessu sniði"
+    },
+    "ui_preparing_fresh_bundle_and_qr_codes": {
+      "en-US": "Preparing fresh bundle and QR codes…",
+      "is": "Undirbý nýjan pakka og QR-kóða…"
+    },
+    "ui_preview_unavailable": {
+      "en-US": "Preview unavailable",
+      "is": "Forskoðun ekki tiltæk"
+    },
+    "ui_privacy_and_screen_security": {
+      "en-US": "Privacy and screen security",
+      "is": "Persónuvernd og skjáöryggi"
+    },
+    "ui_privacy_regions": {
+      "en-US": "Privacy regions",
+      "is": "Persónuverndarsvæði"
+    },
+    "ui_privacy_security": {
+      "en-US": "Privacy & security",
+      "is": "Persónuvernd og öryggi"
+    },
+    "ui_private_conversation_labels": {
+      "en-US": "Private conversation labels",
+      "is": "Einkamerki samtala"
+    },
+    "ui_private_conversations": {
+      "en-US": "Private conversations",
+      "is": "Einkasamtöl"
+    },
+    "ui_private_folders": {
+      "en-US": "Private folders",
+      "is": "Einkamöppur"
+    },
+    "ui_private_input_controls_are_starting": {
+      "en-US": "Private input controls are starting…",
+      "is": "Stýringar fyrir einkainnslátt eru að ræsast…"
+    },
+    "ui_private_mode_tor_socks5_proxy": {
+      "en-US": "Private-mode Tor SOCKS5 proxy",
+      "is": "Tor SOCKS5-milliþjónn fyrir Private-ham"
+    },
+    "ui_private_tor_socks5_endpoint": {
+      "en-US": "Private Tor SOCKS5 endpoint",
+      "is": "Tor SOCKS5-endapunktur fyrir Private-ham"
+    },
+    "ui_publish_direct_routes_after_accepting_the_reachability_warnin": {
+      "en-US": "Publish direct routes after accepting the reachability warning",
+      "is": "Birta beinar leiðir eftir að viðvörun um náanleika er samþykkt"
+    },
+    "ui_qr_code": {
+      "en-US": "QR code",
+      "is": "QR-kóði"
+    },
+    "ui_qr_generation_failed": {
+      "en-US": "QR generation failed",
+      "is": "Gerð QR-kóða mistókst"
+    },
+    "ui_qr_payload_or_bundle_hex": {
+      "en-US": "QR payload or bundle hex",
+      "is": "QR-innihald eða hex-gildi pakka"
+    },
+    "ui_queued_0": {
+      "en-US": "Queued: 0",
+      "is": "Í biðröð: 0"
+    },
+    "ui_reachability": {
+      "en-US": "Reachability",
+      "is": "Náanleiki"
+    },
+    "ui_relay_blank_first_bootstrap_peer": {
+      "en-US": "Relay (blank = first bootstrap peer)",
+      "is": "Miðlari (autt = fyrsti upphafsjafningi)"
+    },
+    "ui_relay_for_nat_traversal_defaults_to_first_bootstrap_peer": {
+      "en-US": "Relay (for NAT traversal; defaults to first bootstrap peer)",
+      "is": "Miðlari (fyrir NAT-yfirferð; sjálfgefið er fyrsti upphafsjafningi)"
+    },
+    "ui_relays_bootstrap_peers_lan_discovery_and_mailbox_service": {
+      "en-US": "Relays, bootstrap peers, LAN discovery, and mailbox service",
+      "is": "Miðlarar, upphafsjafningjar, staðarnetsleit og pósthólfsþjónusta"
+    },
+    "ui_relays_bootstrap_peers_mailbox_service_sneakernet_and_mesh_se": {
+      "en-US": "Relays, bootstrap peers, mailbox service, sneakernet, and mesh settings are available before unlock and apply when the node starts.",
+      "is": "Stillingar fyrir miðlara, upphafsjafningja, pósthólfsþjónustu, sneakernet og mesh eru tiltækar fyrir aflæsingu og taka gildi þegar hnúturinn ræsist."
+    },
+    "ui_removed_locally_other_devices_may_retain_copies": {
+      "en-US": "Removed locally; other devices may retain copies",
+      "is": "Fjarlægt staðbundið; önnur tæki kunna að geyma afrit"
+    },
+    "ui_rename_linked_device": {
+      "en-US": "Rename linked device",
+      "is": "Endurnefna tengt tæki"
+    },
+    "ui_rename_private_petname": {
+      "en-US": "Rename private petname",
+      "is": "Endurnefna einkagælunafn"
+    },
+    "ui_rendezvous_providers_origin_leaf_certificate_sha256_standard": {
+      "en-US": "Rendezvous providers (origin,leaf-certificate-sha256,standard|private|both)",
+      "is": "Rendezvous-þjónustur (origin,leaf-certificate-sha256,standard|private|both)"
+    },
+    "ui_replace_how_messages_reach_this_contact_direct_multiaddrs_mai": {
+      "en-US": "Replace how messages reach this contact: direct multiaddrs, mailbox relays, a sneakernet spool, or the LoRa mesh (",
+      "is": "Skiptu um hvernig skilaboð ná til þessa tengiliðar: bein multiaddr-vistföng, pósthólfsmiðlarar, sneakernet-biðmappa eða LoRa-mesh ("
+    },
+    "ui_replacement_message": {
+      "en-US": "Replacement message",
+      "is": "Skilaboð í staðinn"
+    },
+    "ui_republish_reachability": {
+      "en-US": "Republish reachability",
+      "is": "Endurbirta náanleika"
+    },
+    "ui_request_could_not_be_changed": {
+      "en-US": "Request could not be changed",
+      "is": "Ekki tókst að breyta beiðninni"
+    },
+    "ui_reset": {
+      "en-US": "Reset",
+      "is": "Endurstilla"
+    },
+    "ui_response_for_the_source_device": {
+      "en-US": "Response for the source device",
+      "is": "Svar fyrir upprunatækið"
+    },
+    "ui_response_from_new_device": {
+      "en-US": "Response from new device",
+      "is": "Svar frá nýju tæki"
+    },
+    "ui_response_from_the_new_device": {
+      "en-US": "Response from the new device",
+      "is": "Svar frá nýja tækinu"
+    },
+    "ui_restore_backup": {
+      "en-US": "Restore backup",
+      "is": "Endurheimta öryggisafrit"
+    },
+    "ui_restoring_the_stable_identity_also_needs_the_separately_held": {
+      "en-US": "Restoring the stable identity also needs the separately held offline .kra authority file and its different 24 words. Live device, ratchet, rendezvous, wake, group, and delivery secrets are excluded; recovery starts a fresh epoch and re-handshakes.",
+      "is": "Endurheimt varanlega auðkennisins krefst einnig ótengdu .kra-heimildarskrárinnar sem er geymd sér og 24 annarra orða hennar. Leyndarmál fyrir virk tæki, ratchet, rendezvous, vakningu, hópa og afhendingu eru undanskilin; endurheimt byrjar nýtt tímabil og framkvæmir ný handabönd."
+    },
+    "ui_retention": {
+      "en-US": "Retention",
+      "is": "Varðveisla"
+    },
+    "ui_retire_legacy_lookup": {
+      "en-US": "Retire legacy lookup?",
+      "is": "Afturkalla eldri uppflettingu"
+    },
+    "ui_retire_permanently": {
+      "en-US": "Retire permanently",
+      "is": "Afnema varanlega"
+    },
+    "ui_reveal_once": {
+      "en-US": "Reveal once",
+      "is": "Birta einu sinni…"
+    },
+    "ui_review": {
+      "en-US": "Review",
+      "is": "Yfirfara"
+    },
+    "ui_review_the_file_and_current_carrier_policy_before_explicitly": {
+      "en-US": "Review the file and current carrier policy before explicitly sending it. The private staged copy is deleted after send or discard.",
+      "is": "Yfirfarðu skrána og núverandi flutningsstefnu áður en þú sendir hana sérstaklega. Einkaafritinu í bið er eytt eftir sendingu eða þegar því er fleygt."
+    },
+    "ui_review_this_recording_before_choosing_send_audio_it_will": {
+      "en-US": "Review this recording before choosing Send audio. It will never play automatically.",
+      "is": "Yfirfarðu upptökuna áður en þú velur Senda hljóð. Hún spilast aldrei sjálfkrafa."
+    },
+    "ui_review_this_recording_before_explicitly_sending_it_it_will": {
+      "en-US": "Review this recording before explicitly sending it. It will never play automatically.",
+      "is": "Yfirfarðu upptökuna áður en þú sendir hana sérstaklega. Hún spilast aldrei sjálfkrafa."
+    },
+    "ui_review_unknown_senders_and_group_invitations": {
+      "en-US": "Review unknown senders and group invitations",
+      "is": "Yfirfara óþekkta sendendur og hópboð"
+    },
+    "ui_revoke": {
+      "en-US": "Revoke",
+      "is": "Afturkalla"
+    },
+    "ui_revoke_permanently": {
+      "en-US": "Revoke permanently",
+      "is": "Afturkalla varanlega"
+    },
+    "ui_revoked": {
+      "en-US": "Revoked",
+      "is": "Afturkallað"
+    },
+    "ui_role": {
+      "en-US": "Role",
+      "is": "Hlutverk"
+    },
+    "ui_rotate": {
+      "en-US": "Rotate",
+      "is": "Snúa"
+    },
+    "ui_rotate_90_degrees_clockwise": {
+      "en-US": "Rotate 90 degrees clockwise",
+      "is": "Snúa 90 gráður réttsælis"
+    },
+    "ui_rotate_90_degrees_counter_clockwise": {
+      "en-US": "Rotate 90 degrees counter-clockwise",
+      "is": "Snúa 90 gráður rangsælis"
+    },
+    "ui_rotate_connect_code": {
+      "en-US": "Rotate Connect code?",
+      "is": "Endurnýja Connect-kóða"
+    },
+    "ui_rotate_left": {
+      "en-US": "Rotate left",
+      "is": "Snúa til vinstri"
+    },
+    "ui_rotate_right": {
+      "en-US": "Rotate right",
+      "is": "Snúa til hægri"
+    },
+    "ui_rotating_this_capability_changes_reachability_without_changin": {
+      "en-US": "Rotating this capability changes reachability without changing your identity, contacts, history, or safety numbers.",
+      "is": "Endurnýjun þessarar heimildar breytir náanleika án þess að breyta auðkenni, tengiliðum, sögu eða öryggisnúmerum."
+    },
+    "ui_rotation": {
+      "en-US": "Rotation",
+      "is": "Snúningur"
+    },
+    "ui_save_hints": {
+      "en-US": "Save hints",
+      "is": "Vista leiðarvísanir"
+    },
+    "ui_save_network_settings": {
+      "en-US": "Save network settings",
+      "is": "Vista netstillingar"
+    },
+    "ui_save_the_backup_file": {
+      "en-US": "Save the backup file…",
+      "is": "Vista öryggisafritið…"
+    },
+    "ui_saving_replaces_the_contact_s_hint_list_delivery_also": {
+      "en-US": "Saving replaces the contact's hint list. Delivery also uses discovery — hints are the paths you already know.",
+      "is": "Vistun kemur í stað leiðarlista tengiliðarins. Afhending notar einnig leit — leiðarvísanir eru leiðirnar sem þú þekkir þegar."
+    },
+    "ui_scan_offer_qr": {
+      "en-US": "Scan offer QR",
+      "is": "Skanna QR-kóða boðs"
+    },
+    "ui_scan_their_code_instead": {
+      "en-US": "Scan their code instead",
+      "is": "Skanna kóða þeirra í staðinn"
+    },
+    "ui_scan_their_komms_code": {
+      "en-US": "Scan their Komms code",
+      "is": "Skanna Komms-kóða þeirra"
+    },
+    "ui_scan_this_ten_minute_offer_on_a_pristine_installation": {
+      "en-US": "Scan this ten-minute offer on a pristine installation. Nothing transfers before both screens show the same six digits.",
+      "is": "Skannaðu þetta tíu mínútna boð í hreinni uppsetningu. Ekkert flyst fyrr en báðir skjáir sýna sömu sex tölustafina."
+    },
+    "ui_scheduled": {
+      "en-US": "Scheduled ·",
+      "is": "Tímasett ·"
+    },
+    "ui_scheduled_0": {
+      "en-US": "Scheduled: 0",
+      "is": "Tímasett: 0"
+    },
+    "ui_screen_and_input_privacy": {
+      "en-US": "Screen and input privacy",
+      "is": "Persónuvernd skjás og innsláttar"
+    },
+    "ui_securing_recipients": {
+      "en-US": "Securing recipients",
+      "is": "tryggi viðtakendur"
+    },
+    "ui_security_conflicts": {
+      "en-US": "Security conflicts",
+      "is": "Öryggisárekstrar"
+    },
+    "ui_security_upgrade": {
+      "en-US": "Security upgrade",
+      "is": "Öryggisuppfærsla"
+    },
+    "ui_select_a_contact_or_share_your_bundle_to_pair": {
+      "en-US": "Select a contact, or share your bundle to pair with someone.",
+      "is": "Veldu tengilið eða deildu pakkanum þínum til að para við einhvern."
+    },
+    "ui_selected": {
+      "en-US": "Selected:",
+      "is": "Valið:"
+    },
+    "ui_semantic_mentions_in_this_draft": {
+      "en-US": "Semantic mentions in this draft",
+      "is": "Merkingar einstaklinga í þessum drögum"
+    },
+    "ui_send_at": {
+      "en-US": "Send at",
+      "is": "Senda kl."
+    },
+    "ui_send_attachment": {
+      "en-US": "Send attachment",
+      "is": "Senda viðhengi"
+    },
+    "ui_send_exact_final_image": {
+      "en-US": "Send exact final image",
+      "is": "Senda nákvæma lokamynd"
+    },
+    "ui_sensitive_content_is_hidden_while_this_window_is_inactive": {
+      "en-US": "Sensitive content is hidden while this window is inactive.",
+      "is": "Viðkvæmt efni er falið meðan þessi gluggi er óvirkur."
+    },
+    "ui_separately_keyed_from_rendezvous_one_per_line_https_host": {
+      "en-US": "Separately keyed from rendezvous. One per line: https://host,leaf_sha256,standard|private|both. Provider tokens go only to the selected gateway.",
+      "is": "Lyklar eru aðskildir frá rendezvous. Eitt í hverri línu: https://host,leaf_sha256,standard|private|both. Þjónustutákn fara aðeins til valinnar gáttar."
+    },
+    "ui_serve_a_mailbox_for_others": {
+      "en-US": "Serve a mailbox for others",
+      "is": "Reka pósthólf fyrir aðra"
+    },
+    "ui_share": {
+      "en-US": "Share",
+      "is": "Deila"
+    },
+    "ui_show": {
+      "en-US": "Show",
+      "is": "Sýna"
+    },
+    "ui_show_comparison_code": {
+      "en-US": "Show comparison code",
+      "is": "Sýna samanburðarkóða"
+    },
+    "ui_show_pairing_qr_bundle": {
+      "en-US": "Show pairing QR / bundle",
+      "is": "Sýna QR-pörun / pakka"
+    },
+    "ui_shown_in_your_local_time_stored_as_an_absolute": {
+      "en-US": "Shown in your local time; stored as an absolute UTC instant.",
+      "is": "Sýnt á þínum staðartíma; vistað sem algildur UTC-tímapunktur."
+    },
+    "ui_shows_network_details": {
+      "en-US": "Shows network details",
+      "is": "Sýnir netupplýsingar"
+    },
+    "ui_signed_device_name": {
+      "en-US": "Signed device name",
+      "is": "Undirritað tækisheiti"
+    },
+    "ui_signed_provider_directory": {
+      "en-US": "Signed provider directory",
+      "is": "Undirrituð þjónustuskrá"
+    },
+    "ui_single_folder_membership": {
+      "en-US": "Single folder membership",
+      "is": "Aðild að einni möppu"
+    },
+    "ui_sneakernet_spool_directory": {
+      "en-US": "Sneakernet spool directory",
+      "is": "Sneakernet-biðmappa"
+    },
+    "ui_someone_adds_you_by_scanning_every_bundle_frame_or": {
+      "en-US": "Someone adds you by scanning every bundle frame (or pasting the hex), or by your capability-scoped Connect code. Rotating the code changes reachability without changing your identity or safety numbers.",
+      "is": "Einhver bætir þér við með því að skanna alla ramma pakkans (eða líma hex-gildið), eða með heimildarbundna Connect-kóðanum þínum. Endurnýjun kóðans breytir náanleika án þess að breyta auðkenni eða öryggisnúmerum."
+    },
+    "ui_source": {
+      "en-US": "Source",
+      "is": "Uppruni"
+    },
+    "ui_source_offer": {
+      "en-US": "Source offer",
+      "is": "Boð upprunatækis"
+    },
+    "ui_spool_dir": {
+      "en-US": "spool dir",
+      "is": "biðmappa"
+    },
+    "ui_square_1_1": {
+      "en-US": "Square 1:1",
+      "is": "Ferningur 1:1"
+    },
+    "ui_stable_account_fingerprint_verification": {
+      "en-US": "Stable account fingerprint (verification)",
+      "is": "Varanlegt fingrafar reiknings (staðfesting)"
+    },
+    "ui_static_new_activity_notice": {
+      "en-US": "Static “New activity” notice",
+      "is": "Föst tilkynning „Ný virkni“"
+    },
+    "ui_stop_the_node_and_lock_ctrl_cmd_shift_l": {
+      "en-US": "Stop the node and lock (Ctrl/Cmd+Shift+L)",
+      "is": "Stöðva hnútinn og læsa (Ctrl/Cmd+Shift+L)"
+    },
+    "ui_stored_as_an_absolute_utc_instant_time_zone_changes": {
+      "en-US": "Stored as an absolute UTC instant. Time-zone changes do not move it.",
+      "is": "Vistað sem algildur UTC-tímapunktur. Breytingar á tímabelti færa hann ekki."
+    },
+    "ui_stored_sealed_on_this_device_it_is_never_sent": {
+      "en-US": "Stored sealed on this device. It is never sent to the contact and never identifies a recipient.",
+      "is": "Vistað innsiglað á þessu tæki. Það er aldrei sent tengiliðnum og auðkennir aldrei viðtakanda."
+    },
+    "ui_strength": {
+      "en-US": "Strength",
+      "is": "Styrkur"
+    },
+    "ui_submit": {
+      "en-US": "Submit",
+      "is": "Senda inn"
+    },
+    "ui_system_follows_your_operating_system_appearance_live_this_pri": {
+      "en-US": "System follows your operating-system appearance live. This private choice is sealed locally and included in encrypted backups.",
+      "is": "Kerfisstilling fylgir útliti stýrikerfisins í rauntíma. Þetta einkaval er innsiglað staðbundið og fylgir dulkóðuðum öryggisafritum."
+    },
+    "ui_system_light_or_dark_theme": {
+      "en-US": "System, light, or dark theme",
+      "is": "Kerfis-, ljóst eða dökkt þema"
+    },
+    "ui_target": {
+      "en-US": "Target",
+      "is": "Mark"
+    },
+    "ui_the_exact_visible_text_will_carry_no_semantic_mention": {
+      "en-US": "The exact visible text will carry no semantic mention and trigger no mention notification.",
+      "is": "Nákvæmi sýnilegi textinn ber enga merkingu einstaklings og kveikir enga tilkynningu um merkingu."
+    },
+    "ui_the_folder_is_applied_first_followed_by_the_label": {
+      "en-US": "The folder is applied first, followed by the label filter.",
+      "is": "Mappan er valin fyrst og síðan er merkjasíunni beitt."
+    },
+    "ui_the_owner_sequences_an_exact_signed_final_snapshot_admin": {
+      "en-US": "The owner sequences an exact signed final snapshot. Admin actions are generation-bound requests.",
+      "is": "Eigandinn raðar nákvæmri undirritaðri lokastöðu. Aðgerðir stjórnenda eru beiðnir bundnar við kynslóð."
+    },
+    "ui_the_pending_rename_or_revocation_will_commit_only_after": {
+      "en-US": "The pending rename or revocation will commit only after a strict majority of the previous active device set signs this exact proposal.",
+      "is": "Endurnefningin eða afturköllunin í bið verður aðeins staðfest eftir að hreinn meirihluti fyrra virka tækjamengisins undirritar nákvæmlega þessa tillögu."
+    },
+    "ui_the_security_scoped_source_was_copied_into_protected_app": {
+      "en-US": "The security-scoped source was copied into protected app-private storage. It is deleted after send or discard.",
+      "is": "Uppruninn með öryggisheimild var afritaður í varið einkageymslusvæði forritsins. Honum er eytt eftir sendingu eða þegar honum er fleygt."
+    },
+    "ui_the_sender_provided_file_was_not_scanned_for_malware": {
+      "en-US": "The sender-provided file was not scanned for malware.",
+      "is": "Skráin frá sendandanum var ekki skönnuð fyrir spilliforritum."
+    },
+    "ui_the_text_stays_sealed_on_this_device_and_does": {
+      "en-US": "The text stays sealed on this device and does not enter the encrypted delivery queue until this absolute instant.",
+      "is": "Textinn helst innsiglaður á þessu tæki og fer ekki í dulkóðuðu afhendingarbiðröðina fyrr en á þessum algilda tímapunkti."
+    },
+    "ui_their_connect_code_capability_scoped_dht_lookup": {
+      "en-US": "Their Connect code (capability-scoped DHT lookup)",
+      "is": "Connect-kóði þeirra (heimildarbundin DHT-uppfletting)"
+    },
+    "ui_their_name": {
+      "en-US": "Their name",
+      "is": "Heiti þeirra"
+    },
+    "ui_their_pairing_qr_payload_or_bundle_hex": {
+      "en-US": "Their pairing QR payload or bundle hex",
+      "is": "QR-pörunarinnihald þeirra eða hex-gildi pakka"
+    },
+    "ui_theme": {
+      "en-US": "Theme",
+      "is": "Þema"
+    },
+    "ui_these_sealed_local_rows_no_longer_resolve_to_both": {
+      "en-US": "These sealed local rows no longer resolve to both a folder and an available conversation.",
+      "is": "Þessar innsigluðu staðbundnu raðir vísa ekki lengur bæði í möppu og tiltækt samtal."
+    },
+    "ui_these_sealed_records_no_longer_resolve_to_both_a": {
+      "en-US": "These sealed records no longer resolve to both a label and an available conversation. Cleanup removes only the exact stale record.",
+      "is": "Þessar innsigluðu færslur vísa ekki lengur bæði í merki og tiltækt samtal. Hreinsun fjarlægir aðeins nákvæmu úreltu færsluna."
+    },
+    "ui_they_match_mark_verified": {
+      "en-US": "They match — mark verified",
+      "is": "Þeir passa — merkja sem staðfest"
+    },
+    "ui_this_cannot_be_undone_the_exact_device_loses_new": {
+      "en-US": "This cannot be undone. The exact device loses new delivery and sync access.",
+      "is": "Þetta er ekki hægt að afturkalla. Þetta tiltekna tæki missir aðgang að nýrri afhendingu og samstillingu."
+    },
+    "ui_this_creates_a_new_authenticated_edit_event_the_original": {
+      "en-US": "This creates a new authenticated edit event. The original and prior versions remain available in this conversation.",
+      "is": "Þetta býr til nýjan sannvottaðan breytingaratburð. Frumútgáfan og eldri útgáfur verða áfram tiltækar í þessu samtali."
+    },
+    "ui_this_device": {
+      "en-US": "This device",
+      "is": "Þetta tæki"
+    },
+    "ui_this_step_is_required_before_messaging": {
+      "en-US": "This step is required before messaging.",
+      "is": "Þetta skref er nauðsynlegt áður en skilaboð eru send."
+    },
+    "ui_this_step_is_required_before_messaging_anyone_holding_both": {
+      "en-US": "This step is required before messaging. Anyone holding both this encrypted file and its 24 words can take over your stable identity and revoke every current device. Save the file on offline or removable storage, separate from the words. It is not a routine backup.",
+      "is": "Þetta skref er nauðsynlegt áður en skilaboð eru send. Hver sem hefur bæði þessa dulkóðuðu skrá og 24 orð hennar getur tekið yfir varanlega auðkennið þitt og afturkallað öll núverandi tæki. Vistaðu skrána á ótengdum eða færanlegum miðli, aðskilda frá orðunum. Þetta er ekki venjulegt öryggisafrit."
+    },
+    "ui_this_stops_mailbox_only_lookup_under_the_stable_alpha": {
+      "en-US": "This stops mailbox-only lookup under the stable Alpha address. It does not change identity or delete remote copies.",
+      "is": "Þetta stöðvar uppflettingu sem notar aðeins pósthólf undir varanlega Alpha-vistfanginu. Það breytir ekki auðkenni og eyðir ekki fjarlægum afritum."
+    },
+    "ui_transfer_this_exact_add_device_proposal_to_another_active": {
+      "en-US": "Transfer this exact add-device proposal to another active installation. Its detached signature cannot alter the proposal.",
+      "is": "Flyttu nákvæmlega þessa tillögu um að bæta við tæki í aðra virka uppsetningu. Aðskilin undirritun hennar getur ekki breytt tillögunni."
+    },
+    "ui_transfer_this_exact_pending_rename_or_revocation_proposal_to": {
+      "en-US": "Transfer this exact pending rename or revocation proposal to another active device, then paste its detached approval.",
+      "is": "Flyttu nákvæmlega þessa tillögu um endurnefningu eða afturköllun í bið í annað virkt tæki og límdu síðan aðskilið samþykki þess."
+    },
+    "ui_transport_status": {
+      "en-US": "Transport status",
+      "is": "Staða flutnings"
+    },
+    "ui_trusted_directory_keys_one_64_character_lowercase_hex_key": {
+      "en-US": "Trusted directory keys (one 64-character lowercase hex key per line)",
+      "is": "Traustir skrárlyklar (einn 64 stafa lágstafa hex-lykill í hverri línu)"
+    },
+    "ui_trusted_offline_directory_keys_one_per_line": {
+      "en-US": "Trusted offline directory keys, one per line",
+      "is": "Traustir ótengdir skrárlyklar, einn í hverri línu"
+    },
+    "ui_try_preparing_the_authority_again": {
+      "en-US": "Try preparing the authority again",
+      "is": "Reyna að undirbúa heimildina aftur"
+    },
+    "ui_undo": {
+      "en-US": "Undo",
+      "is": "Afturkalla breytingu"
+    },
+    "ui_use_only_on_a_pristine_installation_scan_or_paste": {
+      "en-US": "Use only on a pristine installation. Scan or paste the source offer.",
+      "is": "Notaðu aðeins í hreinni uppsetningu. Skannaðu eða límdu boð upprunatækisins."
+    },
+    "ui_use_the_exact_pasted_offer_instead": {
+      "en-US": "Use the exact pasted offer instead.",
+      "is": "Notaðu nákvæmlega límda boðið í staðinn."
+    },
+    "ui_use_this_only_on_a_pristine_installation_scan_or": {
+      "en-US": "Use this only on a pristine installation. Scan or paste the source offer, compare the code on both screens, then import the encrypted package the source creates.",
+      "is": "Notaðu þetta aðeins í hreinni uppsetningu. Skannaðu eða límdu boð upprunatækisins, berðu kóðann saman á báðum skjám og flyttu síðan inn dulkóðaða pakkann sem upprunatækið býr til."
+    },
+    "ui_uses_a_rotating_capability_scoped_dht_lookup_the_stable": {
+      "en-US": "Uses a rotating capability-scoped DHT lookup. The stable account fingerprint remains only for verification and visible legacy migration.",
+      "is": "Notar endurnýjanlega heimildarbundna DHT-uppflettingu. Varanlegt fingrafar reikningsins er aðeins notað til staðfestingar og sýnilegs flutnings úr eldri útgáfu."
+    },
+    "ui_verified": {
+      "en-US": "verified",
+      "is": "✓ staðfest"
+    },
+    "ui_verify": {
+      "en-US": "Verify",
+      "is": "Staðfesta"
+    },
+    "ui_verify_and_approve": {
+      "en-US": "Verify and approve",
+      "is": "Staðfesta og samþykkja"
+    },
+    "ui_verify_and_approve_exact_request": {
+      "en-US": "Verify and approve exact request",
+      "is": "Staðfesta og samþykkja nákvæma beiðni"
+    },
+    "ui_verify_identity": {
+      "en-US": "Verify identity",
+      "is": "Staðfesta auðkenni"
+    },
+    "ui_votes_are_visible_to_every_member_this_is_not": {
+      "en-US": "Votes are visible to every member. This is not anonymous. The current roster is fixed as the electorate. The creator may close it; an owner can commit signed moderation, and an admin can request it.",
+      "is": "Atkvæði eru sýnileg öllum meðlimum. Þetta er ekki nafnlaust. Núverandi meðlimalisti er fastur kjósendahópur. Höfundurinn má loka könnuninni; eigandi getur staðfest undirritaða hófstýringu og stjórnandi getur óskað eftir henni."
+    },
+    "ui_votes_are_visible_to_every_member_this_is_not_fb7bd9": {
+      "en-US": "Votes are visible to every member. This is not anonymous. The current roster is fixed as the electorate. The poll creator can close it; a group owner can also commit a signed moderation snapshot, and an admin can request one.",
+      "is": "Atkvæði eru sýnileg öllum meðlimum. Þetta er ekki nafnlaust. Núverandi meðlimalisti er fastur kjósendahópur. Höfundur könnunarinnar getur lokað henni; eigandi hóps getur einnig staðfest undirritaða hófstýringarstöðu og stjórnandi getur óskað eftir henni."
+    },
+    "ui_wake_carries_no_sender_conversation_message_unread_count_or": {
+      "en-US": "Wake carries no sender, conversation, message, unread count, or timestamp and never changes sent or delivered state.",
+      "is": "Vakning ber engan sendanda, samtal, skilaboð, fjölda ólesinna atriða eða tímastimpil og breytir aldrei stöðunni sent eða afhent."
+    },
+    "ui_we_compared_mark_verified": {
+      "en-US": "We compared, mark verified",
+      "is": "Við bárum saman — merkja sem staðfest"
+    },
+    "ui_where_to_reach_them_directly_if_you_know_it": {
+      "en-US": "Where to reach them directly, if you know it — e.g. a LAN or public address. Otherwise discovery finds a path.",
+      "is": "Hvar má ná beinu sambandi við þau, ef þú veist það — t.d. staðarnets- eða opinbert vistfang. Annars finnur leitin leið."
+    },
+    "ui_width": {
+      "en-US": "Width",
+      "is": "Breidd"
+    },
+    "ui_write_a_message": {
+      "en-US": "Write a message…",
+      "is": "Skrifa skilaboð…"
+    },
+    "ui_write_backup_to": {
+      "en-US": "Write backup to",
+      "is": "Skrifa öryggisafrit í"
+    },
+    "ui_write_offline_account_authority_to": {
+      "en-US": "Write offline account authority to",
+      "is": "Skrifa ótengda reikningsheimild í"
+    },
+    "ui_write_offline_authority": {
+      "en-US": "Write offline authority",
+      "is": "Skrifa ótengda heimild"
+    },
+    "ui_write_the_new_offline_authority_to": {
+      "en-US": "Write the new offline authority to",
+      "is": "Skrifa nýju ótengdu heimildina í"
+    },
+    "ui_write_these_24_words_down_separately_they_are_shown": {
+      "en-US": "Write these 24 words down separately. They are shown once and open only the offline account-authority file. Anyone with both parts controls this identity.",
+      "is": "Skrifaðu þessi 24 orð niður og geymdu þau sér. Þau eru sýnd einu sinni og opna aðeins ótengdu reikningsheimildarskrána. Hver sem hefur báða hlutana ræður þessu auðkenni."
+    },
+    "ui_write_these_24_words_down_separately_they_are_shown_078287": {
+      "en-US": "Write these 24 words down separately. They are shown once and open only the offline authority file.",
+      "is": "Skrifaðu þessi 24 orð niður og geymdu þau sér. Þau eru sýnd einu sinni og opna aðeins ótengdu heimildarskrána."
+    },
+    "ui_write_these_backup_words_down_and_keep_them_separately": {
+      "en-US": "Write these backup words down and keep them separately. This is the only time they are shown. Stable-identity recovery also needs the distinct offline account-authority file and its own mnemonic.",
+      "is": "Skrifaðu þessi endurheimtarorð niður og geymdu þau sér. Þetta er eina skiptið sem þau eru sýnd. Endurheimt varanlegs auðkennis krefst einnig aðskildu ótengdu reikningsheimildarskrárinnar og hennar eigin orða."
+    },
+    "ui_writes_a_root_free_encrypted_file_carrying_contacts_and": {
+      "en-US": "Writes a root-free encrypted file carrying contacts and history, sealed under a 24-word backup mnemonic shown",
+      "is": "Skrifar rótarlyklalausa dulkóðaða skrá með tengiliðum og sögu, innsiglaða með 24 endurheimtarorðum sem eru sýnd"
+    },
+    "ui_writes_one_root_free_encrypted_file_carrying_the_stable": {
+      "en-US": "Writes one root-free encrypted file carrying the stable public identity, contacts, and non-ephemeral history. It cannot recover the identity without the separately held offline authority.",
+      "is": "Skrifar eina rótarlyklalausa dulkóðaða skrá með varanlega opinbera auðkenninu, tengiliðum og sögu sem eyðist ekki sjálfkrafa. Hún getur ekki endurheimt auðkennið án ótengdu heimildarinnar sem er geymd sér."
+    },
+    "ui_x": {
+      "en-US": "X",
+      "is": "X"
+    },
+    "ui_y": {
+      "en-US": "Y",
+      "is": "Y"
+    },
+    "ui_your_connect_code": {
+      "en-US": "Your Connect code",
+      "is": "Connect-kóðinn þinn"
+    },
+    "ui_your_node_your_keys": {
+      "en-US": "Your node, your keys",
+      "is": "Hnúturinn þinn, lyklarnir þínir"
+    },
+    "attachment_audio_from": {
+      "en-US": "Audio message from %1$s",
+      "is": "Hljóðskilaboð frá %1$s"
+    },
+    "attachment_audio_unavailable": {
+      "en-US": "Audio is unavailable.",
+      "is": "Hljóð er ekki tiltækt."
+    },
+    "attachment_choose": {
+      "en-US": "Choose an attachment",
+      "is": "Veldu viðhengi"
+    },
+    "attachment_choose_group": {
+      "en-US": "Choose a group attachment",
+      "is": "Veldu hópviðhengi"
+    },
+    "attachment_exact_bytes": {
+      "en-US": "%1$d / %2$d bytes",
+      "is": "%1$d / %2$d bæti"
+    },
+    "attachment_export_title": {
+      "en-US": "Export attachment",
+      "is": "Flytja viðhengi út"
+    },
+    "attachment_exported_name": {
+      "en-US": "Exported %1$s",
+      "is": "Flutti %1$s út"
+    },
+    "attachment_mime_required": {
+      "en-US": "Enter a MIME media type.",
+      "is": "Sláðu inn MIME-miðlategund."
+    },
+    "attachment_offered": {
+      "en-US": "Attachment offered: %1$s",
+      "is": "Viðhengi boðið: %1$s"
+    },
+    "attachment_opened": {
+      "en-US": "Opened %1$s",
+      "is": "Opnaði %1$s"
+    },
+    "attachment_preview_named": {
+      "en-US": "Local preview of %1$s",
+      "is": "Staðbundin forskoðun á %1$s"
+    },
+    "attachment_progress_named": {
+      "en-US": "%1$s verified progress",
+      "is": "Staðfest framvinda fyrir %1$s"
+    },
+    "attachment_protected_image": {
+      "en-US": "Protected exact image from %1$s",
+      "is": "Varin nákvæm mynd frá %1$s"
+    },
+    "attachment_reveal_once_named_confirmation": {
+      "en-US": "Reveal “%1$s” once? Komms records consumption and removes its local message and media before writing the file. Other devices and applications may retain copies.",
+      "is": "Sýna „%1$s“ einu sinni? Komms skráir notkunina og fjarlægir staðbundin skilaboð og miðil áður en skráin er skrifuð. Önnur tæki og forrit kunna að geyma afrit."
+    },
+    "attachment_revealed_once": {
+      "en-US": "Revealed %1$s once and removed it from Komms on this device.",
+      "is": "Sýndi %1$s einu sinni og fjarlægði það úr Komms á þessu tæki."
+    },
+    "attachment_sender": {
+      "en-US": "the sender",
+      "is": "sendandanum"
+    },
+    "attachment_view_once_expiry_safety": {
+      "en-US": "Sender-provided name and type. Not scanned. Opening is terminal here; the unopened copy removes %1$s. Other devices may retain copies.",
+      "is": "Nafn og tegund koma frá sendanda. Ekki skannað. Opnun er endanleg hér; óopnaða afritið verður fjarlægt %1$s. Önnur tæki kunna að geyma afrit."
+    },
+    "attachment_view_once_named": {
+      "en-US": "View once · %1$s",
+      "is": "Skoða einu sinni · %1$s"
+    },
+    "attachment_warning_unknown": {
+      "en-US": "This file has an unknown presentation warning.",
+      "is": "Þessi skrá hefur óþekkta framsetningarviðvörun."
+    },
+    "audio_review_recorded": {
+      "en-US": "Review recording",
+      "is": "Yfirfara upptöku"
+    },
+    "audio_waveform_for": {
+      "en-US": "Waveform for %1$s",
+      "is": "Bylgjuform fyrir %1$s"
+    },
+    "backup_mnemonic_title": {
+      "en-US": "Recovery mnemonic — shown once",
+      "is": "Endurheimtarorð — sýnd einu sinni"
+    },
+    "call_incoming_prompt": {
+      "en-US": "Incoming call from %1$s over a direct authenticated audio path. Answer the call?",
+      "is": "Innhringing frá %1$s um beina sannvottaða hljóðrás. Svara símtali?"
+    },
+    "call_media_failed": {
+      "en-US": "Call audio media failed.",
+      "is": "Miðlun símtalshljóðs mistókst."
+    },
+    "call_webview_unsupported": {
+      "en-US": "This webview does not support Opus call audio and microphone streaming.",
+      "is": "Þessi vefgluggi styður ekki Opus-símtalshljóð og hljóðnemastreymi."
+    },
+    "clipboard_copied": {
+      "en-US": "Copied",
+      "is": "Afritað"
+    },
+    "contact_added_unverified": {
+      "en-US": "New contact from an incoming handshake — unverified",
+      "is": "Nýr tengiliður úr innkomnu handabandi — óstaðfestur"
+    },
+    "date_today": {
+      "en-US": "Today",
+      "is": "Í dag"
+    },
+    "date_yesterday": {
+      "en-US": "Yesterday",
+      "is": "Í gær"
+    },
+    "device_active_seen": {
+      "en-US": "active · seen %1$s",
+      "is": "virkt · sást %1$s"
+    },
+    "device_authority_fork_event": {
+      "en-US": "A device-authority fork was detected. Authority is fail-closed; review Linked devices.",
+      "is": "Klofningur í tækjaheimild fannst. Heimildin lokast við bilun; yfirfarðu Tengd tæki."
+    },
+    "device_detail": {
+      "en-US": "%1$s · %2$s",
+      "is": "%1$s · %2$s"
+    },
+    "device_link_source_title": {
+      "en-US": "Link another device",
+      "is": "Tengja annað tæki"
+    },
+    "device_link_target_title": {
+      "en-US": "Link this new device",
+      "is": "Tengja þetta nýja tæki"
+    },
+    "device_pending_change_title": {
+      "en-US": "Continue pending device change",
+      "is": "Halda tækjabreytingu í bið áfram"
+    },
+    "device_recovery_conflict_event": {
+      "en-US": "Conflicting account recoveries were detected. Device authority is fail-closed; review Linked devices.",
+      "is": "Misvísandi endurheimtir reiknings fundust. Tækjaheimildin lokast við bilun; yfirfarðu Tengd tæki."
+    },
+    "device_revoked_at": {
+      "en-US": "revoked %1$s",
+      "is": "afturkallað %1$s"
+    },
+    "device_signed_name": {
+      "en-US": "Signed device name",
+      "is": "Undirritað tækisheiti"
+    },
+    "device_sync_copied": {
+      "en-US": "Encrypted sync for %1$s copied.",
+      "is": "Dulkóðuð samstilling fyrir %1$s afrituð."
+    },
+    "device_sync_import_title": {
+      "en-US": "Import linked-device sync",
+      "is": "Flytja inn samstillingu tengds tækis"
+    },
+    "cleanup_action": {
+      "en-US": "Clean up",
+      "is": "Hreinsa"
+    },
+    "conversation_unavailable": {
+      "en-US": "unavailable conversation",
+      "is": "ótiltækt samtal"
+    },
+    "ephemeral_consumed": {
+      "en-US": "View-once item removed from this device.",
+      "is": "Atriði til einnar skoðunar fjarlægt af þessu tæki."
+    },
+    "ephemeral_expired": {
+      "en-US": "Expired item removed from this device.",
+      "is": "Útrunnið atriði fjarlægt af þessu tæki."
+    },
+    "ephemeral_remove_at": {
+      "en-US": "removes %1$s",
+      "is": "fjarlægist %1$s"
+    },
+    "folder_assignment_explanation": {
+      "en-US": "Choose the exact final folder for %1$s. This changes local navigation only.",
+      "is": "Veldu nákvæma lokamöppu fyrir %1$s. Þetta breytir aðeins staðbundinni leiðsögn."
+    },
+    "folder_move_target": {
+      "en-US": "Move %1$s to %2$s",
+      "is": "Færa %1$s í %2$s"
+    },
+    "folder_position": {
+      "en-US": "folder %1$d",
+      "is": "mappa %1$d"
+    },
+    "folder_showing": {
+      "en-US": "Showing %1$s.",
+      "is": "Sýni %1$s."
+    },
+    "folder_unfiled_accessibility": {
+      "en-US": "Unfiled virtual view",
+      "is": "Sýndarmappa fyrir óflokkuð samtöl"
+    },
+    "gate_existing_store": {
+      "en-US": "This folder contains an existing encrypted data store.",
+      "is": "Þessi mappa inniheldur fyrirliggjandi dulkóðaða gagnageymslu."
+    },
+    "gate_new_passphrase": {
+      "en-US": "New passphrase (encrypts the local data store)",
+      "is": "Ný lykilsetning (dulkóðar staðbundnu gagnageymsluna)"
+    },
+    "gate_new_store": {
+      "en-US": "No data store exists here yet — create a new identity or restore from backup.",
+      "is": "Engin gagnageymsla er hér enn — stofnaðu nýtt auðkenni eða endurheimtu úr öryggisafriti."
+    },
+    "gate_opening_short": {
+      "en-US": "Opening… (up to 30 seconds)",
+      "is": "Opna… (allt að 30 sekúndur)"
+    },
+    "gate_upgrade_choose_destination": {
+      "en-US": "Choose an offline or removable destination first.",
+      "is": "Veldu fyrst ótengdan eða færanlegan áfangastað."
+    },
+    "gate_upgrade_reset_done": {
+      "en-US": "New identity created · re-verify every retained contact",
+      "is": "Nýtt auðkenni stofnað · staðfestu alla varðveitta tengiliði aftur"
+    },
+    "group_invitation_accept_failed": {
+      "en-US": "The group invitation could not be accepted.",
+      "is": "Ekki tókst að samþykkja hópboðið."
+    },
+    "group_invitation_delete": {
+      "en-US": "Delete group invitation",
+      "is": "Eyða hópboði"
+    },
+    "group_invitation_delete_failed": {
+      "en-US": "The group invitation could not be deleted.",
+      "is": "Ekki tókst að eyða hópboðinu."
+    },
+    "group_invitation_members_expiry": {
+      "en-US": {
+        "one": "%1$d member · expires %2$s",
+        "other": "%1$d members · expires %2$s"
+      },
+      "is": {
+        "one": "%1$d meðlimur · rennur út %2$s",
+        "other": "%1$d meðlimir · rennur út %2$s"
+      }
+    },
+    "group_message_legacy_origin_detail": {
+      "en-US": "This historical row is membership-authenticated; it is not proof of the individual sender.",
+      "is": "Þessi eldri færsla er sannvottuð með hópaðild; hún sannar ekki hver einstakur sendandi var."
+    },
+    "group_message_pending_origin_detail": {
+      "en-US": "This attachment is local-only until every recipient wrapper is authenticated and queued.",
+      "is": "Þetta viðhengi er aðeins staðbundið þar til umslag hvers viðtakanda hefur verið sannvottað og sett í biðröð."
+    },
+    "group_message_received_preview": {
+      "en-US": "%1$s · %2$s: %3$s",
+      "is": "%1$s · %2$s: %3$s"
+    },
+    "group_rename_requested": {
+      "en-US": "Rename request sent to the owner.",
+      "is": "Beiðni um nafnbreytingu send eigandanum."
+    },
+    "group_renamed": {
+      "en-US": "Group renamed.",
+      "is": "Hópur endurnefndur."
+    },
+    "group_transfer_owner_warning": {
+      "en-US": "Transfer sole ownership to %1$s? You will become an admin.",
+      "is": "Flytja eina eignarhaldið til %1$s? Þú verður stjórnandi."
+    },
+    "group_unavailable": {
+      "en-US": "Unavailable group",
+      "is": "Ótiltækur hópur"
+    },
+    "hints_for": {
+      "en-US": "Delivery hints for %1$s",
+      "is": "Afhendingarvísbendingar fyrir %1$s"
+    },
+    "legacy_discovery_retire_warning": {
+      "en-US": "Permanently retire mailbox-only lookup under the stable Alpha address? This does not change identity or delete remote copies.",
+      "is": "Hætta varanlega pósthólfsleit undir varanlega Alpha-vistfanginu? Þetta breytir ekki auðkenni og eyðir ekki fjarlægum afritum."
+    },
+    "legacy_discovery_retired": {
+      "en-US": "Legacy stable-address lookup retired.",
+      "is": "Eldri leit með varanlegu vistfangi tekin úr notkun."
+    },
+    "language_note": {
+      "en-US": "Language changes apply immediately on this device.",
+      "is": "Tungumálabreytingar taka strax gildi á þessu tæki."
+    },
+    "reachability_republished": {
+      "en-US": "Current Connect reachability republished.",
+      "is": "Núverandi Connect-aðgengi endurbirt."
+    },
+    "remove_action": {
+      "en-US": "Remove",
+      "is": "Fjarlægja"
+    },
+    "save_changes": {
+      "en-US": "Save changes",
+      "is": "Vista breytingar"
+    },
+    "session_established": {
+      "en-US": "Encrypted session established",
+      "is": "Dulkóðuð seta stofnuð"
+    },
+    "session_renewed": {
+      "en-US": "Encrypted session renewed with %1$s — their key or device changed; re-verify if unexpected",
+      "is": "Dulkóðuð seta endurnýjuð við %1$s — lykill eða tæki þeirra breyttist; staðfestu aftur ef það var óvænt"
+    },
+    "icons_contact_target": {
+      "en-US": "Contact · %1$s",
+      "is": "Tengiliður · %1$s"
+    },
+    "icons_group_target": {
+      "en-US": "Group · %1$s",
+      "is": "Hópur · %1$s"
+    },
+    "icons_initials_fallback": {
+      "en-US": "Generated initials fallback · %1$s",
+      "is": "Sjálfgefnir upphafsstafir · %1$s"
+    },
+    "icons_private_for": {
+      "en-US": "Private on-device icon for %1$s",
+      "is": "Einkatákn á tækinu fyrir %1$s"
+    },
+    "icons_private_summary": {
+      "en-US": "Private local icon · %1$d bytes",
+      "is": "Einkatákn á tækinu · %1$d bæti"
+    },
+    "icons_selected_target": {
+      "en-US": "selected target",
+      "is": "valið atriði"
+    },
+    "icons_use_bundled": {
+      "en-US": "Use bundled %1$s glyph",
+      "is": "Nota innbyggða %1$s-táknið"
+    },
+    "label_apply_for": {
+      "en-US": "Apply %1$s for %2$s",
+      "is": "Nota %1$s fyrir %2$s"
+    },
+    "label_cue": {
+      "en-US": "%1$s, label %2$d",
+      "is": "%1$s, merki %2$d"
+    },
+    "label_filter_by": {
+      "en-US": "Filter by %1$s",
+      "is": "Sía eftir %1$s"
+    },
+    "label_filter_cleared": {
+      "en-US": "Label filter cleared; all conversations are shown.",
+      "is": "Merkjasía hreinsuð; öll samtöl eru sýnd."
+    },
+    "label_filter_mode_all": {
+      "en-US": "all",
+      "is": "öllum"
+    },
+    "label_filter_mode_any": {
+      "en-US": "any",
+      "is": "einhverjum"
+    },
+    "label_invalid_color": {
+      "en-US": "Choose a supported label color.",
+      "is": "Veldu studdan lit fyrir merkið."
+    },
+    "label_remove_for": {
+      "en-US": "Remove %1$s for %2$s",
+      "is": "Fjarlægja %1$s fyrir %2$s"
+    },
+    "labels_assignment_empty": {
+      "en-US": "No labels exist. Use Manage labels to create one.",
+      "is": "Engin merki eru til. Notaðu Umsjón merkja til að búa til eitt."
+    },
+    "mention_group_changed": {
+      "en-US": "The current group roster or identity mapping changed.",
+      "is": "Núverandi hópskrá eða vörpun auðkenna breyttist."
+    },
+    "mention_links_removed": {
+      "en-US": {
+        "one": "%1$d semantic mention link was removed because its text was edited.",
+        "other": "%1$d semantic mention links were removed because their text was edited."
+      },
+      "is": {
+        "one": "%1$d merkingartengill var fjarlægður því texta hans var breytt.",
+        "other": "%1$d merkingartenglar voru fjarlægðir því texta þeirra var breytt."
+      }
+    },
+    "mention_session_changed": {
+      "en-US": "A member session changed, so mention support was revalidated.",
+      "is": "Seta meðlims breyttist og því var stuðningur við tilvísanir staðfestur aftur."
+    },
+    "message_edit_action_description": {
+      "en-US": "Edit this message",
+      "is": "Breyta þessum skilaboðum"
+    },
+    "message_received_preview": {
+      "en-US": "%1$s: %2$s",
+      "is": "%1$s: %2$s"
+    },
+    "message_request_name_required": {
+      "en-US": "Choose a private contact name.",
+      "is": "Veldu einkagælunafn tengiliðar."
+    },
+    "message_request_no_preview": {
+      "en-US": "No text preview",
+      "is": "Engin textaforskoðun"
+    },
+    "message_requests_none_accessibility": {
+      "en-US": "Message requests, none pending",
+      "is": "Skilaboðabeiðnir, engin í bið"
+    },
+    "message_requests_pending_accessibility": {
+      "en-US": {
+        "one": "Message requests, %1$d pending",
+        "other": "Message requests, %1$d pending"
+      },
+      "is": {
+        "one": "Skilaboðabeiðnir, %1$d í bið",
+        "other": "Skilaboðabeiðnir, %1$d í bið"
+      }
+    },
+    "message_requests_unavailable": {
+      "en-US": "Requests are unavailable.",
+      "is": "Beiðnir eru ekki tiltækar."
+    },
+    "pin_cleanup_accessibility": {
+      "en-US": "Clean up unavailable pin",
+      "is": "Hreinsa ótiltæka festingu"
+    },
+    "pin_cleanup_done": {
+      "en-US": "Unavailable pin removed.",
+      "is": "Ótiltæk festing fjarlægð."
+    },
+    "pin_move_earlier": {
+      "en-US": "Move pin %1$s earlier",
+      "is": "Færa festingu %1$s fyrr"
+    },
+    "pin_move_later": {
+      "en-US": "Move pin %1$s later",
+      "is": "Færa festingu %1$s síðar"
+    },
+    "pin_pinned_status": {
+      "en-US": "Conversation pinned.",
+      "is": "Samtal fest."
+    },
+    "pin_unpinned_status": {
+      "en-US": "Conversation unpinned.",
+      "is": "Samtal losað úr festingu."
+    },
+    "poll_accessibility": {
+      "en-US": "Poll: %1$s",
+      "is": "Könnun: %1$s"
+    },
+    "poll_choice_accessibility": {
+      "en-US": "Poll choice %1$d",
+      "is": "Svarmöguleiki könnunar %1$d"
+    },
+    "poll_option": {
+      "en-US": {
+        "one": "%1$s, %2$d vote",
+        "other": "%1$s, %2$d votes"
+      },
+      "is": {
+        "one": "%1$s, %2$d atkvæði",
+        "other": "%1$s, %2$d atkvæði"
+      }
+    },
+    "poll_option_selected": {
+      "en-US": {
+        "one": "%1$s, %2$d vote, your choice",
+        "other": "%1$s, %2$d votes, your choice"
+      },
+      "is": {
+        "one": "%1$s, %2$d atkvæði, þitt val",
+        "other": "%1$s, %2$d atkvæði, þitt val"
+      }
+    },
+    "mention_remove_token": {
+      "en-US": "%1$s ×",
+      "is": "%1$s ×"
+    },
+    "poll_remove_choice": {
+      "en-US": "Remove choice %1$d",
+      "is": "Fjarlægja svarmöguleika %1$d"
+    },
+    "poll_unavailable_choice": {
+      "en-US": "unavailable choice",
+      "is": "ótiltækur svarmöguleiki"
+    },
+    "poll_updated": {
+      "en-US": "%1$s poll updated. Votes are visible to members.",
+      "is": "Könnun í %1$s uppfærð. Atkvæði eru sýnileg meðlimum."
+    },
+    "request_change_failed": {
+      "en-US": "The request could not be changed.",
+      "is": "Ekki tókst að breyta beiðninni."
+    },
+    "request_summary_pending": {
+      "en-US": {
+        "one": "%1$d awaiting your decision",
+        "other": "%1$d awaiting your decision"
+      },
+      "is": {
+        "one": "%1$d bíður ákvörðunar þinnar",
+        "other": "%1$d bíða ákvörðunar þinnar"
+      }
+    },
+    "pairing_frame_progress": {
+      "en-US": "Scanning frame %1$d of %2$d · hold the camera steady",
+      "is": "Skanna ramma %1$d af %2$d · haltu myndavélinni stöðugri"
+    },
+    "pairing_scan_code": {
+      "en-US": "Scan this pairing code",
+      "is": "Skannaðu þennan pörunarkóða"
+    },
+    "privacy_region_blur": {
+      "en-US": "blur",
+      "is": "móða"
+    },
+    "privacy_region_pixelate": {
+      "en-US": "pixelate",
+      "is": "dílamynstur"
+    },
+    "share_title": {
+      "en-US": "Share your identity",
+      "is": "Deila auðkenninu þínu"
+    },
+    "share_unavailable": {
+      "en-US": "Sharing details could not be prepared.",
+      "is": "Ekki tókst að undirbúa upplýsingar til deilingar."
+    },
+    "stale_assignment_summary": {
+      "en-US": "%1$s · %2$s",
+      "is": "%1$s · %2$s"
+    },
+    "stale_folder_missing": {
+      "en-US": "folder unavailable",
+      "is": "mappa ekki tiltæk"
+    },
+    "stale_label_missing": {
+      "en-US": "label unavailable",
+      "is": "merki ekki tiltækt"
+    },
+    "stale_record_unavailable": {
+      "en-US": "record unavailable",
+      "is": "færsla ekki tiltæk"
+    },
+    "stale_target_missing": {
+      "en-US": "conversation unavailable",
+      "is": "samtal ekki tiltækt"
+    },
+    "state_unknown": {
+      "en-US": "unknown state",
+      "is": "óþekkt staða"
+    },
+    "status_binding": {
+      "en-US": "(binding…)",
+      "is": "(bindst…)"
+    },
+    "status_bridging_count": {
+      "en-US": "Bridging: %1$d",
+      "is": "Brúun: %1$d"
+    },
+    "status_directory_peers": {
+      "en-US": {
+        "one": "Directory: %1$s. %2$d live transport peer.",
+        "other": "Directory: %1$s. %2$d live transport peers."
+      },
+      "is": {
+        "one": "Þjónustuskrá: %1$s. %2$d virkur flutningsjafningi.",
+        "other": "Þjónustuskrá: %1$s. %2$d virkir flutningsjafningjar."
+      }
+    },
+    "status_discovery_starting": {
+      "en-US": "Connection: starting",
+      "is": "Tenging: ræsist"
+    },
+    "status_discovery_unavailable": {
+      "en-US": "Connection: unavailable",
+      "is": "Tenging: ekki tiltæk"
+    },
+    "status_lan_count": {
+      "en-US": "LAN: %1$d",
+      "is": "Staðarnet: %1$d"
+    },
+    "status_lan_disabled": {
+      "en-US": "LAN discovery is disabled in Network settings",
+      "is": "Slökkt er á leit á staðarneti í Netstillingum"
+    },
+    "status_lan_empty": {
+      "en-US": "LAN discovery is active; no peers are visible yet",
+      "is": "Leit á staðarneti er virk; engir jafningjar sjást enn"
+    },
+    "status_lan_peers": {
+      "en-US": "Peers on this network:\n%1$s",
+      "is": "Jafningjar á þessu neti:\n%1$s"
+    },
+    "status_listening_on": {
+      "en-US": "Listening on:\n%1$s",
+      "is": "Hlustar á:\n%1$s"
+    },
+    "status_nat_checking": {
+      "en-US": "NAT: checking",
+      "is": "NAT: athuga"
+    },
+    "status_nat_unavailable": {
+      "en-US": "NAT: unavailable",
+      "is": "NAT: ekki tiltækt"
+    },
+    "status_nat_value": {
+      "en-US": "NAT: %1$s",
+      "is": "NAT-staða: %1$s"
+    },
+    "status_queued_count": {
+      "en-US": "Queued: %1$d",
+      "is": "Í biðröð: %1$d"
+    },
+    "status_scheduled_count": {
+      "en-US": "Scheduled: %1$d",
+      "is": "Tímasett: %1$d"
+    },
+    "status_unavailable": {
+      "en-US": "Node status is unavailable.",
+      "is": "Staða hnúts er ekki tiltæk."
+    },
+    "verify_calculating": {
+      "en-US": "Calculating verification code…",
+      "is": "Reikna staðfestingarkóða…"
+    },
+    "verify_safety_verified": {
+      "en-US": "Safety number verified",
+      "is": "Öryggisnúmer staðfest"
+    },
+    "verify_unavailable": {
+      "en-US": "The verification code could not be loaded.",
+      "is": "Ekki tókst að hlaða staðfestingarkóðanum."
+    },
+    "ui_your_root_free_backup_is_sealed_with_these_24": {
+      "en-US": "Your root-free backup is sealed with these 24 backup words. They are shown exactly once and stored nowhere — write them down separately.",
+      "is": "Rótarlyklalausa öryggisafritið þitt er innsiglað með þessum 24 endurheimtarorðum. Þau eru sýnd nákvæmlega einu sinni og hvergi vistuð — skrifaðu þau niður og geymdu sér."
+    }
+  },
+  "schema": "komms-localization-shell-messages/v1"
+}

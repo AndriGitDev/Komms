@@ -1,12 +1,13 @@
 //! Bridge-transit behavior of the internet carrier (ADR-0009): deposits for
-//! unregistered tokens land in the bounded transit buffer (surfaced via
-//! `recv_transit`) instead of being refused, registered tokens keep the
-//! plain mailbox contract, and a bridge deposits into its *own* mailbox
-//! locally without a self-dial.
+//! unregistered tokens may enter the bounded best-effort transit buffer
+//! (surfaced via `recv_transit`) but are refused for custody, registered
+//! tokens keep the durable mailbox contract, and a bridge deposits into its
+//! own mailbox locally without a self-dial.
 
 use kult_protocol::{Envelope, EnvelopeKind};
 use kult_transport::{
-    DeliveryHint, Libp2pTransport, MailboxConfig, SendReceipt, Transport, TransportOptions,
+    DeliveryHint, Libp2pTransport, MailboxConfig, MailboxServiceConfig, SendReceipt, Transport,
+    TransportOptions,
 };
 
 fn envelope(token: [u8; 32], body: &[u8]) -> Envelope {
@@ -21,8 +22,12 @@ async fn transport(options: TransportOptions) -> Libp2pTransport {
 
 #[tokio::test]
 async fn unregistered_deposits_become_transit_registered_stay_mailbox() {
+    let mailbox_dir = tempfile::tempdir().unwrap();
     let bridge = transport(TransportOptions {
-        mailbox: Some(MailboxConfig::default()),
+        mailbox: Some(MailboxServiceConfig::in_directory(
+            mailbox_dir.path(),
+            MailboxConfig::default(),
+        )),
         bridge_deposits: true,
         ..TransportOptions::default()
     })
@@ -37,20 +42,20 @@ async fn unregistered_deposits_become_transit_registered_stay_mailbox() {
         .await
         .unwrap();
 
-    // Unregistered token: accepted — into the transit buffer, not the
-    // mailbox store, and out through recv_transit (never recv).
+    // Unregistered token: best-effort transit, but an honest custody refusal.
+    // The sender remains responsible even if the bridge forwards this copy.
     let mesh_bound = envelope([1u8; 32], b"for someone on the mesh");
+    assert!(matches!(
+        sender.send(&hint, &mesh_bound).await,
+        Err(kult_transport::TransportError::RefusedByNextHop)
+    ));
     assert_eq!(
-        sender.send(&hint, &mesh_bound).await.unwrap(),
-        SendReceipt::AckedByNextHop
+        bridge.recv_transit().await.unwrap(),
+        vec![mesh_bound],
+        "refusal does not prevent bounded best-effort forwarding"
     );
-    assert!(bridge
-        .mailbox_contents()
-        .unwrap()
-        .iter()
-        .all(|(_, queue)| queue.is_empty()));
+    assert_eq!(bridge.mailbox_metrics().unwrap().stored_items, 0);
     assert_eq!(bridge.recv().await.unwrap(), vec![]);
-    assert_eq!(bridge.recv_transit().await.unwrap(), vec![mesh_bound]);
     assert_eq!(bridge.recv_transit().await.unwrap(), vec![], "drained");
 
     // Registered token: the plain mailbox contract, untouched by bridging.
@@ -83,7 +88,7 @@ async fn unregistered_deposits_become_transit_registered_stay_mailbox() {
 }
 
 #[tokio::test]
-async fn bridge_without_mailbox_service_still_accepts_transit() {
+async fn bridge_without_mailbox_service_forwards_without_claiming_custody() {
     let bridge = transport(TransportOptions {
         bridge_deposits: true,
         ..TransportOptions::default()
@@ -95,13 +100,10 @@ async fn bridge_without_mailbox_service_still_accepts_transit() {
         .await
         .unwrap();
     let env = envelope([4u8; 32], b"transit only");
-    assert_eq!(
-        sender
-            .send(&DeliveryHint::Relay(addr.clone()), &env)
-            .await
-            .unwrap(),
-        SendReceipt::AckedByNextHop
-    );
+    assert!(matches!(
+        sender.send(&DeliveryHint::Relay(addr.clone()), &env).await,
+        Err(kult_transport::TransportError::RefusedByNextHop)
+    ));
     assert_eq!(bridge.recv_transit().await.unwrap(), vec![env]);
     // But check-ins are still refused honestly: no mailbox is served.
     assert!(sender.mailbox_checkin(&addr, &[[4u8; 32]]).await.is_err());
@@ -109,8 +111,12 @@ async fn bridge_without_mailbox_service_still_accepts_transit() {
 
 #[tokio::test]
 async fn self_deposit_reaches_own_mailbox_without_dialing() {
+    let mailbox_dir = tempfile::tempdir().unwrap();
     let bridge = transport(TransportOptions {
-        mailbox: Some(MailboxConfig::default()),
+        mailbox: Some(MailboxServiceConfig::in_directory(
+            mailbox_dir.path(),
+            MailboxConfig::default(),
+        )),
         bridge_deposits: true,
         ..TransportOptions::default()
     })

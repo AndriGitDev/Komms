@@ -1,0 +1,13 @@
+{
+  "case_files": [
+    "cases/primitives.json",
+    "cases/content.json",
+    "cases/services.json",
+    "cases/state.json",
+    "cases/malformed.json"
+  ],
+  "format": "komms-conformance-kit",
+  "format_version": 1,
+  "kit_version": "1.0.0",
+  "profile": "komms-stable-v1"
+}

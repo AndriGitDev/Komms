@@ -12,6 +12,7 @@ from urllib.parse import unquote
 ROOT = Path(__file__).resolve().parents[1]
 LINK_RE = re.compile(r"!?\[[^\]]*]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)")
 P0_IDS = {f"P0-{number:02d}" for number in range(1, 11)}
+P1_IDS = {f"P1-{number:02d}" for number in range(1, 8)}
 CLAIM_RE = re.compile(r"\bSV1-C\d{2}\b")
 
 PUBLIC_COPY = [
@@ -22,6 +23,12 @@ PUBLIC_COPY = [
     ROOT / "docs/12-feature-delivery-plan.md",
     ROOT / "docs/27-alpha-testing.md",
     ROOT / "docs/28-brand-system.md",
+    ROOT / "docs/46-operator-program.md",
+    ROOT / "docs/47-license-trademark-assets.md",
+    ROOT / "docs/48-funding-transparency.md",
+    ROOT / "docs/49-privacy-legal-incident-readiness.md",
+    ROOT / "docs/50-mailbox-service-operations.md",
+    ROOT / "docs/52-ohttp-relay-operations.md",
     ROOT / "apps/desktop/README.md",
     ROOT / "apps/android/README.md",
     ROOT / "apps/ios/README.md",
@@ -96,6 +103,13 @@ def validate_control_coverage(errors: list[str]) -> None:
             f"{sorted(P0_IDS - ledger_p0)}"
         )
 
+    ledger_p1 = set(re.findall(r"\bP1-\d{2}\b", ledger))
+    if not P1_IDS <= ledger_p1:
+        errors.append(
+            f"{relative(ledger_path)}: missing P1 gates "
+            f"{sorted(P1_IDS - ledger_p1)}"
+        )
+
     profile_claims = set(CLAIM_RE.findall(profile))
     ledger_claims = set(CLAIM_RE.findall(ledger))
     if not profile_claims:
@@ -139,7 +153,7 @@ def main() -> None:
             print(f"documentation check failed: {error}", file=sys.stderr)
         raise SystemExit(1)
     print(
-        "documentation links, P0/claim coverage, product promise, "
+        "documentation links, P0/P1/claim coverage, product promise, "
         "and public terminology are valid"
     )
 

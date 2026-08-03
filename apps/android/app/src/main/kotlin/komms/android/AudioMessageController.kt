@@ -262,7 +262,7 @@ class AudioMessageController(
             } catch (error: Exception) {
                 source.delete()
                 main.post {
-                    recordStatus.text = error.message ?: activity.getString(R.string.audio_record_failed)
+                    recordStatus.text = activity.getString(R.string.audio_record_failed)
                     activity.toast(recordStatus.text.toString())
                 }
             }
@@ -303,7 +303,7 @@ class AudioMessageController(
             if (session == null) activity.getString(R.string.audio_locked)
             else carrierExplanation(session)
         } catch (error: Exception) {
-            error.message
+            activity.errorText(error)
         }
         val dialog = AlertDialog.Builder(activity)
             .setTitle(R.string.audio_review_title)
@@ -321,7 +321,7 @@ class AudioMessageController(
                 val latestCarrier = try {
                     carrierExplanation(active)
                 } catch (error: Exception) {
-                    activity.toast(error.message ?: activity.getString(R.string.audio_record_failed))
+                    activity.toast(activity.errorText(error))
                     return@setOnClickListener
                 }
                 if (latestCarrier != carrierView.text.toString()) {
@@ -461,7 +461,8 @@ class AudioMessageController(
 
     private fun duration(milliseconds: ULong): String {
         val seconds = milliseconds.toLong() / 1000
-        return "%d:%02d · mono PCM WAV · 16 kHz".format(seconds / 60, seconds % 60)
+        val elapsed = "%d:%02d".format(seconds / 60, seconds % 60)
+        return activity.getString(R.string.attachment_audio_summary, elapsed)
     }
 
     private fun discardCapture(reason: String) {

@@ -37,17 +37,24 @@ the current release requires are failures.
 The script runs:
 
 1. workspace formatting, all-target/all-feature warnings-as-errors clippy, all
-   tests, `no_std` crypto/protocol builds, and `cargo-deny`;
+   tests, `no_std` crypto/protocol builds, `cargo-deny`, release-policy and
+   dependency-integrity checks, deterministic security-review package
+   validation, plus release-evidence/signing/release-qualification and
+   field-qualification regression tests and bounded contributor-profile
+   safety tests;
 2. the ADR-0027 100,000- and 1,000,000-message migration, unlock, indexed page,
    exact edit/delete, memory, and database-growth budgets;
 3. the desktop workspace's independent format, clippy, test, and deny gates;
-4. generated Kotlin UniFFI bindings plus the Android JVM/core two-node suite;
-5. generated Swift UniFFI bindings plus the iOS/macOS host two-node suite;
-6. Android APK/lint and the unsigned iOS Simulator application build when their
+4. the endpoint container image build plus dedicated reference, mailbox, wake,
+   and OHTTP service image builds and restart/hardening smokes when a Docker
+   daemon is available;
+5. generated Kotlin UniFFI bindings plus the Android JVM/core two-node suite;
+6. generated Swift UniFFI bindings plus the iOS/macOS host two-node suite;
+7. Android APK/lint and the unsigned iOS Simulator application build when their
    complete SDKs are installed;
-7. every crypto and protocol fuzz target for 60 seconds, including C2 device
+8. every crypto and protocol fuzz target for 60 seconds, including C2 device
    records and C7 call-control/call-media parsers; and
-8. final Git whitespace and worktree review.
+9. final Git whitespace and worktree review.
 
 Run from the repository root:
 
@@ -58,7 +65,8 @@ scripts/local-release-matrix.sh
 `KOMMS_FUZZ_SECONDS` may shorten a developer smoke pass, but the release record
 uses the default 60 seconds. Set `KOMMS_REQUIRE_ANDROID_APP=1` or
 `KOMMS_REQUIRE_IOS_APP=1` when that platform gate must fail rather than be
-reported as deferred.
+reported as deferred. Set `KOMMS_REQUIRE_SERVICE_CONTAINERS=1` to make an
+unavailable container daemon fail instead of defer.
 
 ## 3. Deferred and external gates are explicit
 
@@ -77,16 +85,23 @@ test:
 - real distinct-NAT/DCUtR and live-call network/audio-route matrices;
 - hands-on Android/iOS accessibility, lifecycle, and device qualification;
 - hands-on qualification of the tag-built installer/APK artifacts;
-- signed/store artifacts and reproducibility evidence; and
+- production-signed/store artifacts and a separately administered
+  reproducibility execution; and
 - an independent security audit.
+
+The canonical target/scenario inventory and evidence-level validator are in
+[field qualification](43-field-qualification.md). Their local regression test
+is part of this script. That green regression result proves the record format
+fails closed; it does not turn any open physical row green.
 
 ## 4. Hosted evidence
 
 Hosted automation complements the local checkpoint:
 
 - `.github/workflows/ci.yml` repeats core/desktop format, lint, tests,
-  `no_std`, dependency policy, fuzz smoke, generated Android/iOS host suites,
-  MSRV 1.88, Windows core-storage tests, and Android debug-APK assembly;
+  `no_std`, dependency policy, release-control tests, fuzz smoke, generated
+  Android/iOS host suites, MSRV 1.88, Windows core-storage tests, and Android
+  debug-APK assembly;
 - the iOS Simulator job remains gated by the `IOS_APP_CI=1` repository variable;
   it is enabled for the current per-push release evidence;
 - `.github/workflows/audit.yml` runs weekly and on demand: advisories for both
@@ -94,6 +109,21 @@ Hosted automation complements the local checkpoint:
   and an informational coverage snapshot; and
 - `.github/workflows/hil-nightly.yml` remains dormant until a trusted
   `meshtastic-hil` bench is online and `HIL_BENCH=armed`.
+
+Every external workflow action is pinned to a full commit. Top-level workflow
+permission defaults are read-only. Reviewed updates are proposed through the
+GitHub Actions dependency updater.
+
+The tag-triggered release workflow has read-only repository contents. Its
+evidence job has only the additional identity and artifact-attestation
+permissions needed to bind retained files. It builds native validation
+packages, performs a second controlled Linux build, emits the revision-bound
+evidence bundle and CycloneDX SBOM, creates hosted artifact attestations, and
+retains the files for 90 days. It neither creates a GitHub release nor accesses
+production-signing material. Empty-draft creation, completed-asset upload, and
+publication are separate protected manual operations. Completed assets are
+uploaded only after offline qualification, and publication verifies their
+exact evidence-bound digests.
 
 A green build is evidence for the exact commit and environment it ran on. It is
 not evidence for unsigned code from another commit, a physical device path that
@@ -104,32 +134,35 @@ was not exercised, or one of the external gates above.
 All current build surfaces report `0.3.0`: the Cargo workspace and desktop
 crate, Tauri bundle, Android `versionName`, and iOS short version. CI and the
 local matrix enforce that alignment with `scripts/check-release-version.py`.
-Version `0.3.0` is prepared as the **Komms 0.3 Alpha** candidate for tag
-`v0.3.0`. Version alignment alone does not qualify a build or make an artifact
-an official release; publication applies only to the exact qualified tag and
-assets, after the automated matrix and human visual gate complete. The release
-will appear at the [v0.3.0 release page](https://github.com/AndriGitDev/Komms/releases/tag/v0.3.0).
+The public [v0.3.0 Alpha](https://github.com/AndriGitDev/Komms/releases/tag/v0.3.0)
+predates the current evidence design. Its unsigned desktop and debug-signed
+Android assets remain test artifacts.
 
-- `.github/workflows/release.yml` builds the configured desktop bundles on
-  native Linux, macOS, and Windows runners, plus an installable Android debug
-  APK. It creates checksums and holds each candidate as a draft until an
-  explicit manual publication run. See the
-  [release runbook](25-release-runbook.md).
-- macOS signing/notarization is conditional on maintainer secrets. Windows
-  Authenticode, Linux package-repository signatures, and an updater endpoint
-  are not configured.
-- Android release signing is conditional. A maintainer may supply the
-  git-ignored `apps/android/keystore.properties` file or the
-  `KOMMS_ANDROID_KEYSTORE*` environment variables locally. CI accepts the
-  base64 keystore and password secrets described in the release runbook.
-  Without them, the always-produced debug APK remains explicitly test-only.
-- The iOS gate builds an unsigned Simulator application. App Store signing,
-  provisioning, notarized distribution, and store metadata are not configured.
+The current release controls define:
 
-Signing keys and credentials never enter the repository. Reproducible signed
-artifacts, Windows signing, store/package-manager publication, stronger
-provenance, and update-channel policy remain M6 work and must not be implied by
-the candidate pipeline.
+- separate release-manifest, Android Play, Android Google-free, iOS, macOS,
+  Windows, and Linux roles with rotation and compromise response;
+- dependency locks for Android core and both app flavors plus checked artifact
+  SHA-256 metadata;
+- bounded artifact staging, checksums, aggregate SBOM, public builder records,
+  signing records, qualification records, residual risks, and safe archive
+  extraction;
+- exact versus normalized two-builder comparison without claiming external
+  independence; and
+- protected draft, offline signature, and publication boundaries.
+
+No production role is enrolled. The `production_signing` workflow input
+therefore stops at a protected enrollment boundary. The iOS gate remains an
+unsigned Simulator build, desktop/Android release packages remain validation
+artifacts, and Windows hardware-backed signing has no chosen provider. See
+[release security and recovery](39-release-security-and-recovery.md),
+[release evidence bundles](40-release-evidence-bundles.md), and the
+[release runbook](25-release-runbook.md).
+
+Signing keys and credentials never enter the repository. A store signature,
+hosted artifact attestation, checksum, or project-controlled second build does
+not substitute for production signing, supported-system qualification, or
+independent reproduction.
 
 ## 6. Publication discipline
 

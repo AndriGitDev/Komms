@@ -3,9 +3,10 @@
 Komms is a **local-first, server-independent** messaging system. Every
 installation is a full peer: it holds its own keys, stores its own history, and
 can relay for others. No component that carries or stores messages must be
-operated by the project or any single party. Optional post-pairing rendezvous
-and native-wake services may accelerate mobile reachability under ADR-0017, but
-they are neither message transports nor dependencies of the core.
+operated by the project or any single party. Optional post-pairing rendezvous,
+native-wake, and Private-ingress services may accelerate mobile reachability
+under ADR-0017, but they are neither message transports nor dependencies of the
+core.
 
 The internal Rust crates use the `kult-*` prefix. **KULT** expands to **Komms
 Ubiquitous Link Transmission**: the shared system that carries one protected
@@ -99,12 +100,13 @@ choices and honest local-only language. See
 C5 polls follow the immutable replicated-state shape: `kult-protocol` owns
 content-v1 kind 6 create/vote/close frames; `kult-node` validates the claimed
 group member and derives fixed-electorate vote heads and final tallies; existing
-sealed group rows and `KKR7` carry the source events; RPC/UniFFI expose typed
+sealed group rows and `KKR10` carry the source events; RPC/UniFFI expose typed
 snapshots; shells render and refresh cards without resolving votes. The
 sender-key path hides poll content from transports, while authenticated
-capability intersection keeps old clients off the typed send path. Because
-sender keys are shared, another member can forge the claimed voter until
-ADR-0029 adds recipient-verifiable origins. See
+capability intersection keeps old clients off the typed send path. ADR-0029
+adds one recipient-specific origin tag to the unchanged shared ciphertext;
+the node derives the voter from the verified pairwise sender device before
+applying poll state. See
 [20: Group Polls](20-group-polls.md) and
 [ADR-0029](adr/0029-recipient-authenticated-groups.md).
 
@@ -117,20 +119,22 @@ the one current owner; `kult-store` seals the winning state and consumed request
 ids separately from legacy group records. RPC/UniFFI expose render-safe roles
 and typed commands/events. Apps display roles and invoke those commands but
 never see group secrets, signatures, identity blobs, or chain state. `KKR6`
-introduced authority records and `KKR7` carries them forward, while
-`KKR1`-`KKR5` restore as legacy groups. See
+introduced authority records and `KKR10` carries them forward, while
+the fresh-identity `KKR1`–`KKR7` archive boundary omits groups. See
 [21: Group Roles, Ownership, and Moderation](21-group-roles.md).
 
 C2 linked devices separate stable account identity from physical endpoint
-cryptography. `kult-crypto` owns certificates, manifests, link transcripts, and
-sync sealing; `kult-protocol` owns bounded endpoint bundles and sync events;
-`kult-store` seals device authority, per-endpoint delivery state, sync counters,
-and deterministic winners; `kult-node` enforces fan-out, capability intersection,
-known-id exclusion, convergence, and recovery. Current Alpha authority still
-copies the account root and cannot permanently contain a compromised device;
-ADR-0026 replaces that boundary. RPC/UniFFI expose opaque ceremony bytes
-and strict render-safe device models; shells compare codes and collect explicit
-approvals without implementing authority rules. See
+cryptography. `kult-crypto` owns the offline-root `KDA2` proof, independent
+device certificates, strict-majority transitions, recovery epochs, link
+transcripts, and sync sealing; `kult-protocol` owns bounded endpoint bundles and
+sync events; `kult-store` seals public account authority, per-endpoint delivery
+state, sync counters, conflicts, and deterministic ordinary-data winners;
+`kult-node` enforces quorum, fail-closed fork/recovery conflict handling,
+fan-out, capability intersection, convergence, rotation, and recovery. Routine
+`KKR10` and link packages contain no account root. RPC/UniFFI expose opaque
+ceremony/approval/recovery bytes and strict render-safe device/conflict models;
+shells compare codes and collect explicit approvals without implementing
+authority rules. See
 [22: Linked Devices](22-linked-devices.md) and
 [ADR-0026](adr/0026-revocable-device-authority.md).
 
@@ -153,8 +157,9 @@ clock advance activates it on the next tick; time-zone changes are display-only.
    commit-before-notification restart. Group sender/receiver, bounded fan-out,
    attachment and deferred group/media follow-up use the corresponding typed
    transitions. The [complete inventory](34-atomic-transition-inventory.md)
-   records the implemented and excluded boundaries; open device-authority,
-   first-contact, bootstrap and relay-custody paths keep ADR-0028 Proposed.
+   records the implemented and excluded boundaries; the quarantined pre-C2
+   alias bridge, independent review, and physical sudden-power-loss evidence
+   keep ADR-0028 Proposed.
 3. **kult-protocol** serializes content, pads it to the next size bucket, and hands it to
    the conversation's ratchet.
 4. **kult-crypto** advances the sending chain, encrypts with XChaCha20-Poly1305, and
@@ -175,9 +180,25 @@ clock advance activates it on the next tick; time-zone changes are display-only.
    `delivery failed after 30 days`.
 
 ### Receive path
-Mirror image: transport yields envelope → reassembly → dedup by message ID → ratchet
-decrypt (tolerating skipped/out-of-order counters within the configured window) → persist →
-event to app → (optionally) send encrypted receipt.
+
+Direct transport holds its response while the node consumes a verified
+introduction or commits the complete encoded envelope to the bounded sealed
+pending domain. Mailbox collection gives each row an internal settlement
+handle: the node commits that same `PendingStage` transition before the
+transport acknowledges the exact relay lease and row id. Failure before commit
+leaves the direct request refused or the relay row leased for retry; failure
+after commit leaves a duplicate that the endpoint absorbs.
+
+A bridge may enqueue an unregistered internet deposit for bounded
+best-effort mesh transit, but returns a custody refusal because that queue is
+not a durable mailbox. Only durable endpoint staging or a registered mailbox
+deposit can advance the sender's next-hop state.
+
+From durable staging, the ordinary path is reassembly → exact duplicate
+suppression → ratchet decrypt (including the configured skipped/out-of-order
+window) → one typed receive transition containing plaintext history, replay,
+receipt ciphertext, and source-row removal → event to the app. The encrypted
+end-to-end receipt is the only event that advances the sender to `delivered`.
 
 ### Live-call path
 
@@ -200,12 +221,15 @@ Peers are rarely online at the same moment, especially off-grid. Delivery uses t
 mechanisms, in preference order:
 
 1. **Direct**: recipient reachable on some transport now → deliver immediately.
-2. **Mailbox relays**: any Komms node may volunteer relay capacity. The sender deposits
-   the sealed envelope with one or more relays chosen by the *recipient* (advertised in
-   their signed prekey bundle, [06: Identity & Trust](06-identity-trust.md)). Relays store
-   ciphertext-only, TTL-bounded, size-capped queues keyed by delivery token. Users
-   naturally relay for their own contacts (friend-relay model); public volunteer relays are
-   additive, never required.
+2. **Mailbox relays**: any Komms node may volunteer relay capacity. The sender
+   deposits the sealed envelope with one or more relays chosen by the
+   *recipient* (advertised in their signed prekey bundle,
+   [06: Identity & Trust](06-identity-trust.md)). A v2 relay returns accepted
+   only after durable commit. It stores TTL-bounded, size-capped, row-bound
+   sealed records under opaque keyed token/client/content indexes. Collection
+   creates bounded idempotent leases and deletes only exact rows acknowledged
+   after endpoint commit. Users naturally relay for their own contacts
+   (friend-relay model); public volunteer relays are additive, never required.
 3. **Mesh flooding / sneakernet**: on Meshtastic, envelopes propagate hop-by-hop with the
    mesh's own store-and-forward; any node that later gains internet can bridge queued
    envelopes onward. Fully offline, envelopes export as `.kkb` files; animated
@@ -232,17 +256,22 @@ Standard modes over the same core. In the optional modes:
 Pure derivation and record sealing remain in `kult-crypto`; bounded encodings
 remain in `kult-protocol`; I/O adapters receive only opaque requests in
 `kult-transport`; orchestration remains in `kult-node`. Rendezvous and wake
-server binaries are outside the client dependency graph. Blackholing every such
-server must reproduce Sovereign-mode behavior without migration or data loss.
+server binaries are outside the client dependency graph. The separate OHTTP
+relay artifact holds no gateway HPKE key and is not yet a client-selectable
+path. Blackholing every such server must reproduce Sovereign-mode behavior
+without migration or data loss.
 
 ## 5. What intermediaries see
 
-A relay, DHT node, or mesh repeater carrying ordinary Komms envelopes observes only:
+A relay, DHT node, or mesh repeater carrying ordinary Komms envelopes observes:
 
 - an opaque, rotating **delivery token** (unlinkable to the recipient's identity key by
   anyone but the recipient and, per-message, the sender),
 - a padded ciphertext in one of a small set of standard size buckets,
-- transport-level source of the immediately preceding hop (unavoidable at layer 4).
+- transport-level source of the immediately preceding hop (unavoidable at layer 4), and
+- for a mailbox operator, deposit/collection timing, volume, expiry, quota
+  outcomes, pseudonymous transport clients, random relay row/lease ids, and
+  access correlation within that operator.
 
 For C4 ephemeral traffic, the carrier additionally observes one coarse,
 hour-aligned `retention_until` bucket so it can delete sealed work without
@@ -257,11 +286,32 @@ delivery tokens, timing, sizes, volume, or cross-request correlation from every
 carrier or observer. The construction is specified in
 [04: Cryptography §7](04-cryptography.md).
 
-This paragraph does not describe an enabled optional rendezvous or native-wake
-service. Their bounded but non-zero metadata surfaces are listed in
+Mailbox persistence does not turn these limits into anonymity or operator
+inability. A running operator controls the process and can inspect live memory,
+retain traffic metadata, deny, delay, replay, suppress, or discard ciphertext.
+At rest, the v2 database contains only opaque indexes and row-bound seals when
+its separate service key is unavailable; possession of both files exposes the
+relay-visible tokens and envelopes, which remain end-to-end ciphertext.
+
+ADR-0018's client, sealed state, fixed codecs, persistence-free component, and
+dedicated network/TLS reference-service wrapper are implemented for Alpha but
+are not configured as a default or deployed service. ADR-0019's fixed codecs,
+sealed per-session state, durable identity-free revoke retries, bounded core
+collection, pinned direct/Tor client, dedicated APNs/FCM gateway, and hardened
+deployment artifacts are also implemented for Alpha. Direct APNs, Play-only
+FCM, a separately inspected Google-free artifact, and bounded mobile lifecycle
+handlers are present; real provider/deployed-gateway and named physical-device
+qualification remain open. No wake gateway is deployed. Their bounded but
+non-zero metadata surfaces are listed in
 [02: Threat Model](02-threat-model.md),
 [ADR-0017](adr/0017-optional-hybrid-modes.md), and
-[ADR-0034](adr/0034-operator-minimized-reference-discovery.md).
+[ADR-0034](adr/0034-operator-minimized-reference-discovery.md); the gateway
+boundary and no-stale-restore procedure are in the
+[native-wake runbook](37-native-wake-operations.md). A fixed one-to-one RFC
+9458 relay-side artifact, hardened image, and metadata-stripping tests are also
+implemented locally. No compatible gateway/client path, deployment, or
+non-collusion evidence exists; see the
+[OHTTP relay runbook](52-ohttp-relay-operations.md).
 
 ## 6. Groups
 

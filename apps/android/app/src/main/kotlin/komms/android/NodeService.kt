@@ -1,5 +1,6 @@
 package komms.android
 
+import android.annotation.SuppressLint
 import android.app.Notification
 import android.app.NotificationManager
 import android.app.PendingIntent
@@ -32,6 +33,7 @@ class NodeService : Service() {
         super.onDestroy()
     }
 
+    @SuppressLint("ForegroundServiceType")
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         // START_STICKY may recreate only the Service after Android reclaims the
         // process. The passphrase is deliberately never persisted, so there is

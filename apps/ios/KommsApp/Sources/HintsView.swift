@@ -28,10 +28,14 @@ struct HintsView: View {
                     ForEach($rows) { $row in
                         VStack {
                             Picker("Kind", selection: $row.kind) {
-                                ForEach(Self.kinds, id: \.self) { Text($0) }
+                                ForEach(Self.kinds, id: \.self) {
+                                    Text(kindName($0)).tag($0)
+                                }
                             }
                             TextField(
-                                row.kind == "mesh" ? "node number or broadcast" : "value",
+                                row.kind == "mesh"
+                                    ? L10n.source("node number or broadcast")
+                                    : L10n.source("value"),
                                 text: $row.value)
                                 .font(.caption.monospaced())
                                 .incognitoKeyboard()
@@ -55,6 +59,15 @@ struct HintsView: View {
             .toolbar {
                 Button("Cancel") { dismiss() }
             }
+        }
+    }
+
+    private func kindName(_ kind: String) -> String {
+        switch kind {
+        case "relay": return L10n.text("hint_kind_relay")
+        case "spool": return L10n.text("hint_kind_spool")
+        case "mesh": return L10n.text("hint_kind_mesh")
+        default: return L10n.text("hint_kind_multiaddr")
         }
     }
 

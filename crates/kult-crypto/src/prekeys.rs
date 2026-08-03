@@ -10,7 +10,10 @@ use serde::{Deserialize, Serialize};
 use x25519_dalek::{PublicKey, StaticSecret};
 use zeroize::Zeroizing;
 
-use crate::{identity::Identity, identity::IdentityPublic, util, CryptoError, Result};
+use crate::{
+    admission, identity::Identity, identity::IdentityPublic, util, AdmissionPolicy, CryptoError,
+    Result, VerifiedAdmission,
+};
 
 /// Signing domain for X25519 signed prekeys.
 const SPK_DOMAIN: &[u8] = b"Komms-spk-v1";
@@ -18,6 +21,15 @@ const SPK_DOMAIN: &[u8] = b"Komms-spk-v1";
 const PQSPK_DOMAIN: &[u8] = b"Komms-pqspk-v1";
 /// Signing domain for the whole-bundle signature.
 const BUNDLE_DOMAIN: &[u8] = b"Komms-bundle-v1";
+
+/// Maximum complete encoded prekey bundle accepted before allocation.
+pub const MAX_PREKEY_BUNDLE_BYTES: usize = 32 * 1024;
+/// Maximum opaque relay/admission entries in one bundle.
+pub const MAX_PREKEY_RELAY_HINTS: usize = 20;
+/// Maximum bytes in one opaque relay/admission entry.
+pub const MAX_PREKEY_RELAY_HINT_BYTES: usize = 4 * 1024;
+/// Maximum aggregate opaque relay/admission bytes in one bundle.
+pub const MAX_PREKEY_RELAY_HINT_TOTAL_BYTES: usize = 16 * 1024;
 
 /// ML-KEM-768 encapsulation-key size in bytes.
 pub const MLKEM768_EK_LEN: usize = 1184;
@@ -253,6 +265,19 @@ impl PrekeyBundle {
     /// signatures are *not* included — they are attestations, not content,
     /// and Ed25519 signatures are deterministic anyway.
     fn signing_bytes(&self) -> Vec<u8> {
+        let hints = self
+            .relay_hints
+            .iter()
+            .filter(|hint| !admission::is_invitation_extension(hint))
+            .map(Vec::as_slice)
+            .collect::<Vec<_>>();
+        self.signing_bytes_with_hints(hints.into_iter())
+    }
+
+    fn signing_bytes_with_hints<'a>(
+        &self,
+        hints: impl ExactSizeIterator<Item = &'a [u8]>,
+    ) -> Vec<u8> {
         let mut msg = Vec::with_capacity(128 + MLKEM768_EK_LEN);
         msg.extend_from_slice(&self.identity.ed);
         msg.extend_from_slice(&self.identity.x);
@@ -269,12 +294,65 @@ impl PrekeyBundle {
             }
         }
         msg.extend_from_slice(&self.expires_at.to_le_bytes());
-        msg.extend_from_slice(&(self.relay_hints.len() as u32).to_le_bytes());
-        for hint in &self.relay_hints {
+        msg.extend_from_slice(&(hints.len() as u32).to_le_bytes());
+        for hint in hints {
             msg.extend_from_slice(&(hint.len() as u32).to_le_bytes());
             msg.extend_from_slice(hint);
         }
         msg
+    }
+
+    pub(crate) fn admission_signing_bytes(&self) -> Vec<u8> {
+        let hints = self
+            .relay_hints
+            .iter()
+            .filter(|hint| !admission::is_admission_extension(hint))
+            .map(Vec::as_slice)
+            .collect::<Vec<_>>();
+        self.signing_bytes_with_hints(hints.into_iter())
+    }
+
+    pub(crate) fn resign(&mut self, identity: &Identity) {
+        self.bundle_sig = identity.sign_domain(BUNDLE_DOMAIN, &self.signing_bytes());
+    }
+
+    /// Attach a signed admission descriptor and optional out-of-band
+    /// invitation secret, then re-sign the complete bundle.
+    pub fn attach_admission(
+        &mut self,
+        identity: &Identity,
+        now: u64,
+        policy: AdmissionPolicy,
+        invitation: Option<[u8; 32]>,
+    ) -> Result<()> {
+        admission::attach_admission(self, identity, now, policy, invitation)
+    }
+
+    /// Verify and extract the target-specific first-contact policy.
+    pub fn verify_admission(&self, now: u64) -> Result<VerifiedAdmission> {
+        self.verify(now)?;
+        admission::verify_admission(self, now)
+    }
+
+    /// Clone the signed public target bundle without the bearer invitation
+    /// secret. Its signed descriptor retains the commitment needed by the
+    /// recipient's bounded local invitation vault.
+    pub fn without_invitation_capability(&self) -> Self {
+        let mut public = self.clone();
+        public
+            .relay_hints
+            .retain(|hint| !admission::is_invitation_extension(hint));
+        public
+    }
+
+    /// Return only higher-layer delivery hints, excluding the versioned
+    /// admission extensions carried in the legacy-compatible hint vector.
+    pub fn transport_hints(&self) -> Vec<Vec<u8>> {
+        self.relay_hints
+            .iter()
+            .filter(|hint| !admission::is_admission_extension(hint))
+            .cloned()
+            .collect()
     }
 
     /// Verify all signatures and structural invariants.
@@ -282,7 +360,19 @@ impl PrekeyBundle {
     /// `now` is Unix seconds; pass `0` to skip the expiry check (e.g. when
     /// re-verifying an archived bundle).
     pub fn verify(&self, now: u64) -> Result<VerifiedBundle> {
-        if self.pqspk.len() != MLKEM768_EK_LEN {
+        let hint_bytes = self
+            .relay_hints
+            .iter()
+            .try_fold(0usize, |total, hint| total.checked_add(hint.len()))
+            .ok_or(CryptoError::InvalidBundle)?;
+        if self.pqspk.len() != MLKEM768_EK_LEN
+            || self.relay_hints.len() > MAX_PREKEY_RELAY_HINTS
+            || self
+                .relay_hints
+                .iter()
+                .any(|hint| hint.len() > MAX_PREKEY_RELAY_HINT_BYTES)
+            || hint_bytes > MAX_PREKEY_RELAY_HINT_TOTAL_BYTES
+        {
             return Err(CryptoError::InvalidBundle);
         }
         if now != 0 && now > self.expires_at {
@@ -315,7 +405,15 @@ impl PrekeyBundle {
 
     /// Decode a postcard-encoded bundle. The result is **unverified**.
     pub fn decode(bytes: &[u8]) -> Result<Self> {
-        postcard::from_bytes(bytes).map_err(|_| CryptoError::Serialization)
+        if bytes.len() > MAX_PREKEY_BUNDLE_BYTES {
+            return Err(CryptoError::Serialization);
+        }
+        let (bundle, remainder): (Self, &[u8]) =
+            postcard::take_from_bytes(bytes).map_err(|_| CryptoError::Serialization)?;
+        if !remainder.is_empty() {
+            return Err(CryptoError::Serialization);
+        }
+        Ok(bundle)
     }
 }
 

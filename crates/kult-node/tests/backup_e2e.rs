@@ -10,7 +10,7 @@ use std::sync::Arc;
 use rand::rngs::StdRng;
 use rand::SeedableRng;
 
-use kult_crypto::KdfProfile;
+use kult_crypto::{ConnectCode, KdfProfile};
 use kult_node::{Event, Node};
 use kult_store::DeliveryState;
 use kult_transport::{DeliveryHint, SneakernetTransport};
@@ -43,6 +43,11 @@ async fn backup_restores_identity_and_rekeys_sessions() {
 
     // ---- Before: Alice and Bob converse normally. -----------------------
     let mut alice = Node::create(&dir.path().join("alice.db"), b"a", TEST_KDF, &mut rng).unwrap();
+    let recovery_path = dir.path().join("alice-account-authority.kra");
+    let recovery_mnemonic = alice
+        .export_account_recovery_authority(&recovery_path)
+        .unwrap();
+    let recovery_package = std::fs::read(&recovery_path).unwrap();
     let mut bob = Node::create(&dir.path().join("bob.db"), b"b", TEST_KDF, &mut rng).unwrap();
     alice.add_transport(spool(&alice_inbox));
     bob.add_transport(spool(&bob_inbox));
@@ -82,18 +87,47 @@ async fn backup_restores_identity_and_rekeys_sessions() {
             ..
         }
     )));
+    let abandoned = alice
+        .send_message(
+            &bob_id,
+            b"unfinished when the device was lost",
+            NOW + 8,
+            &mut rng,
+        )
+        .unwrap();
+    assert_eq!(
+        alice
+            .messages_with(&bob_id)
+            .unwrap()
+            .iter()
+            .find(|message| message.id == abandoned)
+            .unwrap()
+            .state,
+        DeliveryState::Queued
+    );
 
     // ---- Backup, then the device is lost. --------------------------------
+    let old_connect_code = alice.connect_code().unwrap();
+    let discovery_capability = ConnectCode::parse(&old_connect_code).unwrap().capability();
     let (backup, mnemonic) = alice.export_backup(NOW + 10, &mut rng).unwrap();
+    assert!(
+        !backup
+            .windows(discovery_capability.len())
+            .any(|window| window == discovery_capability),
+        "the recovery-encrypted capability must not appear in the outer backup file"
+    );
     let old_address = alice.address();
     drop(alice);
 
     // A wrong mnemonic cannot open it.
     let wrong = "abandon ".repeat(23) + "art";
-    assert!(Node::restore(
+    assert!(Node::restore_with_recovery_authority(
         &dir.path().join("wrong.db"),
         &backup,
         &wrong,
+        &recovery_package,
+        &recovery_mnemonic,
+        NOW + 10,
         b"new-pass",
         TEST_KDF,
         &mut rng,
@@ -101,10 +135,13 @@ async fn backup_restores_identity_and_rekeys_sessions() {
     .is_err());
 
     // ---- Restore onto a new device. --------------------------------------
-    let mut alice = Node::restore(
+    let mut alice = Node::restore_with_recovery_authority(
         &dir.path().join("alice-new.db"),
         &backup,
         &mnemonic,
+        &recovery_package,
+        &recovery_mnemonic,
+        NOW + 10,
         b"new-pass",
         TEST_KDF,
         &mut rng,
@@ -114,13 +151,24 @@ async fn backup_restores_identity_and_rekeys_sessions() {
 
     // The identity resumes; contacts and history are intact.
     assert_eq!(alice.address(), old_address);
+    assert_eq!(alice.connect_code().unwrap(), old_connect_code);
     let contacts = alice.contacts().unwrap();
     assert_eq!(contacts.len(), 1);
     assert_eq!(contacts[0].name, "bob");
     assert!(contacts[0].verified);
     let history = alice.messages_with(&bob_id).unwrap();
-    assert_eq!(history.len(), 1);
-    assert_eq!(history[0].body, b"before the crash");
+    assert_eq!(history.len(), 2);
+    assert!(history
+        .iter()
+        .any(|message| message.body == b"before the crash"
+            && message.state == DeliveryState::Delivered));
+    let abandoned = history
+        .iter()
+        .find(|message| message.id == abandoned)
+        .unwrap();
+    assert_eq!(abandoned.state, DeliveryState::Failed);
+    assert_eq!(abandoned.wire_id, None);
+    assert_eq!(alice.queued().unwrap(), 0);
 
     // First tick: the reset marker becomes a proactive re-handshake.
     alice.tick(NOW + 100, &mut rng).await.unwrap();
@@ -172,6 +220,11 @@ async fn send_before_first_tick_also_rekeys() {
     let spool = |path: &std::path::Path| Arc::new(SneakernetTransport::new(path).unwrap());
 
     let mut alice = Node::create(&dir.path().join("alice.db"), b"a", TEST_KDF, &mut rng).unwrap();
+    let recovery_path = dir.path().join("alice-account-authority.kra");
+    let recovery_mnemonic = alice
+        .export_account_recovery_authority(&recovery_path)
+        .unwrap();
+    let recovery_package = std::fs::read(&recovery_path).unwrap();
     let mut bob = Node::create(&dir.path().join("bob.db"), b"b", TEST_KDF, &mut rng).unwrap();
     alice.add_transport(spool(&alice_inbox));
     bob.add_transport(spool(&bob_inbox));
@@ -205,10 +258,13 @@ async fn send_before_first_tick_also_rekeys() {
 
     let (backup, mnemonic) = alice.export_backup(NOW + 10, &mut rng).unwrap();
     drop(alice);
-    let mut alice = Node::restore(
+    let mut alice = Node::restore_with_recovery_authority(
         &dir.path().join("alice-new.db"),
         &backup,
         &mnemonic,
+        &recovery_package,
+        &recovery_mnemonic,
+        NOW + 10,
         b"a",
         TEST_KDF,
         &mut rng,

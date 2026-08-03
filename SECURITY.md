@@ -57,6 +57,13 @@ evidence ledger records follow-up and closure. If the founder has a conflict,
 the project seeks an unconflicted external reviewer; none is currently assigned
 in advance.
 
+The role-specific provider data flows, lawful-request sequence, credential
+containment matrix, advisory fields, user-notification boundary, and internal
+policy dry-runs are in
+[Privacy, Legal, and Incident Readiness](docs/49-privacy-legal-incident-readiness.md).
+Those dry-runs are not a live incident, legal opinion, external tabletop, or
+24/7 response claim.
+
 ## Ground rules
 
 - Coordinated disclosure: please allow the initial assessment window and agree
@@ -70,6 +77,13 @@ in advance.
   [threat model](docs/02-threat-model.md) and
   [cryptography specification](docs/04-cryptography.md) for the intended
   guarantees and accepted limits.
+
+The prepared commissioned-review scope, reproducible source package, finding
+format, disclosure proposal, and current unassigned status are in
+[Independent Security-Review Readiness](docs/42-independent-security-review.md).
+That package does not replace this ordinary vulnerability intake and does not
+claim that a review has occurred. No reviewer is currently authorized to
+access private systems, contact users or operators, or incur project expense.
 
 For C3 message editing, cross-author application, cross-conversation target
 confusion, raw-content authorization bypasses, arrival-order divergence,

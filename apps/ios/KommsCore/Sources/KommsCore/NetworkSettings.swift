@@ -16,7 +16,83 @@ public struct SettingsError: Error, CustomStringConvertible {
 }
 
 /// The network knobs, mirroring `kultd`'s flags and the other shells.
+public struct RendezvousSetting: Codable, Equatable {
+    /// Canonical HTTPS provider origin.
+    public var origin: String
+    /// SHA-256 of the provider leaf TLS certificate, lowercase hex.
+    public var staticKey: String
+    /// Whether direct Standard access is allowed.
+    public var standard: Bool
+    /// Whether Private mode may reach it through Tor.
+    public var privateViaTor: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case origin, standard
+        case staticKey = "static_key"
+        case privateViaTor = "private_via_tor"
+    }
+
+    public init(
+        origin: String,
+        staticKey: String,
+        standard: Bool,
+        privateViaTor: Bool
+    ) {
+        self.origin = origin
+        self.staticKey = staticKey
+        self.standard = standard
+        self.privateViaTor = privateViaTor
+    }
+}
+
+/// One separately keyed native-wake gateway.
+public struct WakeSetting: Codable, Equatable {
+    /// Canonical HTTPS provider origin.
+    public var origin: String
+    /// SHA-256 of the provider leaf TLS certificate, lowercase hex.
+    public var staticKey: String
+    /// Whether direct Standard-mode access is allowed.
+    public var standard: Bool
+    /// Whether Private mode may reach it through Tor.
+    public var privateViaTor: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case origin, standard
+        case staticKey = "static_key"
+        case privateViaTor = "private_via_tor"
+    }
+
+    public init(
+        origin: String,
+        staticKey: String,
+        standard: Bool,
+        privateViaTor: Bool
+    ) {
+        self.origin = origin
+        self.staticKey = staticKey
+        self.standard = standard
+        self.privateViaTor = privateViaTor
+    }
+}
+
+/// The network knobs, mirroring `kultd`'s flags and the other shells.
 public struct NetworkSettings: Codable, Equatable {
+    /// `standard`, `private`, or `sovereign`.
+    public var mode: String
+    /// Standard provider disclosure was reviewed before first optional use.
+    public var standardDisclosureConfirmed: Bool
+    /// Advanced Sovereign direct-route publication acknowledgement.
+    public var sovereignPublishDirectRoutes: Bool
+    /// Candidate signed provider-directory JSON.
+    public var providerDirectory: String?
+    /// Trusted offline directory keys, lowercase hex.
+    public var providerDirectoryRoots: [String]
+    /// User-selected rendezvous providers.
+    public var rendezvous: [RendezvousSetting]
+    /// User-selected native-wake gateways, never inferred from rendezvous.
+    public var wake: [WakeSetting]
+    /// Explicit loopback Tor SOCKS5 endpoint for Private rendezvous.
+    public var torProxy: String?
     /// Multiaddrs to listen on. The default binds QUIC + TCP on OS-assigned
     /// ports; pin a port here for port-forwarding setups.
     public var listen: [String]
@@ -44,6 +120,12 @@ public struct NetworkSettings: Codable, Equatable {
     public var bridge: Bool
 
     enum CodingKeys: String, CodingKey {
+        case mode, rendezvous, wake
+        case standardDisclosureConfirmed = "standard_disclosure_confirmed"
+        case sovereignPublishDirectRoutes = "sovereign_publish_direct_routes"
+        case providerDirectory = "provider_directory"
+        case providerDirectoryRoots = "provider_directory_roots"
+        case torProxy = "tor_proxy"
         case listen, bootstrap, relay, mailboxes
         case serveMailbox = "serve_mailbox"
         case mdns, spool
@@ -53,6 +135,14 @@ public struct NetworkSettings: Codable, Equatable {
     }
 
     public init(
+        mode: String = "standard",
+        standardDisclosureConfirmed: Bool = false,
+        sovereignPublishDirectRoutes: Bool = false,
+        providerDirectory: String? = nil,
+        providerDirectoryRoots: [String] = [],
+        rendezvous: [RendezvousSetting] = [],
+        wake: [WakeSetting] = [],
+        torProxy: String? = nil,
         listen: [String] = ["/ip4/0.0.0.0/udp/0/quic-v1", "/ip4/0.0.0.0/tcp/0"],
         bootstrap: [String] = [],
         relay: String? = nil,
@@ -64,6 +154,14 @@ public struct NetworkSettings: Codable, Equatable {
         meshtasticTcp: String? = nil,
         bridge: Bool = true
     ) {
+        self.mode = mode
+        self.standardDisclosureConfirmed = standardDisclosureConfirmed
+        self.sovereignPublishDirectRoutes = sovereignPublishDirectRoutes
+        self.providerDirectory = providerDirectory
+        self.providerDirectoryRoots = providerDirectoryRoots
+        self.rendezvous = rendezvous
+        self.wake = wake
+        self.torProxy = torProxy
         self.listen = listen
         self.bootstrap = bootstrap
         self.relay = relay
@@ -81,6 +179,28 @@ public struct NetworkSettings: Codable, Equatable {
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         let d = NetworkSettings()
+        mode = try c.decodeIfPresent(String.self, forKey: .mode) ?? d.mode
+        guard ["standard", "private", "sovereign"].contains(mode) else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .mode,
+                in: c,
+                debugDescription: "unsupported operating mode")
+        }
+        standardDisclosureConfirmed =
+            try c.decodeIfPresent(Bool.self, forKey: .standardDisclosureConfirmed)
+            ?? d.standardDisclosureConfirmed
+        sovereignPublishDirectRoutes =
+            try c.decodeIfPresent(Bool.self, forKey: .sovereignPublishDirectRoutes)
+            ?? d.sovereignPublishDirectRoutes
+        providerDirectory = try c.decodeIfPresent(String.self, forKey: .providerDirectory)
+        providerDirectoryRoots =
+            try c.decodeIfPresent([String].self, forKey: .providerDirectoryRoots)
+            ?? d.providerDirectoryRoots
+        rendezvous =
+            try c.decodeIfPresent([RendezvousSetting].self, forKey: .rendezvous)
+            ?? d.rendezvous
+        wake = try c.decodeIfPresent([WakeSetting].self, forKey: .wake) ?? d.wake
+        torProxy = try c.decodeIfPresent(String.self, forKey: .torProxy)
         listen = try c.decodeIfPresent([String].self, forKey: .listen) ?? d.listen
         bootstrap = try c.decodeIfPresent([String].self, forKey: .bootstrap) ?? d.bootstrap
         relay = try c.decodeIfPresent(String.self, forKey: .relay)
@@ -99,11 +219,14 @@ public struct NetworkSettings: Codable, Equatable {
 
     /// Persist to `dataDir` (creating it if needed).
     public func save(to dataDir: URL) throws {
+        guard ["standard", "private", "sovereign"].contains(mode) else {
+            throw SettingsError("unsupported operating mode")
+        }
         try FileManager.default.createDirectory(
             at: dataDir, withIntermediateDirectories: true)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        try encoder.encode(self).write(to: Self.fileIn(dataDir))
+        try encoder.encode(self).write(to: Self.fileIn(dataDir), options: .atomic)
     }
 
     /// Load from `dataDir`, falling back to defaults when absent. A

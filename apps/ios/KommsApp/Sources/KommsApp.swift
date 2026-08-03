@@ -2,14 +2,17 @@
 // contact list afterwards. All behavior lives in KommsCore's `Session`
 // (pinned by its e2e test); this app is UI only.
 
+import Foundation
 import KommsCore
 import SwiftUI
 
 @main
 struct KommsApp: App {
+    @UIApplicationDelegateAdaptor(KommsAppDelegate.self) private var appDelegate
     @Environment(\.scenePhase) private var scenePhase
     @StateObject private var model = AppModel()
     @StateObject private var screenSecurity = ScreenSecurityController()
+    @AppStorage("komms.locale") private var localePreference = "system"
 
     var body: some Scene {
         WindowGroup {
@@ -17,6 +20,8 @@ struct KommsApp: App {
                 Group {
                     if model.session == nil {
                         GateView().environmentObject(model)
+                    } else if model.requiresRecoveryAuthorityExport {
+                        RecoveryAuthorityView().environmentObject(model)
                     } else {
                         MainView().environmentObject(model)
                     }
@@ -30,13 +35,24 @@ struct KommsApp: App {
                 }
             }
             .preferredColorScheme(model.themePreference.colorScheme)
+            .environment(
+                \.locale,
+                Locale(
+                    identifier: localePreference == "system"
+                        ? L10n.activeLocale
+                        : localePreference
+                )
+            )
             .tint(ThemePalette.accent)
             .background(ThemePalette.background.ignoresSafeArea())
             .onAppear { screenSecurity.update(scenePhase: scenePhase) }
             .onChange(of: scenePhase) { phase in
                 screenSecurity.update(scenePhase: phase)
                 if phase == .active {
-                    Task { await model.refresh() }
+                    Task {
+                        await model.nativeWakeBecameActive()
+                        await model.refresh()
+                    }
                 }
             }
         }

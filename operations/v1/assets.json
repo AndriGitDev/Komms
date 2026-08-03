@@ -1,0 +1,89 @@
+{
+  "schema": "komms-license-asset-inventory/v1",
+  "as_of": "2026-07-31",
+  "project_license": "AGPL-3.0-only",
+  "package_identifiers": [
+    {
+      "platform": "desktop",
+      "identifier": "is.andri.komms"
+    },
+    {
+      "platform": "android",
+      "identifier": "is.andri.komms"
+    },
+    {
+      "platform": "ios",
+      "identifier": "is.andri.komms"
+    },
+    {
+      "platform": "container",
+      "identifier": "ghcr.io/andrigitdev/komms-kultd"
+    },
+    {
+      "platform": "container",
+      "identifier": "ghcr.io/andrigitdev/komms-reference-service"
+    },
+    {
+      "platform": "container",
+      "identifier": "ghcr.io/andrigitdev/komms-wake"
+    },
+    {
+      "platform": "container",
+      "identifier": "ghcr.io/andrigitdev/komms-mailbox"
+    },
+    {
+      "platform": "container",
+      "identifier": "ghcr.io/andrigitdev/komms-ohttp-relay"
+    }
+  ],
+  "project_assets": [
+    {
+      "id": "komms-logo",
+      "paths": [
+        "docs/assets/komms-logo.png"
+      ],
+      "copyright_license": "AGPL-3.0-only",
+      "trademark_policy_applies": true,
+      "provenance": "project repository history",
+      "stable_provenance_attestation": "open"
+    },
+    {
+      "id": "generated-application-icons",
+      "paths": [
+        "apps/desktop/src-tauri/icons/",
+        "apps/ios/KommsApp/Resources/Assets.xcassets/AppIcon.appiconset/"
+      ],
+      "copyright_license": "AGPL-3.0-only",
+      "trademark_policy_applies": true,
+      "provenance": "generated from project application artwork",
+      "stable_provenance_attestation": "open"
+    },
+    {
+      "id": "interface-screenshots",
+      "paths": [
+        "docs/assets/screenshots/"
+      ],
+      "copyright_license": "AGPL-3.0-only",
+      "trademark_policy_applies": true,
+      "provenance": "project interface captures",
+      "stable_provenance_attestation": "open"
+    }
+  ],
+  "third_party_material": [
+    {
+      "id": "bip-39-english-wordlist",
+      "path": "crates/kult-crypto/src/wordlist.rs",
+      "upstream": "https://github.com/bitcoin/bips/blob/master/bip-0039/english.txt",
+      "license": "MIT",
+      "notice": "LICENSES/BIP-39-MIT.txt",
+      "use": "frozen 2048-word recovery mnemonic vocabulary"
+    }
+  ],
+  "dependency_inventories": [
+    "Cargo.lock",
+    "apps/desktop/src-tauri/Cargo.lock",
+    "apps/android/gradle/verification-metadata.xml",
+    "release/android-license-policy-v1.json"
+  ],
+  "policy_limit": "An inventory records known provenance and declared licenses; it is not a legal opinion or a trademark clearance."
+}

@@ -8,6 +8,7 @@ import SwiftUI
 struct SettingsView: View {
     @EnvironmentObject private var model: AppModel
     @Environment(\.dismiss) private var dismiss
+    @AppStorage("komms.locale") private var localePreference = "system"
 
     @State private var showBackup = false
     @State private var showDevices = false
@@ -21,13 +22,13 @@ struct SettingsView: View {
             Form {
                 Section("Account & devices") {
                     SettingsActionRow(
-                        title: "Encrypted backup",
-                        detail: "Export identity, contacts, and history",
+                        title: L10n.text("settings_backup_title"),
+                        detail: L10n.text("settings_backup_summary"),
                         systemImage: "externaldrive.badge.timemachine"
                     ) { showBackup = true }
                     SettingsActionRow(
-                        title: "Linked devices",
-                        detail: "Link, sync, rename, or revoke installations",
+                        title: L10n.text("settings_devices_title"),
+                        detail: L10n.text("settings_devices_summary"),
                         systemImage: "laptopcomputer.and.iphone"
                     ) { showDevices = true }
                 }
@@ -46,19 +47,40 @@ struct SettingsView: View {
                         Text("Light").tag(ThemePreference.light)
                         Text("Dark").tag(ThemePreference.dark)
                     }
+                    Picker(
+                        L10n.text("language_title"),
+                        selection: $localePreference
+                    ) {
+                        Text(L10n.text("language_system")).tag("system")
+                        Text(L10n.text("language_english")).tag("en-US")
+                        Text(L10n.text("language_icelandic")).tag("is")
+                    }
+                    .accessibilityHint(L10n.text("language_note"))
                 }
 
                 Section("Conversation organization") {
-                    SettingsActionRow(title: "Folders", systemImage: "folder") {
+                    SettingsActionRow(
+                        title: L10n.text("folders_title"),
+                        systemImage: "folder"
+                    ) {
                         showFolders = true
                     }
-                    SettingsActionRow(title: "Labels", systemImage: "tag") {
+                    SettingsActionRow(
+                        title: L10n.text("labels_title"),
+                        systemImage: "tag"
+                    ) {
                         showLabels = true
                     }
-                    SettingsActionRow(title: "Pinned conversations", systemImage: "pin") {
+                    SettingsActionRow(
+                        title: L10n.source("Pinned conversations"),
+                        systemImage: "pin"
+                    ) {
                         showPins = true
                     }
-                    SettingsActionRow(title: "Private custom icons", systemImage: "person.crop.circle") {
+                    SettingsActionRow(
+                        title: L10n.text("icons_title"),
+                        systemImage: "person.crop.circle"
+                    ) {
                         showIcons = true
                     }
                 }
@@ -77,7 +99,7 @@ struct SettingsView: View {
                 } header: {
                     Text("Advanced")
                 } footer: {
-                    Text("Most people never need to change these. Komms chooses safe defaults automatically.")
+                    Text("Optional provider defaults are signed, replaceable, and never required for core messaging routes.")
                 }
             }
             .navigationTitle("Settings")
@@ -129,13 +151,35 @@ private struct SettingsActionRow: View {
 }
 
 private struct PrivacySecurityView: View {
+    @EnvironmentObject private var model: AppModel
+
     var body: some View {
         Form {
+            Section {
+                Picker("Best-effort native wake", selection: Binding(
+                    get: { model.nativeWakePreference },
+                    set: { preference in
+                        Task { await model.setNativeWakePreference(preference) }
+                    }
+                )) {
+                    Text("Off").tag(NativeWakePreference.disabled)
+                    Text("Background only").tag(NativeWakePreference.backgroundOnly)
+                    Text("Static “New activity” notice").tag(NativeWakePreference.genericVisible)
+                }
+            } header: {
+                Text("Native wake")
+            } footer: {
+                Text(
+                    "Wake carries no sender, conversation, message, unread count, or timestamp and never changes sent or delivered state. "
+                    + "iOS may suppress background execution after force-quit, when Background App Refresh is off, or under system limits. "
+                    + "Mailbox and direct retry remain authoritative.")
+            }
+
             let screenSecurity = screenSecurityPolicy(platform: .ios)
             Section {
-                Text(screenSecurity.mechanism)
+                Text(L10n.source(screenSecurity.mechanism))
                 ForEach(screenSecurity.limitations, id: \.self) { limitation in
-                    Text("• \(limitation)")
+                    Text(L10n.text("screen_limitation_bullet", L10n.source(limitation)))
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
@@ -147,9 +191,9 @@ private struct PrivacySecurityView: View {
 
             let inputPrivacy = incognitoKeyboardPolicy(platform: .ios)
             Section {
-                Text(inputPrivacy.mechanism)
+                Text(L10n.source(inputPrivacy.mechanism))
                 ForEach(inputPrivacy.limitations, id: \.self) { limitation in
-                    Text("• \(limitation)")
+                    Text(L10n.text("screen_limitation_bullet", L10n.source(limitation)))
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
@@ -174,6 +218,14 @@ struct AdvancedNetworkSettingsView: View {
     @State private var bootstrap = ""
     @State private var relay = ""
     @State private var mailboxes = ""
+    @State private var mode = "standard"
+    @State private var standardDisclosureConfirmed = false
+    @State private var sovereignPublishDirectRoutes = false
+    @State private var providerDirectory = ""
+    @State private var providerRoots = ""
+    @State private var rendezvous = ""
+    @State private var wake = ""
+    @State private var torProxy = ""
     @State private var serveMailbox = false
     @State private var mdns = true
     @State private var loaded = false
@@ -182,8 +234,76 @@ struct AdvancedNetworkSettingsView: View {
     var body: some View {
         Form {
             Section {
+                Picker("Mode", selection: $mode) {
+                    Text("Standard").tag("standard")
+                    Text("Private").tag("private")
+                    Text("Sovereign").tag("sovereign")
+                }
+                .pickerStyle(.segmented)
+
+                Text(modeDisclosure)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .accessibilityLabel(
+                        L10n.text("mode_accessibility", modeName, modeDisclosure))
+
+                if mode == "standard" {
+                    Toggle(
+                        "I reviewed the Standard provider disclosure",
+                        isOn: $standardDisclosureConfirmed
+                    )
+                }
+                if mode == "sovereign" {
+                    Toggle(
+                        "Publish direct routes after accepting the reachability warning",
+                        isOn: $sovereignPublishDirectRoutes
+                    )
+                }
+            } header: {
+                Text("Operating mode")
+            }
+
+            Section {
                 Toggle("LAN discovery (mDNS)", isOn: $mdns)
                 Toggle("Serve a mailbox for others", isOn: $serveMailbox)
+            }
+
+            Section("Signed provider directory") {
+                TextField("Candidate JSON path (optional)", text: $providerDirectory)
+                    .font(.caption.monospaced())
+                    .incognitoKeyboard()
+                TextEditor(text: $providerRoots)
+                    .font(.caption.monospaced())
+                    .frame(minHeight: 60)
+                    .incognitoKeyboard()
+                    .accessibilityLabel("Trusted offline directory keys, one per line")
+            }
+
+            Section {
+                TextEditor(text: $rendezvous)
+                    .font(.caption.monospaced())
+                    .frame(minHeight: 60)
+                    .incognitoKeyboard()
+                    .accessibilityLabel("Manual rendezvous providers, one per line")
+                TextField("Private Tor SOCKS5 endpoint", text: $torProxy)
+                    .font(.caption.monospaced())
+                    .incognitoKeyboard()
+            } header: {
+                Text("Optional rendezvous")
+            } footer: {
+                Text("One per line: https://host,leaf_sha256,standard|private|both. Private access requires an explicit loopback Tor endpoint.")
+            }
+
+            Section {
+                TextEditor(text: $wake)
+                    .font(.caption.monospaced())
+                    .frame(minHeight: 60)
+                    .incognitoKeyboard()
+                    .accessibilityLabel("Manual native-wake gateways, one per line")
+            } header: {
+                Text("Native-wake gateways")
+            } footer: {
+                Text("Separately keyed from rendezvous. One per line: https://host,leaf_sha256,standard|private|both. Provider tokens go only to the selected gateway.")
             }
 
             Section("Listen multiaddrs (one per line)") {
@@ -218,8 +338,10 @@ struct AdvancedNetworkSettingsView: View {
                 Button("Save network settings") { save() }
             } footer: {
                 Text(model.session == nil
-                    ? "Saved next to the encrypted store. No secrets are included."
-                    : "Changes apply after the next lock and unlock.")
+                    ? L10n.source(
+                        "Saved next to the encrypted store. No secrets are included.")
+                    : L10n.source(
+                        "Changes apply after the next lock and unlock."))
             }
         }
         .navigationTitle("Network & transports")
@@ -238,6 +360,24 @@ struct AdvancedNetworkSettingsView: View {
         loaded = true
         do {
             let s = try NetworkSettings.load(from: model.dataDir)
+            mode = s.mode
+            standardDisclosureConfirmed = s.standardDisclosureConfirmed
+            sovereignPublishDirectRoutes = s.sovereignPublishDirectRoutes
+            providerDirectory = s.providerDirectory ?? ""
+            providerRoots = s.providerDirectoryRoots.joined(separator: "\n")
+            rendezvous = s.rendezvous.map { entry in
+                let access = entry.standard && entry.privateViaTor
+                    ? "both"
+                    : (entry.standard ? "standard" : "private")
+                return "\(entry.origin),\(entry.staticKey),\(access)"
+            }.joined(separator: "\n")
+            wake = s.wake.map { entry in
+                let access = entry.standard && entry.privateViaTor
+                    ? "both"
+                    : (entry.standard ? "standard" : "private")
+                return "\(entry.origin),\(entry.staticKey),\(access)"
+            }.joined(separator: "\n")
+            torProxy = s.torProxy ?? ""
             listen = s.listen.joined(separator: "\n")
             bootstrap = s.bootstrap.joined(separator: "\n")
             relay = s.relay ?? ""
@@ -253,7 +393,33 @@ struct AdvancedNetworkSettingsView: View {
         error = nil
         do {
             // Keep knobs this screen doesn't edit (radios, spool, bridge).
-            var s = (try? NetworkSettings.load(from: model.dataDir)) ?? NetworkSettings()
+            let previous =
+                (try? NetworkSettings.load(from: model.dataDir)) ?? NetworkSettings()
+            var s = previous
+            s.mode = mode
+            s.standardDisclosureConfirmed = standardDisclosureConfirmed
+            s.sovereignPublishDirectRoutes = sovereignPublishDirectRoutes
+            let directory = providerDirectory.trimmingCharacters(in: .whitespaces)
+            s.providerDirectory = directory.isEmpty ? nil : directory
+            s.providerDirectoryRoots = Self.lines(providerRoots)
+            s.rendezvous = try parseRendezvous()
+            s.wake = try parseWake()
+            let proxy = torProxy.trimmingCharacters(in: .whitespaces)
+            s.torProxy = proxy.isEmpty ? nil : proxy
+            if s.mode == "standard",
+               s.providerDirectory != nil,
+               !s.standardDisclosureConfirmed {
+                throw SettingsError(
+                    "Review and confirm the Standard provider disclosure before using a signed provider directory.")
+            }
+            if s.mode == "private",
+               s.torProxy == nil,
+               s.providerDirectory != nil
+                || s.rendezvous.contains(where: \.privateViaTor)
+                || s.wake.contains(where: \.privateViaTor) {
+                throw SettingsError(
+                    "Private optional providers require an explicit loopback Tor SOCKS5 endpoint.")
+            }
             s.listen = Self.lines(listen)
             s.bootstrap = Self.lines(bootstrap)
             let r = relay.trimmingCharacters(in: .whitespaces)
@@ -261,10 +427,97 @@ struct AdvancedNetworkSettingsView: View {
             s.mailboxes = Self.lines(mailboxes)
             s.serveMailbox = serveMailbox
             s.mdns = mdns
+            let nativeWakeRuntimeChanged =
+                s.mode != previous.mode
+                || s.providerDirectory != previous.providerDirectory
+                || s.providerDirectoryRoots != previous.providerDirectoryRoots
+                || s.wake != previous.wake
+                || s.torProxy != previous.torProxy
             try s.save(to: model.dataDir)
+            if nativeWakeRuntimeChanged {
+                Task { await model.nativeWakeNetworkSettingsChanged() }
+            }
             dismiss()
         } catch {
             self.error = errorText(error)
+        }
+    }
+
+    private var modeDisclosure: String {
+        switch mode {
+        case "private":
+            return L10n.text("set_mode_private_disclosure")
+        case "sovereign":
+            return L10n.text("set_mode_sovereign_disclosure")
+        default:
+            return L10n.text("set_mode_standard_disclosure")
+        }
+    }
+
+    private var modeName: String {
+        switch mode {
+        case "private": return L10n.text("mode_private")
+        case "sovereign": return L10n.text("mode_sovereign")
+        default: return L10n.text("mode_standard")
+        }
+    }
+
+    private func parseRendezvous() throws -> [RendezvousSetting] {
+        try Self.lines(rendezvous).enumerated().map { index, line in
+            let parts = line.split(separator: ",", omittingEmptySubsequences: false)
+                .map { $0.trimmingCharacters(in: .whitespaces) }
+            guard parts.count == 3,
+                  parts[0].hasPrefix("https://"),
+                  parts[1].count == 64,
+                  parts[1].allSatisfy({ $0.isNumber || ("a"..."f").contains(String($0)) })
+            else {
+                throw SettingsError(
+                    "Rendezvous line \(index + 1) must contain an HTTPS origin, 64 lowercase hex characters, and standard, private, or both.")
+            }
+            let access: (Bool, Bool)
+            switch parts[2] {
+            case "standard": access = (true, false)
+            case "private": access = (false, true)
+            case "both": access = (true, true)
+            default:
+                throw SettingsError(
+                    "Rendezvous line \(index + 1) must end in standard, private, or both.")
+            }
+            return RendezvousSetting(
+                origin: parts[0],
+                staticKey: parts[1],
+                standard: access.0,
+                privateViaTor: access.1
+            )
+        }
+    }
+
+    private func parseWake() throws -> [WakeSetting] {
+        try Self.lines(wake).enumerated().map { index, line in
+            let parts = line.split(separator: ",", omittingEmptySubsequences: false)
+                .map { $0.trimmingCharacters(in: .whitespaces) }
+            guard parts.count == 3,
+                  parts[0].hasPrefix("https://"),
+                  parts[1].count == 64,
+                  parts[1].allSatisfy({ $0.isNumber || ("a"..."f").contains(String($0)) })
+            else {
+                throw SettingsError(
+                    "Wake-gateway line \(index + 1) must contain an HTTPS origin, 64 lowercase hex characters, and standard, private, or both.")
+            }
+            let access: (Bool, Bool)
+            switch parts[2] {
+            case "standard": access = (true, false)
+            case "private": access = (false, true)
+            case "both": access = (true, true)
+            default:
+                throw SettingsError(
+                    "Wake-gateway line \(index + 1) must end in standard, private, or both.")
+            }
+            return WakeSetting(
+                origin: parts[0],
+                staticKey: parts[1],
+                standard: access.0,
+                privateViaTor: access.1)
         }
     }
 }

@@ -1,0 +1,65 @@
+name: Good first change
+description: Propose a bounded newcomer-sized documentation, test, localization, accessibility, or code improvement
+title: "[bounded change] "
+labels:
+  - good first change
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Keep this to one observable problem and one contributor profile. Do not include secrets, private security reports, recovery material, contact data, or message content.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Concrete problem
+      description: What is wrong or unnecessarily difficult, and who encounters it?
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: In scope
+      description: Name the exact files, behavior, or documentation section to change.
+    validations:
+      required: true
+  - type: textarea
+    id: excluded
+    attributes:
+      label: Explicitly out of scope
+      description: State nearby work this issue must not expand into.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: List observable results and any deterministic fixture involved.
+      placeholder: |
+        - [ ] ...
+        - [ ] ...
+    validations:
+      required: true
+  - type: dropdown
+    id: profile
+    attributes:
+      label: Contributor profile
+      description: Choose the smallest matching profile from docs/44-contributor-path.md.
+      options:
+        - documentation
+        - protocol
+        - storage-node
+        - desktop
+        - android-core
+        - ios-core
+        - Maintainer must define a new bounded profile
+    validations:
+      required: true
+  - type: checkboxes
+    id: boundaries
+    attributes:
+      label: Boundary check
+      options:
+        - label: I checked whether this touches a security-sensitive or compatibility-sensitive surface.
+          required: true
+        - label: This report contains no credentials, keys, recovery material, contact data, or message content.
+          required: true

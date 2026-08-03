@@ -1,6 +1,6 @@
 # Atomic protocol-transition inventory
 
-**Inventory date:** 2026-07-27
+**Inventory date:** 2026-07-30
 
 **Scope:** the implemented Alpha paths that overlap the frozen stable-v1
 profile, plus every adjacent persisted path found in the `kult-node` →
@@ -17,25 +17,37 @@ atomicity.
 
 ## 1. Transaction contract
 
-The store exposes fifteen bounded protocol plan kinds:
+The store exposes twenty-five bounded protocol plan kinds. Some retain
+explicit legacy profile/migration support; current stable-profile authority
+paths use the `Authority*` variants:
 
 | Plan | One logical transition | Principal bound |
 |---|---|---|
-| `ProfileBootstrap` | Publish one fresh account identity, physical-device state and prekey vault inside an unpublished sibling store | Three exact singleton rows |
+| `ProfileBootstrap` | Publish one legacy copied-root profile inside an unpublished sibling store | Three exact singleton rows; migration compatibility only |
+| `AuthorityProfileBootstrap` | Publish one public account trust anchor, independent `KDA2` device state, and prekey vault inside an unpublished sibling store | Three exact singleton rows; no account root |
+| `AuthorityMigration` | Replace one eligible single-device legacy root/profile with its public trust anchor and generation-one `KDA2` state | Exact root/public-authority singleton transition |
 | `PrekeyPublish` | Issue one fresh out-of-band one-time-prekey bundle and replace the exact vault that owns it | One exact vault replacement |
 | `PairwiseSend` | Advance up to eight device sessions and retain every resulting ciphertext with its history, delivery, schedule, attachment, or control consequence | 8 sessions, 128 queue rows, 512 mutations |
 | `PairwiseReceive` | Accept one pairwise plaintext/control and advance its receiving and optional receipt-sending state | 128 queue rows, 512 mutations |
 | `HandshakeReceive` | Consume an optional one-time prekey and establish the exact session and accepted first-flight consequence | 8 device records, 128 queue rows, 512 mutations |
+| `PendingStage` | Seal one complete carrier envelope and its ingress class before next-hop acknowledgement | 2,048 rows / 64 MiB pending domain; one exact idempotent row |
+| `AdmissionStage` | Consume an optional one-time prekey and seal one verified stranger/session/first-content candidate in the provisional request domain | 32 rows / 512 KiB domain; 4 KiB first content; 2 KiB preview |
+| `AdmissionAccept` | Promote one exact provisional request into a contact, session, normal history, delivery and receipt consequence | One request and exact candidate state |
+| `AdmissionDiscard` | Delete or block one exact provisional request, retire its provisional keys, and retain only bounded replay/block state | 4,096 replay tombstones; 4,096 block rules |
+| `AdmissionSweep` | Expire a bounded page of provisional requests and replay tombstones | 16 expiries per lifecycle tick |
 | `ReceiptReceive` | Accept one authenticated receipt/control, advance its session, and apply its exact delivery or deferred-work consequence | 128 queue rows, 512 mutations |
 | `GroupSend` | Advance one sender chain or perform one late fan-out and retain all recipient-scoped copies and delivery rows | 64 accounts, 8 devices per account, 512 queue rows, 2,048 mutations |
 | `GroupReceive` | Advance one receiver chain and retain the accepted plaintext consequence plus its encrypted receipt | One group chain and one receipt session |
 | `GroupState` | Apply one roster, authority, announcement, receiver-chain, removal, or deferred group-control transition | 256 exact mutations |
-| `DeviceControl` | Replace current device authority/counters, rotate affected group senders, append/compact convergence events, or transition one link-package recovery handle | 8,192 exact mutations; 4,094 groups per profile |
-| `DeviceLink` | Atomically switch one confirmed pristine target to the linked account and import its selected snapshot | 8,192 imported records; 4,094 groups |
+| `DeviceControl` | Apply the legacy copied-root device-control layout | 8,192 exact mutations; migration compatibility only |
+| `AuthorityDeviceControl` | Replace current `KDA2` authority/counters, rotate affected group senders, append/compact convergence events, or transition one root-free link-package recovery handle | 8,192 exact mutations; 4,094 groups per profile |
+| `DeviceLink` | Import one legacy copied-root link package onto a pristine target | 8,192 imported records; migration compatibility only |
+| `AuthorityDeviceLink` | Atomically switch one confirmed pristine target to a root-free linked account and import its selected snapshot | 8,192 imported records; 4,094 groups |
 | `DeviceProjection` | Apply one already-durable convergence winner and retire any exact session/capability/queue consequences | 512 exact mutations |
 | `AttachmentStage` | Create the bounded metadata graph for one outbound attachment manifest | 256 mutations |
 | `AttachmentState` | Apply one bounded transfer/object/missing-range/deferred-control transition | 256 mutations |
 | `Maintenance` | Apply one bounded retry, expiry, tombstone, terminal-input, repair, queue, or presentation acknowledgement transition | 256 exact mutations |
+| `WakeRevocation` | Retry, acknowledge, or expire exact identity-free gateway revocations after an issued capability is retired | 256 exact rows; 4,096-row installation ceiling |
 
 Every plan validates its complete before-state before `BEGIN IMMEDIATE`.
 `CommitPlan` is the only protocol-state write surface used by stable-profile
@@ -44,8 +56,9 @@ group, history, delivery, queue, replay, ephemeral, media and device-state
 setters in those modules. It audits `devices.rs` rather than excluding the
 file; only the explicitly delimited pre-C2 contact-manifest bridge described in
 section 4 is removed from that check. The former multi-autocommit link-snapshot
-import and convergence-log retention entry points have been removed; their only
-production replacements are `DeviceLink` and `DeviceControl`.
+import and convergence-log retention entry points have been removed; current
+production replacements are `AuthorityDeviceLink` and
+`AuthorityDeviceControl`.
 
 The ownership rules are structural:
 
@@ -60,15 +73,23 @@ The ownership rules are structural:
 - a consumed one-time prekey owns the newly established exact-device session;
   issued one-time prekeys become visible to the caller only after the
   replacement vault commits;
+- a stranger's consumed one-time prekey and candidate session own exactly one
+  sealed provisional request until Accept, Delete, Block, or expiry retires it;
 - a confirmed link secret remains live until the new channel and manifest
   commit; a sealed recovery handle owns a package return value lost after
   commit and is cleared only by authenticated target activity;
+- replacing or deleting issued wake state first owns every retired capability
+  in the durable identity-free revocation domain; a full domain rejects the
+  authority change before the old issued set is removed, and exact gateway
+  acknowledgement or capability expiry owns its deletion;
 - detached candidates replace live memory only after the commit receipt;
 - a presentation marker commits with every visible change, so a restart after
   commit but before event delivery requires a complete snapshot resync.
 
-Transport sends, discovery publication, native wake, call presentation, and UI
-events occur after the database commit. File transfer uses a separate
+Transport sends, discovery publication, gateway trigger/revocation I/O, call
+presentation, and UI events occur after the database commit. Sealed wake
+capability replacement, trigger retry state, and durable revocation ownership
+are part of the owning typed database transition. File transfer uses a separate
 file-first rule: a temporary authenticated chunk may reach the filesystem
 before its metadata transition, but it is unreachable as accepted media until
 that transition commits and restart reconciliation removes abandoned files.
@@ -79,14 +100,18 @@ that transition commits and restart reconciliation removes abandoned files.
 |---|---|---|---|
 | Fresh prekey-bundle export | One-time-prekey vault | `PrekeyPublish` | Bundle return follows commit; failure leaves the live and durable vault unchanged |
 | Outbound first flight | New sending session, ciphertext, history and delivery | `PairwiseSend` | Session never exists without its queued ciphertext |
-| Inbound first flight | Optional consumed one-time prekey, new session, accepted first content, receipt | `HandshakeReceive` | OPK removal and session establishment are one transaction |
+| Inbound first flight from an accepted contact or compatibility path | Optional consumed one-time prekey, new session, accepted first content, receipt | `HandshakeReceive` | OPK removal and session establishment are one transaction |
+| Unknown first flight | Verified admission wrapper, optional consumed one-time prekey, isolated candidate session/identity/safety number, bounded preview and request row | `AdmissionStage` | Proof, exact target, expiry, size, carrier/work budgets and replay are checked before the atomic stage; no contact or normal history exists |
+| Message-request Accept | Provisional session/identity/first content, contact, history, receipt and presentation | `AdmissionAccept` | Promotion is all-or-nothing; only committed acceptance exposes normal send/history state |
+| Message-request Delete or Block | Provisional state, replay tombstone and optional exact account/device block | `AdmissionDiscard` | Candidate keys and request row disappear together; Block claims no remote deletion |
+| Message-request expiry | Provisional state and bounded replay state | `AdmissionSweep` | At most 16 expiry mutations per tick; restart sees either the complete request or complete retirement |
 | Pairwise text, edits and ordinary versioned content | Sending or receiving ratchet, immutable history, replay, receipts | `PairwiseSend` / `PairwiseReceive` | Presentation follows commit; duplicate input is absorbed |
 | Pairwise capabilities and protocol controls, including role/admin requests | Pairwise ratchet and typed control consequence | Send/receive/receipt plans | Authenticated deferred work is durable before follow-up and deleted with that follow-up |
 | Group create, invite acceptance, roster change and leave/removal | Group record, sender generation, receiver chains and contact stubs | `GroupState` | One bounded roster transition; events follow commit |
-| Group chain announcement and acknowledgement | Pairwise session, pending announcement and receiver chain | `PairwiseSend`, `ReceiptReceive`, `GroupState` | Announcement ciphertext owns pending state; accepted chain owns exact deferred-control deletion |
+| Group chain/origin announcement and acknowledgement | Pairwise session, per-recipient origin capability, monotonic origin generation, pending announcement and receiver chain commitment | `PairwiseSend`, `ReceiptReceive`, `GroupState` | Announcement ciphertext owns pending state; a newer generation or exact idempotent duplicate is accepted, while stale/divergent controls cannot replace the chain or earn an acknowledgement |
 | Group authority, roles, transfer and owner moderation | Signed authority record, generation and immutable announcement | `GroupSend`, `PairwiseSend`, `GroupState` | Authority state and its authenticated announcement/control consequence commit together |
-| Group text, edits, polls and ephemeral events | Sender chain, immutable event, recipient/device deliveries and queue | `GroupSend` | At most 63 remote accounts × 8 devices = 504 physical copies in stable-v1 |
-| Group receive | Receiver chain, accepted plaintext, replay state and receipt session/ciphertext | `GroupReceive` | Duplicate/reordered input does not advance the chain twice |
+| Group text, attachments, edits, polls, authority and ephemeral events | Sender chain, one immutable shared ciphertext, recipient origin tags, recipient/device deliveries and queue | `GroupSend` | At most 63 remote accounts × 8 devices = 504 fixed-width recipient wrappers around one ciphertext in stable-v1 |
+| Group receive | Verified pairwise sender device, recipient origin tag, receiver chain, accepted plaintext, replay state and receipt session/ciphertext | `GroupReceive` | Origin verification completes before candidate chain advance; bad recipient/device/context, duplicate, replay and reordered input cannot advance the chain incorrectly |
 | Late group fan-out and partial carrier handoff | Retained ciphertext, new device deliveries and queue rows | `GroupSend` | Does not re-encrypt or advance the sender chain; restart retains unsent copies |
 | Outbound attachment offer | Manifest history, transfer/object graph and optional view-once marker | `AttachmentStage`, then send plan | Manifest encryption waits for complete staged objects |
 | Inbound attachment offer | Accepted manifest history, transfer/object graph, replay and receipt | Receive plan | No transfer becomes visible before the accepting receive commits |
@@ -95,17 +120,23 @@ that transition commits and restart reconciliation removes abandoned files.
 | Scheduled-message activation | Schedule row, ratchet or sender chain, history, delivery and ciphertext | `PairwiseSend` / `GroupSend` | No transport or activation event occurs before commit; failed activation retains the schedule |
 | Schedule create/edit/cancel | One sealed local outbox row | Single-row store operation | No cryptographic state, queue row or transport work exists before activation |
 | Call-control send/receive | Pairwise ratchet and encrypted transient control | Pairwise send/receive plans | Signalling commits before in-memory call state or call events; live call/media state is intentionally process-local |
-| Deferred inbox acceptance | Complete sealed carrier envelope | Bounded idempotent `pending_push` admission | Admission advances no cryptographic state; the consuming plan deletes the exact named row |
+| Direct next-hop settlement | Complete sealed carrier envelope or verified introduction | Typed consuming plan, `AdmissionStage`, or `PendingStage` | The fixed response is held until exact durable staging/consumption; invalid, duplicate and over-budget introductions are refused without generic pending state |
+| Mailbox-v2 lease settlement | Complete encoded envelope, ingress class, lease id and random relay row id | `PendingStage`, followed by exact transport acknowledgement | The relay row is acknowledged only after endpoint commit; failed endpoint commit, response loss, duplicate page, partial capacity, or acknowledgement loss leaves it retryable |
+| Best-effort bridge transit | Complete encoded envelope and bounded volatile transit slot | No custody transition | An unregistered internet deposit may be copied for mesh forwarding but receives a fixed refusal; only registered durable mailbox or endpoint acceptance advances next-hop custody |
+| Deferred inbox acceptance | Complete sealed carrier envelope plus ingress class | `PendingStage` | Staging advances no cryptographic state; the consuming plan deletes the exact named row and applies the preserved carrier budget after restart |
 | Retry, expiry, terminal rejection and stale-session reset | Queue schedule/removal, delivery state, replay, session/capability reset | `Maintenance` | Work is paged at 256 mutations; retryable input remains durable |
+| Wake capability publication, rotation and session retirement | Complete authenticated remote/issued sets, generation/conflict state, pending trigger work, and every retired issued capability | Pairwise control plan, `Maintenance`, `DeviceProjection`, plus `WakeRevocation` for gateway outcomes | Replacement and session deletion enqueue exact identity-free revocations in the same transaction; queue exhaustion leaves the old issued set authoritative; restart retries a bounded page without changing message delivery state |
 | Event-delivery recovery | Sealed presentation marker | Visible plan plus `Maintenance` acknowledgement | Reopen emits `StateResyncRequired`; acknowledgement follows delivery |
 | Media restart reconciliation | Missing-file object state and abandoned filesystem rows | Paged `AttachmentState` | Metadata repair commits before orphan cleanup; each page is bounded |
-| Fresh profile creation | Account identity, physical-device authority and fresh prekey vault | `ProfileBootstrap` inside sibling publication | Destination is absent or a complete openable profile; no partial identity path is published |
-| Device rename, approval, revocation and channel counters | Signed manifest, exact channel state, affected group sender chains and convergence events | `DeviceControl` | Detached memory follows commit; the 4,094-group profile ceiling leaves room for a full 4,096-event bundle, authority and recovery retirement while revocation rotates every group chain in the same transaction |
-| Confirmed device-link completion | Account identity, target device/channel state, regenerated local group senders and selected records | `DeviceLink` | The source first seeds convergence winners for the snapshot, then exports only the selected namespaces; one bounded pristine-target transaction consumes the target ceremony secret only after success |
-| Link-package return recovery | Source manifest/channel and transcript-derived recovery key | `DeviceControl` | Approval commits a small sealed recovery handle; retry after restart reseals from committed state, and authenticated target sync deletes it |
-| Device-sync import and duplicate import | Manifest/counter, convergence events, revocation rotations and exact winner projections | `DeviceControl`, then idempotent `DeviceProjection` / `GroupState` | Accepted control state commits before projections; restart reapplies winners, exact opaque event rows are retired by their resolved locator, group/authority tombstones remove their complete state, and sequence replay is rejected without writes |
-| Backup export | A read-only encrypted snapshot with fresh mnemonic | No live-state transition | Export excludes ratchets, prekeys, queues, live ephemeral plaintext/media and call state |
-| Backup restore | New sibling database, reset markers, fresh device state and fresh prekeys | Sibling-store initialization plus atomic filesystem replacement | The destination is absent or a complete openable store; a visible restored identity never lacks fresh non-portable secrets |
+| Fresh profile creation | Public account trust anchor, independent physical-device authority and fresh prekey vault | `AuthorityProfileBootstrap` inside sibling publication | Destination is absent or a complete openable root-free profile; the generated root exists only in the separately exported recovery authority |
+| Eligible single-device Alpha migration | Legacy account root/device state to public trust anchor and `KDA2` state | `AuthorityMigration` | The confirmed offline authority must match; commit either retains the legacy profile or publishes the complete root-free profile |
+| Device rename, approval, revocation, recovery and channel counters | Signed manifest, exact channel state, affected group sender chains, capability/session retirement and convergence events | `AuthorityDeviceControl` | Detached memory follows commit; the 4,094-group profile ceiling leaves room for a full 4,096-event bundle, authority and recovery retirement while revocation rotates every group chain in the same transaction |
+| Confirmed device-link completion | Public account identity, target device/channel state, regenerated local group senders and selected records | `AuthorityDeviceLink` | The source first seeds convergence winners for the snapshot, then exports only the selected namespaces; one bounded pristine-target transaction consumes the target ceremony secret only after success |
+| Link-package return recovery | Source manifest/channel and transcript-derived recovery key | `AuthorityDeviceControl` | Approval commits a small sealed recovery handle; retry after restart reseals from committed state, and authenticated target sync deletes it |
+| Device-sync import and duplicate import | Manifest/counter, convergence events, revocation rotations and exact winner projections | `AuthorityDeviceControl`, then idempotent `DeviceProjection` / `GroupState` | Accepted control state commits before projections; established `KDA2` contact endpoints, session/capability retirement and stale-orphan removal publish in one projection transaction; restart reapplies winners and sequence replay is rejected without writes |
+| Backup export | A read-only root-free `KKR10` snapshot with fresh mnemonic | No live-state transition | Export includes bounded local block rules and the Connect capability/generation but excludes provisional requests/replay tombstones, invitation capabilities, account root, device/link/session/service secrets, ratchets, prekeys, chains, queues, wire ids, resumable delivery, live ephemeral plaintext/media and call state |
+| Backup restore | New sibling database, higher recovery epoch, reset markers, one fresh device and fresh prekeys | `AuthorityProfileBootstrap` during sibling initialization plus atomic filesystem replacement | Compatible KKR8–KKR10 restore requires the separate offline authority; KKR8 restores no block rows; KKR8/KKR9 generate a fresh discovery capability; destination is absent or a complete openable store and old-epoch credentials remain revoked |
+| Legacy-backup archive reset | Decode-only in-memory `KKR1`–`KKR7` input to a fresh account, one KDA2 device, cleared petnames/public contact identities, eligible local organization, notes and non-ephemeral pairwise history; production cannot mint a copied-root file | `AuthorityProfileBootstrap` inside a restore sibling plus atomic filesystem publication | The former root is never written to the sibling; crash-phase tests inspect staged and published stores; groups, sessions, routes, verification, devices, queues, service capabilities and resumable delivery are omitted, and the destination is absent or a complete root-free former-identity archive |
 
 Edits, polls, roles and ephemeral content do not receive a special durability
 exception: they are immutable authenticated content carried by the same
@@ -122,9 +153,8 @@ write. The remaining direct calls fall into these categories:
 |---|---|
 | Labels, folders, pins, icons, theme, petnames and note-to-self | Local sealed presentation/organization state; no ratchet, sender chain, replay, delivery or carrier consequence |
 | Schedule create/edit/cancel | One local row; activation is typed |
-| Complete-envelope `pending_push` | Bounded idempotent ingress staging before parsing or cryptographic work |
 | Media garbage collection after semantic commit | Physical cleanup after the durable tombstone/progress transition |
-| Contact import, hint/verification changes | Current automatic-contact Alpha flow; outside stable-v1 pending ADR-0030 |
+| Explicit outgoing contact import, hint/verification changes | User-selected local destination/presentation state; inbound unknown identities can enter only through `AdmissionStage` and explicit `AdmissionAccept` |
 | Pre-C2 contact-device alias/manifest migration | Explicitly delimited ADR-0030 compatibility quarantine; its route/session retarget sequence is not stable-v1 evidence |
 | Restore population writes inside an unpublished sibling | Bounded reconstruction work is never visible at the destination; fresh device/prekey initialization is typed before atomic publication |
 
@@ -138,27 +168,22 @@ call outside the named compatibility bridge fails the source guard.
 
 These boundaries keep ADR-0028 Proposed:
 
-1. **Linked-device authority design remains an open P0 path, not a P2
-   exception.** The current ADR-0024 implementation copies the account root,
-   so a revoked device can still mint replacement credentials. Its implemented
-   link, manifest, channel, sync-log and projection writes are now typed and
-   crash-safe, but that transaction evidence does not satisfy ADR-0026's
-   offline-root and majority-authority design.
-2. **First-contact admission is an open P0 path.** Current explicit contact
-   import can update the contact and endpoint rows before the future ADR-0030
-   consent/quarantine transition exists. The current inbound cryptographic
-   handshake itself is atomic, but the automatic-contact Alpha policy is
-   outside stable-v1. The pre-C2 alias migration is the only raw setter sequence
-   excluded from the node source guard.
-3. **Live call state is process-local by design.** Ratchet-protected signalling
+1. **A pre-C2 alias migration remains quarantined compatibility code.** It is
+   the only raw contact/session route-retarget setter sequence excluded from
+   the node source guard. New unknown first contact does not use it.
+2. **Live call state is process-local by design.** Ratchet-protected signalling
    is covered; ringing, active-call and media state are not restored after a
    process stop and are not stable persisted state.
-4. **Mailbox-v1 relay custody remains outside this node/store transaction.**
-   Endpoint inbox acceptance is covered, but leased relay deletion only after
-   endpoint acknowledgement remains proposed in ADR-0032.
-5. **Independent and physical evidence remains open.** The deterministic
+3. **Independent and physical evidence remains open.** The deterministic
    matrix is not independent protocol review or supported-platform sudden
    power-loss qualification.
+
+Mailbox v2 uses a separate service database, so it is not one node-store
+transaction. Its custody chain is nevertheless explicit: the relay's durable
+deposit transaction precedes acceptance, endpoint `PendingStage` precedes
+`AckLease`, and exact relay deletion is one transaction. Failure injection
+covers each boundary; this is local implementation evidence, not operator or
+physical-filesystem qualification.
 
 The intentionally excluded P2 paths are live video, groups above 64 accounts,
 advanced moderation, high-bandwidth media, Freenet-style or other additional
@@ -169,8 +194,10 @@ or against stable-v1 atomicity.
 ## 5. Failure and restart matrix
 
 `crates/kult-node/src/atomic_tests.rs` applies every transaction failpoint to
-all fifteen plan kinds, using seventeen fixtures where maintenance has separate
-terminal-input, session-reset and expiry cases:
+every current stable-profile plan plus the legacy bootstrap and explicit
+authority-migration boundaries, using twenty-six fixtures where maintenance
+and admission have separate terminal, reset, stage, accept, discard, and
+expiry cases:
 
 - before and after `BEGIN IMMEDIATE`;
 - before and after every numbered logical statement;
@@ -183,14 +210,29 @@ The same suite covers duplicate and reordered deferred input, duplicate device
 sync import, retry after restart, presentation-outbox recovery, link-package
 return recovery, scheduled activation, a maximum stable-v1 group fan-out of
 504 physical deliveries, and rejection/restart at the profile group ceiling.
-The linked-device suite also proves selective initial transfer, exact
-convergence-event compaction, group deletion/authority tombstones and restart
-replay. The group end-to-end suite covers partial carrier handoff followed by
-sender restart. Pending-inbox, media and custom-icon tests fill their item/byte
-quotas; media tests also cover duplicate chunks, interrupted temporary files
-and exact missing ranges. Profile and backup tests inject every
-atomic-replacement phase and initializer failure. Disk-full, constraint and
-duplicate-index classes run against every plan fixture.
+Admission fixtures cover invalid proof, duplicate/replay refusal, one-time
+prekey consumption, provisional count/byte exhaustion, disk-full rollback,
+per-carrier/work ceilings, exact Accept/Delete/Block effects, direct response
+settlement, and expiry/restart.
+Mailbox custody fixtures cover endpoint failure before and after
+`PendingStage`, response and acknowledgement loss, restart, exact partial
+acknowledgement, duplicate pages/acks, wrong-client refusal, expiry, overload,
+disk-full injection, and multi-operator duplicate delivery.
+The linked-device suite also proves selective initial transfer, root-free
+return-value recovery, strict-majority authority, contact projection
+all-or-nothing behavior, exact convergence-event compaction, group
+deletion/authority tombstones, stale-backup recovery and restart replay. The
+group end-to-end suite covers partial carrier handoff followed by sender
+restart. Pending-inbox, media and custom-icon tests fill their item/byte quotas;
+media tests also cover duplicate chunks, interrupted temporary files and exact
+missing ranges. Legacy and root-free profile publication, live-store migration,
+copied-root reset and backup tests inject every atomic-replacement phase and
+initializer failure; the legacy-only-artifact path additionally proves direct
+root-free projection through public UniFFI.
+Disk-full, constraint and duplicate-index classes run against every fixture.
+The wake-store suite separately injects every begin, statement, and commit
+boundary into an exact durable revocation retry, and proves restart observes
+either the unchanged due row or its complete backoff replacement.
 
 For each injected point, reopen observes either the complete transition or its
 complete absence. The input remains retryable in the absent case; the durable

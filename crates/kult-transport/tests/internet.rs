@@ -5,17 +5,35 @@ use std::time::Duration;
 
 use kult_protocol::{Envelope, EnvelopeKind, ProtocolError, MAX_ENVELOPE_BYTES};
 use kult_transport::{
-    DeliveryHint, Libp2pTransport, Reachability, SendReceipt, Transport, TransportError,
+    DeliveryHint, Libp2pTransport, Reachability, ReceivedEnvelope, SendReceipt, Transport,
+    TransportError,
 };
 
 fn test_envelope(fill: u8) -> Envelope {
     Envelope::new(EnvelopeKind::Message, [fill; 32], vec![fill; 300])
 }
 
-/// Poll `recv` until envelopes arrive (or 10 s passes).
+/// Poll staged receive until envelopes arrive, then explicitly accept each
+/// exact direct response handle (or time out after 10 seconds).
 async fn recv_within(t: &Libp2pTransport) -> Vec<Envelope> {
     for _ in 0..1000 {
-        let got = t.recv().await.unwrap();
+        let got = t.recv_staged().await.unwrap();
+        if !got.is_empty() {
+            let mut envelopes = Vec::with_capacity(got.len());
+            for item in got {
+                t.settle_recv(item.receipt.unwrap(), true).await.unwrap();
+                envelopes.push(item.envelope);
+            }
+            return envelopes;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("nothing received within 10s");
+}
+
+async fn recv_staged_within(t: &Libp2pTransport) -> Vec<ReceivedEnvelope> {
+    for _ in 0..1000 {
+        let got = t.recv_staged().await.unwrap();
         if !got.is_empty() {
             return got;
         }
@@ -33,18 +51,19 @@ async fn round_trip_on(listen: &str) {
     assert_eq!(a.reachable(&hint).await, Reachability::Now);
 
     let env = test_envelope(1);
-    let receipt = a.send(&hint, &env).await.unwrap();
+    let (receipt, got) = tokio::join!(a.send(&hint, &env), recv_within(&b));
+    let receipt = receipt.unwrap();
     // The next hop acknowledged over the request-response protocol — and
     // that is all we may claim (docs/05-transports.md §1 rule 4).
     assert_eq!(receipt, SendReceipt::AckedByNextHop);
 
-    let got = recv_within(&b).await;
     assert_eq!(got, vec![env]);
 
     // Second envelope reuses the connection.
     let env2 = test_envelope(2);
-    a.send(&hint, &env2).await.unwrap();
-    assert_eq!(recv_within(&b).await, vec![env2]);
+    let (receipt, got) = tokio::join!(a.send(&hint, &env2), recv_within(&b));
+    assert_eq!(receipt.unwrap(), SendReceipt::AckedByNextHop);
+    assert_eq!(got, vec![env2]);
 }
 
 #[tokio::test]
@@ -55,6 +74,14 @@ async fn quic_round_trip() {
 #[tokio::test]
 async fn tcp_fallback_round_trip() {
     round_trip_on("/ip4/127.0.0.1/tcp/0").await;
+}
+
+#[tokio::test]
+async fn direct_profile_keeps_maximal_envelopes_atomic() {
+    let transport = Libp2pTransport::new(&["/ip4/127.0.0.1/tcp/0"])
+        .await
+        .unwrap();
+    assert_eq!(transport.profile().mtu, MAX_ENVELOPE_BYTES);
 }
 
 #[tokio::test]
@@ -108,7 +135,7 @@ async fn oversized_outbound_envelope_fails_with_typed_protocol_error() {
 }
 
 #[tokio::test]
-async fn saturated_direct_inbox_refuses_then_recovers_after_drain() {
+async fn direct_acceptance_waits_for_endpoint_settlement_and_refusal_is_uniform() {
     let sender = Libp2pTransport::new(&["/ip4/127.0.0.1/tcp/0"])
         .await
         .unwrap();
@@ -118,22 +145,67 @@ async fn saturated_direct_inbox_refuses_then_recovers_after_drain() {
     let hint = DeliveryHint::Multiaddr(receiver.wait_listen_addr().await.unwrap());
     let envelope = test_envelope(10);
 
-    let mut accepted = 0usize;
-    loop {
-        match sender.send(&hint, &envelope).await {
-            Ok(SendReceipt::AckedByNextHop) => accepted += 1,
-            Ok(receipt) => panic!("unexpected send receipt: {receipt:?}"),
-            Err(TransportError::RefusedByNextHop) => break,
-            Err(error) => panic!("unexpected send failure: {error}"),
-        }
-        assert!(accepted < 1_000, "direct inbox did not apply backpressure");
-    }
-    assert!(accepted > 0);
-    assert_eq!(receiver.recv().await.unwrap().len(), accepted);
-
-    assert_eq!(
-        sender.send(&hint, &envelope).await.unwrap(),
-        SendReceipt::AckedByNextHop
+    let send = sender.send(&hint, &envelope);
+    tokio::pin!(send);
+    let staged = recv_staged_within(&receiver);
+    tokio::pin!(staged);
+    let mut staged = tokio::select! {
+        result = &mut send => panic!("send completed before endpoint settlement: {result:?}"),
+        staged = &mut staged => staged,
+    };
+    assert_eq!(staged.len(), 1);
+    assert_eq!(staged[0].envelope, envelope);
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), &mut send)
+            .await
+            .is_err(),
+        "sender was acknowledged before endpoint settlement"
     );
-    assert_eq!(receiver.recv().await.unwrap(), vec![envelope]);
+    receiver
+        .settle_recv(staged.remove(0).receipt.unwrap(), false)
+        .await
+        .unwrap();
+    assert!(matches!(
+        send.await.unwrap_err(),
+        TransportError::RefusedByNextHop
+    ));
+
+    let second = sender.send(&hint, &envelope);
+    tokio::pin!(second);
+    let staged = recv_staged_within(&receiver);
+    tokio::pin!(staged);
+    let mut staged = tokio::select! {
+        result = &mut second => panic!("send completed before endpoint settlement: {result:?}"),
+        staged = &mut staged => staged,
+    };
+    receiver
+        .settle_recv(staged.remove(0).receipt.unwrap(), true)
+        .await
+        .unwrap();
+    assert_eq!(second.await.unwrap(), SendReceipt::AckedByNextHop);
+}
+
+#[tokio::test]
+async fn ordinary_receive_returns_the_copy_but_never_claims_direct_custody() {
+    let sender = Libp2pTransport::new(&["/ip4/127.0.0.1/tcp/0"])
+        .await
+        .unwrap();
+    let receiver = Libp2pTransport::new(&["/ip4/127.0.0.1/tcp/0"])
+        .await
+        .unwrap();
+    let hint = DeliveryHint::Multiaddr(receiver.wait_listen_addr().await.unwrap());
+    let envelope = test_envelope(11);
+
+    let (result, received) = tokio::join!(sender.send(&hint, &envelope), async {
+        for _ in 0..1000 {
+            let received = receiver.recv().await.unwrap();
+            if !received.is_empty() {
+                return received;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!("nothing received within 10s");
+    });
+    assert!(matches!(result, Err(TransportError::RefusedByNextHop)));
+    assert_eq!(received, vec![envelope]);
 }

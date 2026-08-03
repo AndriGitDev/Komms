@@ -18,11 +18,20 @@ own, verbatim.
   mnemonics are masked. Settings state honestly that third-party IMEs may ignore
   the request.
 - **Create / unlock / restore** an encrypted store at the gate; restoring
-  takes a `.kkr` backup file plus its 24-word mnemonic.
+  current root-free `KKR10` or compatible root-free `KKR8`/`KKR9` takes the backup and
+  its phrase plus the separately held authority and phrase. A visibly separate
+  legacy `KKR1`–`KKR7` path
+  prepares a fresh address, requires identity-change confirmation, and imports
+  only the former-identity local archive.
+- **Make first contact** with the ordinary `kc2` Connect QR/code. It uses a
+  rotatable capability while the `kk1` account fingerprint and safety number
+  stay stable. The pairing screen exposes explicit rotation and legacy
+  mailbox-only retirement with TalkBack-labelled confirmation.
 - **Pair out-of-band**: show your prekey bundle as a compact, versioned
   Base45 QR, scan a friend's with the camera, or paste the interoperable
   hex used by the desktop app and `kult bundle` / `kult add`. Legacy hex
-  QRs remain accepted. A kult address can also add a contact through DHT.
+  QRs remain accepted. New DHT lookup uses the Connect code; a legacy kult
+  address is accepted only through the visible Alpha compatibility path.
 - **Link and manage owned devices** without a cloud account. The dedicated
   TalkBack-accessible manager lists exact physical devices, offers signed rename
   and permanently confirmed revoke, and drives both sides of the time-bounded
@@ -34,7 +43,7 @@ own, verbatim.
   accessible row action. Android targets the exact peer key, uses an incognito
   field, previews shared NFC normalization and duplicate/confusable/bidi/
   invisible warnings, and confirms before accepting risk. Duplicate names remain
-  separate; restart/`KKR7` preserves the rename with zero delivery work.
+  separate; restart/`KKR10` preserves the rename with zero delivery work.
 - **Message** with honest delivery states: `queued` → `sent` (handed to a
   link) → `delivered` (end-to-end encrypted receipt came back). Sealed
   ciphertext retries passively after recent failures so fresh taps remain
@@ -98,7 +107,10 @@ own, verbatim.
   group history, send messages, add/remove members as the creator, and leave
   as any member while local history remains stored. Inbound rows name the
   sender; outbound rows show every recipient's actual delivery state instead
-  of a misleading group-level checkmark.
+  of a misleading group-level checkmark. A TalkBack-labelled security banner
+  blocks the composer while current devices exchange recipient-specific
+  origins, then labels new rows as recipient-authenticated without relabelling
+  legacy membership-authenticated history.
 - **Create and vote in encrypted group polls** through dedicated TalkBack-
   labelled cards and a bounded exact-Unicode composer. The current roster is
   fixed at creation; votes and identities are visible to members, explicitly
@@ -136,7 +148,7 @@ own, verbatim.
 - **Choose System, Light, or Dark appearance** from Settings, including before
   unlock. AppCompat DayNight is applied in `Application.onCreate` so the gate
   does not flash the wrong palette; after unlock the sealed F5 value wins and is
-  restored by `KKR7`. Light/night resources use semantic roles and WCAG-tested
+  restored by `KKR10`. Light/night resources use semantic roles and WCAG-tested
   reference contrast, Android high-contrast text and disabled-animation settings
   remain native, and delivery/security rows retain non-color cues.
 - **Manage private custom icons** for contacts, groups, folders, and note-to-self.
@@ -146,14 +158,15 @@ own, verbatim.
   app-private file before the shared core emits a 256×256 RGBA PNG re-encoded
   without source metadata.
   The 512 KiB/1,024-record/64 MiB limits and corrupt fallback are shared with
-  every shell; `KKR7` and authenticated own-device C2 sync are the only
+  every shell; `KKR10` and authenticated own-device C2 sync are the only
   portability paths, and no icon creates network,
   permission beyond the picker, notification, capability, or transport work.
 - **Verify** contacts by safety number: identical digits and QR on both
   ends (desktop included), compared aloud or by scanning each other's
   code, with a visible verified badge. Key changes are surfaced, never
   hidden.
-- **Transport indicators**: kult address, NAT verdict, LAN peers via mDNS,
+- **Transport indicators**: stable kult fingerprint, current Connect code,
+  legacy-discovery state, NAT verdict, LAN peers via mDNS,
   scheduled, queued, and bridged-in-transit counts, refreshed live.
 - **Backup** to a single encrypted file via the system file picker; the
   sealing mnemonic is shown exactly once and stored nowhere. OS cloud
@@ -162,6 +175,15 @@ own, verbatim.
 - **Network settings** persist as secret-free `settings.json` in the data
   directory: the same file format as the desktop app and the same knobs
   as `kultd`'s flags.
+- **Use optional best-effort native wake** through a separately pinned gateway.
+  The Play flavor keeps its FCM token in process memory, accepts only the static
+  background or “New activity” shapes, rotates per-contact capabilities on
+  token/permission/relationship changes, and runs bounded collection plus one
+  ordinary WorkManager continuation. Doze, force-stop, OEM policy, provider
+  deprioritization, and notification denial remain visible limitations. The
+  Google-free flavor links no FCM/Play Services code and advertises no wake
+  capability. Native wake never changes delivery state or replaces ordinary
+  direct/mailbox/fallback delivery.
 - A **foreground service** keeps the node delivering while the app is
   backgrounded; **Lock** stops the node and returns to the gate.
 
@@ -195,9 +217,9 @@ rendering glue.
 
 Mention acceptance pins byte-for-byte Rust/UniFFI semantics, invalid Unicode
 range rejection, exact peer targeting, and zero signal for plain text or similar
-petnames. Android notifications use only a generic private preview and remain
-subject to the existing user-controlled notification permission and platform
-policy; they do not provide server push or an online-delivery guarantee.
+petnames. Android notifications remain subject to user-controlled permission
+and platform policy. Native wake carries only a static generic shape and offers
+no online-delivery guarantee.
 
 Label acceptance drives the same deterministic fixture through Rust RPC,
 UniFFI, Kotlin, and Swift, including exact Unicode, duplicate names, typed
@@ -205,7 +227,7 @@ peer/group/note targets, stable order, any/all results, restart, and errors.
 Labels request no Contacts, clipboard, broad-storage, notification, nearby, or
 network permission. Label data never appears in notification channels, lock
 screen metadata, recent-task titles, logs, crash/analytics payloads, or
-unprotected state. `KKR7` preserves exact definitions and memberships; C2 can
+unprotected state. `KKR10` preserves exact definitions and memberships; C2 can
 converge them only between authorized owned devices, while message labels remain
 deferred.
 
@@ -213,35 +235,38 @@ Folder acceptance drives the shared B10 fixture through Rust RPC, UniFFI,
 Kotlin, and Swift, including exact Unicode, duplicate names, stable manual order,
 typed peer/group/note targets, single membership, label composition, restart,
 deletion, and structured errors. Folder state requests no additional permission,
-never leaves sealed owned-device storage. Portability is limited to `KKR7` and
+never leaves sealed owned-device storage. Portability is limited to `KKR10` and
 authenticated own-device C2 sync.
 
 Pin acceptance drives the shared B11 fixture through Rust RPC, UniFFI, Kotlin,
 and Swift, covering exact typed peer/group/note targets, append and complete-set
 reorder, folder/label composition, activity ordering, stale cleanup/reactivation,
-restart, structured limits/errors, and zero delivery work. `KKR7` together with
+restart, structured limits/errors, and zero delivery work. `KKR10` together with
 authenticated own-device C2 sync are the only portability paths; message pins
 remain deferred.
 
 Theme acceptance drives the shared B12 fixture through Rust RPC, UniFFI, Kotlin,
 and Swift: exact vocabulary/roles, first-run System, idempotency, restart,
-`KKR7`, one local event, and zero queued or transport work. The ordinary private
+`KKR10`, one local event, and zero queued or transport work. The ordinary private
 preference cache carries no identity, message, contact, or network data.
 
 Custom-icon acceptance drives the shared B13 fixture through Rust RPC, UniFFI,
 Kotlin, and Swift: all four exact target types, canonical PNG output that omits
 source metadata,
-quota accounting, restart/`KKR7`, generated-initials fallback, local events, and
+quota accounting, restart/`KKR10`, generated-initials fallback, local events, and
 zero delivery work. The Android manager uses SAF access only for the explicit
 selection and deletes its app-private transient after the blocking core call.
 
 This is deliberately its own Gradle build, outside the cargo workspace:
 the Android dependency tree stays out of the core crates' lockfile and
-cargo-deny surface. The runtime footprint is small and auditable: JNA
-(the UniFFI transport), kotlinx-serialization (settings.json), androidx
-basics, CameraX, and ZXing core (pure-Java QR encode/decode: no Google
-Play Services, no ML Kit, F-Droid friendly). JVM dependencies are pinned
-by `core/gradle.lockfile`.
+cargo-deny surface. The common runtime footprint is JNA (the UniFFI transport),
+kotlinx-serialization, AndroidX, CameraX, WorkManager, and ZXing core. The
+Google-free flavor has no Firebase, FCM, Play Services, or ML Kit dependency.
+The Play flavor adds only the pinned Firebase Messaging client for native wake.
+JVM/core and every application/flavor configuration have separate checked-in
+lock state. `gradle/verification-metadata.xml` also binds every resolved
+Android build artifact to reviewed SHA-256 values; the release-control check
+ensures no Firebase or Play coordinate enters a Google-free configuration.
 
 ## Install the published Alpha
 
@@ -274,7 +299,11 @@ The APK additionally needs the Android SDK, NDK, and cargo-ndk:
 rustup target add aarch64-linux-android x86_64-linux-android
 cargo install cargo-ndk --locked
 cd apps/android
-gradle :app:assembleDebug        # cross-compiles kult-ffi per ABI
+gradle \
+  :app:assemblePlayDebug :app:assembleGoogleFreeDebug \
+  :app:testPlayDebugUnitTest :app:testGoogleFreeDebugUnitTest \
+  :app:lintPlayDebug :app:lintGoogleFreeDebug
+../../scripts/check-android-google-free.sh
 ```
 
 ABIs default to `arm64-v8a,x86_64` (real phones + emulator); widen with
@@ -283,21 +312,29 @@ feature-gated off, mirroring `kult-ffi`'s default (a radio's network API
 can be attached from a `meshtastic`-featured build).
 
 The local release matrix runs the `:core` JVM e2e and, on a host with the full
-SDK/NDK, debug-APK assembly plus lint. Per-push CI also assembles the real debug
-APK. Neither compilation path replaces the hands-on lifecycle, accessibility,
-audio-route, background, and physical-device qualification matrix.
+SDK/NDK, builds/tests/lints both distribution flavors and inspects the
+Google-free APK. Per-push CI does the same. Neither compilation path replaces
+the hands-on lifecycle, accessibility, audio-route, background, native-provider,
+and physical-device qualification matrix in
+[38: Native-wake mobile qualification](../../docs/38-native-wake-mobile-qualification.md).
 
-The `v0.3.0` prerelease includes that installable debug APK alongside
-the desktop packages and checksums. Future tagged candidates begin as drafts;
-optional keystore secrets add a signed release APK and AAB. The exact secret
-names, qualification steps, and explicit publication control are in the
+The `v0.3.0` prerelease includes that installable debug APK alongside the
+desktop packages and checksums. It predates the current release-evidence
+design. Future tag pushes produce retained unsigned validation APK/AAB
+artifacts and a revision-bound evidence bundle, but do not create a draft or
+access a keystore. Production signing begins only after the separate Play and
+Google-free roles are enrolled and exercised. The qualification and explicit
+publication boundaries are in the
 [release runbook](../../docs/25-release-runbook.md).
 
-## Version and release signing (scaffold)
+## Version and release signing boundary
 
 The application id is `is.andri.komms`, the minimum Android version is API 26,
-and the current `versionName` is `0.3.0`, aligned with the Rust, desktop, and iOS
-surfaces. Release signing is optional and deliberately keyless by default.
+and the current `versionName` is `0.3.0`, aligned with the Rust, desktop, and
+iOS surfaces. Local release signing is optional and deliberately keyless by
+default. A local keystore can exercise packaging, but it is not production
+evidence unless its public fingerprint, custody, recovery, upgrade, and
+rollback records satisfy the source-controlled release policy.
 
 To configure a future signed release, create the git-ignored
 `apps/android/keystore.properties`:
@@ -309,18 +346,21 @@ keyAlias=...
 keyPassword=...
 ```
 
-The equivalent local/service inputs are `KOMMS_ANDROID_KEYSTORE`,
+The equivalent local inputs are `KOMMS_ANDROID_KEYSTORE`,
 `KOMMS_ANDROID_KEYSTORE_PASSWORD`, `KOMMS_ANDROID_KEY_ALIAS`, and
 `KOMMS_ANDROID_KEY_PASSWORD`. Keystores and `keystore.properties` are ignored by
-Git and must never be committed. GitHub Actions receives a keystore only through
-the `KOMMS_ANDROID_KEYSTORE_BASE64` secret described in the release runbook; it
-is decoded into the runner's temporary directory. If no store is supplied, the
-test APK is still produced and all ordinary debug/CI behavior is unchanged.
-Store publication, provenance, and reproducible signed APK/AAB artifacts remain
-M6 work.
+Git and must never be committed. Ordinary and tag-triggered workflows never
+receive one. The protected production-signing boundary remains disabled until
+a maintainer enrolls the Play upload and direct Google-free roles, records
+their public fingerprints and recovery plans, and exercises signed install,
+upgrade, failure, rollback, and compatibility.
+
+See [release security and recovery](../../docs/39-release-security-and-recovery.md)
+and [release evidence bundles](../../docs/40-release-evidence-bundles.md).
+Store publication and production-signed APK/AAB qualification remain open.
 
 ## Not yet
 
-Mobile push-style wake-ups after the foreground service itself is stopped,
-BLE radios, and store distribution (M6). The iOS shell
-lives in [`apps/ios`](../ios/).
+Production FCM credentials/default gateway, named physical-device native-wake
+qualification, BLE radios, and store distribution (M6). The iOS shell lives in
+[`apps/ios`](../ios/).

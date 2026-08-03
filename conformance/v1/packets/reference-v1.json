@@ -1,0 +1,90 @@
+{
+  "format": "komms-reference-packet-index",
+  "format_version": 1,
+  "link_type": 147,
+  "link_type_name": "USER0",
+  "packets": [
+    {
+      "captured_bytes": 1398,
+      "contains_production_secrets": false,
+      "description": "Synthetic hybrid first flight; contains only published vector material.",
+      "name": "pqxdh-initial-message",
+      "packet": 1,
+      "sha256": "2f2a9898df4e75c7c2684ae9800cfd5799979e27e389c24b54518966c64055af",
+      "synthetic_vector_material_only": true
+    },
+    {
+      "captured_bytes": 135,
+      "contains_production_secrets": false,
+      "description": "Synthetic sender-chain message before a DH ratchet.",
+      "name": "double-ratchet-follow-up",
+      "packet": 2,
+      "sha256": "1d6a884bf0429080e0d28e1f26871c2f54f92e2720e471bd698f4154e85080a9",
+      "synthetic_vector_material_only": true
+    },
+    {
+      "captured_bytes": 145,
+      "contains_production_secrets": false,
+      "description": "Synthetic responder message that advances the opposite DH ratchet.",
+      "name": "double-ratchet-reply",
+      "packet": 3,
+      "sha256": "d348eaf56c98d7ea685c09761d2663d25efdd25cd8a082ba8fe689a1c3d79e74",
+      "synthetic_vector_material_only": true
+    },
+    {
+      "captured_bytes": 4136,
+      "contains_production_secrets": false,
+      "description": "Synthetic fixed-shape encrypted rendezvous record.",
+      "name": "rendezvous-record",
+      "packet": 4,
+      "sha256": "d21c3ee1bd3280eb3ef80fde4ec59b13e827b573f12ef3ff808fb67a6d0164df",
+      "synthetic_vector_material_only": true
+    },
+    {
+      "captured_bytes": 59,
+      "contains_production_secrets": false,
+      "description": "Synthetic canonical mailbox-v2 durable-deposit request.",
+      "name": "mailbox-v2-deposit",
+      "packet": 5,
+      "sha256": "547a2088e9545a85bd5d2f1148f4ba9a312d1c409de11ca83e6df9416380d092",
+      "synthetic_vector_material_only": true
+    },
+    {
+      "captured_bytes": 1179648,
+      "contains_production_secrets": false,
+      "description": "Synthetic exact-size encrypted capability-scoped DHT record.",
+      "name": "discovery-record-v2",
+      "packet": 6,
+      "sha256": "197b7ae62322afd0b59b3a9c2c7adc2cbaa4f3ec0bf676561fabe8009e869b51",
+      "synthetic_vector_material_only": true
+    },
+    {
+      "captured_bytes": 182,
+      "contains_production_secrets": false,
+      "description": "Synthetic recipient-authenticated wrapper around one shared sender-key ciphertext.",
+      "name": "group-origin-wrapper",
+      "packet": 7,
+      "sha256": "5c348bee933a091c6f056900ccb9df9b400f81c291de11a89e7538f238311a3a",
+      "synthetic_vector_material_only": true
+    },
+    {
+      "captured_bytes": 1948,
+      "contains_production_secrets": false,
+      "description": "Synthetic bounded first-contact invitation wrapper with a public descriptor-bound bundle.",
+      "name": "first-contact-admission",
+      "packet": 8,
+      "sha256": "3eb338b2f38f70458d7e9ac7a9e61b47b8fcd30fb9b12aaca6bb1d67f622ffd1",
+      "synthetic_vector_material_only": true
+    },
+    {
+      "captured_bytes": 1024,
+      "contains_production_secrets": false,
+      "description": "Synthetic fixed-shape opaque native-wake trigger.",
+      "name": "native-wake-trigger",
+      "packet": 9,
+      "sha256": "be0b7878a54db95487ccf304d8ea5a8328b85964ae7c0decba92aeb4d2c5398d",
+      "synthetic_vector_material_only": true
+    }
+  ],
+  "profile": "komms-stable-v1"
+}

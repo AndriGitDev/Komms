@@ -14,9 +14,10 @@
 *Komms aims to make ordinary conversations feel familiar while user-owned
 identity, strong end-to-end encryption, and resilient internet, local, radio,
 and sneakernet paths stay underneath. Its pure core has no mandatory exclusive
-provider. A future Standard mode may offer replaceable optional defaults for
-easy first use; those services must never receive message plaintext or identity
-private keys belonging to Komms users.*
+provider. Standard mode can consume disclosed, signed, replaceable optional
+defaults for easy first use, although no qualified default operator currently
+ships; those services must never receive message plaintext or identity private
+keys belonging to Komms users.*
 
 Komms has a nonprofit public-benefit mission: private, resilient communication
 should be useful to ordinary people without surveillance or exclusive-provider
@@ -91,19 +92,36 @@ independent interoperability.
 | Area | Current state |
 |---|---|
 | **Core security and storage** | Hybrid PQXDH, Double Ratchet sessions, sealed envelopes, opaque keyed SQLite indexes, row-bound local records, released-schema migration, backup/recovery, RPC/CLI, and UniFFI paths are implemented with repeatable tests. SQLite still reveals approximate row counts/sizes, order, within-domain equality, access patterns, and change timing. Storage has Linux/ext4 test evidence, but independent review and physical macOS, Windows, Android, iOS, power-loss, backup-exclusion, and forensic qualification remain open. |
-| **Internet, LAN, and delayed delivery** | libp2p QUIC/TCP, Kademlia discovery, NAT traversal, mDNS, and volunteer mailbox roles are implemented. Fresh app installs do not yet have a qualified distinct-NAT golden path: bootstrap and mailbox defaults require deliberate configuration, and mailbox persistence/operator behavior remains a stabilization gate. [ADR-0034](docs/adr/0034-operator-minimized-reference-discovery.md) proposes an initial founder-operated Hetzner Standard-mode bootstrap/DHT/rendezvous default with RAM-backed mutable state; it is not implemented or a durable mailbox. |
+| **Internet, LAN, and delayed delivery** | libp2p QUIC/TCP, Kademlia discovery, NAT traversal, mDNS, and durable leased mailbox v2 are implemented. Mailbox deposits commit before acceptance; exact relay rows remain until endpoint staging and acknowledgement. A dedicated `/komms/mailbox/2`-only artifact, hardened image, restart tests, failpoints, overload/multi-operator tests, and aggregate-only health are implemented locally. Fresh installs still lack a qualified distinct-NAT golden path: bootstrap/mailbox defaults require deliberate configuration, and no public mailbox operator, observed upgrade/backup/cost record, or real-network matrix is qualified. |
 | **Off-grid delivery** | Sneakernet and the Meshtastic carrier, duty-cycle controls, retransmission, and internet↔mesh bridge paths are implemented with automated evidence. The physical two-radio bench is not yet field-qualified. |
 | **Applications and messaging** | Desktop, Android, and iOS shells expose pairwise/group text and a broad Alpha feature set, including attachments, local organization, linked devices, ephemeral content, polls, roles, and direct audio-call paths. CI and simulator evidence exist; hands-on device, background lifecycle, NAT, accessibility, and localization qualification remain. |
-| **Distribution** | Unsigned desktop packages and a debug-signed Android APK are published for Alpha testing; iOS is source/Simulator-only. Production signing, authenticated updates, reproducibility measurements, store distribution, upgrade/rollback qualification, and stable support are not configured. |
-| **Optional mobile convenience** | ADR-0017 through ADR-0019 propose reversible post-pairing rendezvous and content-free native wake. The layer is design-only: no optional service is implemented or required by the sovereign core. |
+| **Distribution** | Unsigned desktop packages and a debug-signed Android APK are published for Alpha testing; iOS is source/Simulator-only. A bounded, revision-bound release-evidence and controlled-reproduction path is implemented locally, but has no retained candidate run. Production credentials, signed platform artifacts, authenticated updates, external reproduction, store distribution, upgrade/rollback qualification, and stable support remain open. |
+| **Optional mobile convenience** | ADR-0018 rotating post-pairing rendezvous and ADR-0019 content-free native wake are implemented locally across core, services, and clients. Standard, Private, and Sovereign share one mode contract; Private currently uses loopback Tor. A dedicated fixed-mapping RFC 9458 relay artifact is implemented, but no compatible gateway/client path, deployment, distinct administrative domains, or non-collusion evidence exists, so OHTTP is not selectable or qualified. The Play flavor contains FCM support, the Google-free flavor advertises none, and Apple uses APNs directly. No reference/wake/OHTTP service or production provider credential is deployed, and no physical background/force-quit/Doze row is qualified. None of these optional services is required by the Sovereign core. |
 | **Trust and governance** | The project is founder-directed by design during construction and stabilization under a nonprofit public-benefit mission. The founder retains product and release authority. Independent security and interoperability evidence is still missing. The [stabilization program](docs/29-stabilization-program.md) defines the evidence required before stable claims. |
+| **Stable-beta readiness** | A consent, aggregate-only pilot contract and fail-closed P0/candidate decision record are implemented. No pilot has run, all P0 gates remain open, production signing is unenrolled, and no stable-beta candidate, publication, or stable claim is authorized. |
 
-Older `KKR1` through `KKR6` backups remain restorable; current backups are
-`KKR7`. KKR6 added signed group authority state and consumed admin-request ids.
-KKR7 adds linked-device authority, convergence state, and recovery semantics;
-all current backups exclude live ephemeral plaintext/media and carry terminal
-tombstones so restore does not recreate those records in Komms. This is
-automated implementation evidence, not a promise to erase copies retained by
+Older `KKR1` through legacy copied-root `KKR7` backups remain explicit
+migration/reset inputs: they never resume the former account, and the guided
+flow publishes a fresh identity containing only cleared petnames, accurately
+labelled non-ephemeral pairwise history, notes, and eligible local
+organization. They are decode-only compatibility formats: production APIs
+cannot mint or publish a new copied-root backup. Root-free `KKR8` and `KKR9`
+backups remain directly restorable compatibility inputs; current routine
+backups are root-free `KKR10`. KKR6
+added signed group authority state, KKR7 added the former linked-device
+authority/convergence layout, KKR8 introduced the accepted offline-root
+authority proof, KKR9 added durable local block rules, and KKR10 adds the
+rotatable Connect-code discovery capability and generation. No root-free
+format contains an account root or reusable device, ratchet, prekey,
+sender-chain, link, invitation, rendezvous, wake, or delivery-resumption
+secret. Stable-identity KKR8/KKR9/KKR10 restore requires the separately held offline
+recovery-authority file and phrase, creates one fresh recovery device, and
+rejects descendants of the old epoch. Restoring KKR8 naturally restores no
+later block rows; restoring KKR8 or KKR9 generates a fresh discovery
+capability. Current backups also exclude provisional requests, replay
+tombstones, and live ephemeral plaintext/media, while terminal ephemeral
+tombstones remain so restore does not recreate those records in Komms. This is
+local implementation evidence, not a promise to erase copies retained by
 peers, screenshots, exported backups, or compromised endpoints.
 
 The [stabilization program](docs/29-stabilization-program.md) now takes priority
@@ -165,14 +183,14 @@ status of any particular proposal.
 | [15: Private Contact Names](docs/15-contact-petnames.md) | B5 local petname rename contract, warnings, privacy boundary, and qualification matrix |
 | [16: Safe Text Formatting](docs/16-safe-text-formatting.md) | B9 source subset, active-content boundary, limits, compatibility, and qualification matrix |
 | [17: Safe File Presentation](docs/17-safe-file-presentation.md) | C1 filename/type policy, open/export boundary, lifecycle, and qualification matrix |
-| [18: Authenticated Message Editing](docs/18-message-editing.md) | C3 immutable edit events, pairwise authorship, group Alpha limit, convergence, retained versions, compatibility, and qualification |
-| [19: Disappearing Messages and View-Once Attachments](docs/19-ephemeral-messages.md) | C4 exact local expiry, coarse relay retention, tombstones, KKR6 exclusion, honest limits, and qualification |
-| [20: Group Polls](docs/20-group-polls.md) | C5 visible votes, current member-forgery limit, fixed electorate, deterministic convergence, creator closure, and qualification |
+| [18: Authenticated Message Editing](docs/18-message-editing.md) | C3 immutable edit events, pairwise and recipient-authenticated group authorship, convergence, retained versions, compatibility, and qualification |
+| [19: Disappearing Messages and View-Once Attachments](docs/19-ephemeral-messages.md) | C4 exact local expiry, coarse relay retention, tombstones, KKR10 exclusion, honest limits, and qualification |
+| [20: Group Polls](docs/20-group-polls.md) | C5 visible recipient-authenticated votes, fixed electorate, deterministic convergence, creator closure, and qualification |
 | [21: Group Roles, Ownership, and Moderation](docs/21-group-roles.md) | C6 signed owner/admin/member authority, transfer, rotation, moderation, backup, and qualification |
-| [22: Linked Devices](docs/22-linked-devices.md) | C2 device certificates, confirmed linking, per-device delivery, sync, recovery, and the open permanent-revocation flaw |
+| [22: Linked Devices](docs/22-linked-devices.md) | C2 strict-majority device authority, confirmed linking, per-device delivery, sync, offline recovery, revocation, and honest Alpha migration |
 | [23: Live Audio Calls](docs/23-live-audio-calls.md) | C7 direct-QUIC gating, transient signaling, authenticated Opus media, platform behavior, privacy limits, and qualification |
 | [24: Local Release Gate](docs/24-local-release-gate.md) | Toolchains, complete local validation, CI/advisory evidence, SDK deferrals, signing boundary, and publication discipline |
-| [25: Release Runbook](docs/25-release-runbook.md) | Versioning, native desktop/APK artifact builds, signing inputs, qualification, and explicit publication |
+| [25: Release Runbook](docs/25-release-runbook.md) | Versioning, retained validation builds, protected signing/qualification, immutable completed assets, and explicit publication |
 | [26: Self-hosting](docs/26-self-hosting.md) | Hardened Docker Compose deployment, ports, secret initialization, node modes, and Alpha limits |
 | [27: Alpha Testing](docs/27-alpha-testing.md) | Download verification, installation, smoke testing, issue reporting, and self-hosted image quick start |
 | [28: Brand System](docs/28-brand-system.md) | Cross-shell product character, tokens, hierarchy, and pragmatic name-risk monitoring |
@@ -180,12 +198,33 @@ status of any particular proposal.
 | [30: Stable-v1 Product Profile](docs/30-stable-v1-product-profile.md) | Frozen install, messaging, bounds, recovery, delivery, platform, service, and exclusion contract |
 | [31: Release Evidence Ledger](docs/31-release-evidence-ledger.md) | P0 and stable-claim owners, evidence, revisions, gaps, and review dates |
 | [32: Name-risk Decision](docs/32-name-risk-decision.md) | Dated keep-and-monitor decision, observed overlap, migration cost, cadence, and advice triggers |
+| [33: Opaque Store Qualification](docs/33-opaque-store-qualification.md) | Opaque-indexed store migration, remnant controls, scale evidence, and open physical/forensic gates |
+| [34: Atomic Transition Inventory](docs/34-atomic-transition-inventory.md) | Typed protocol/store transitions, crash ownership, and side-effect ordering |
+| [35: Reference Service Operations](docs/35-reference-service-operations.md) | Least-authority bootstrap/DHT/rendezvous image, hardening, rotation, and replacement |
+| [36: Operating Modes and Provider Directory](docs/36-operating-modes-and-provider-directory.md) | Canonical Standard, Private, and Sovereign behavior with replaceable signed providers |
+| [37: Native Wake Operations](docs/37-native-wake-operations.md) | Fixed-shape least-authority wake service, credentials, state, and incident response |
+| [38: Native Wake Mobile Qualification](docs/38-native-wake-mobile-qualification.md) | Android/iOS lifecycle matrix and strict physical-evidence boundary |
+| [39: Release Security and Recovery](docs/39-release-security-and-recovery.md) | Signing roles, key rotation, compromise, updater, and rollback policy |
+| [40: Release Evidence Bundles](docs/40-release-evidence-bundles.md) | Revision/digest-bound SBOM, provenance, reproducibility, and qualification records |
+| [41: Protocol Conformance](docs/41-protocol-conformance.md) | Stand-alone stable-v1 specification, fixtures, runner, and independence limits |
+| [42: Independent Security Review](docs/42-independent-security-review.md) | External-review scope, evidence archive, RFP, findings, and current unassigned status |
+| [43: Field Qualification](docs/43-field-qualification.md) | Named platform/network/radio matrix, capture format, and retained simulator evidence |
+| [44: Contributor Path](docs/44-contributor-path.md) | Bounded target profiles, sensitive review boundaries, and focused handoff |
+| [45: Localization and Accessibility](docs/45-localization-accessibility.md) | Shared English/Icelandic catalogs, semantics, contrast, and open external evidence |
+| [46: Operator Program](docs/46-operator-program.md) | Service roles, capacity/cost, support, abuse, upgrade, and two-operator qualification |
+| [47: License, Trademark, and Assets](docs/47-license-trademark-assets.md) | AGPL scope, section 13, contributions, names, identifiers, and third-party inventory |
+| [48: Funding and Transparency](docs/48-funding-transparency.md) | Mission-aligned funding, conflicts, reporting cadence, and legal-entity limits |
+| [49: Privacy, Legal, and Incident Readiness](docs/49-privacy-legal-incident-readiness.md) | Provider data flows, lawful requests, key incidents, advisories, and dry-runs |
+| [50: Mailbox Service Operations](docs/50-mailbox-service-operations.md) | Dedicated mailbox-v2 artifact, custody, backup, upgrade, incident, and qualification rules |
+| [51: Stable-Beta Pilot and Release Decision](docs/51-stable-beta-pilot-and-release-decision.md) | Consent boundary, aggregate pilot metrics, final matrix, P0 audit, support, rollback, and founder decision |
+| [52: Oblivious HTTP Relay Operations](docs/52-ohttp-relay-operations.md) | Fixed-mapping RFC 9458 relay, metadata stripping, hardening, rotation, and non-collusion boundary |
 | [ADRs](docs/adr/README.md) | Decision index, status, and the alternatives each decision beat |
 
 ## Stack
 
 Rust workspace (`kult-crypto` / `kult-protocol` / `kult-transport` / `kult-store` /
-`kult-node` / `kultd` / `kult-ffi`), UniFFI bindings, Tauri desktop app, native
+`kult-node` / `kultd` / `kult-reference-service` / `kult-mailbox` /
+`kult-wake` / `kult-ohttp-relay` / `kult-ffi`), UniFFI bindings, Tauri desktop app, native
 mobile shells.
 Layout in [Architecture §7](docs/03-architecture.md). Implemented so far:
 `kult-crypto` (hybrid PQXDH, Double Ratchet with encrypted headers,
@@ -261,5 +300,8 @@ prominently offer its remote users an opportunity to receive that version's
 Corresponding Source. The AGPL permits commercial use; Komms's nonprofit
 mission governs official project activity, not independent licensees. See
 [ADR-0006](docs/adr/0006-agplv3.md) and
-[ADR-0033](docs/adr/0033-nonprofit-founder-stewardship.md). This summary is not
-legal advice.
+[ADR-0033](docs/adr/0033-nonprofit-founder-stewardship.md). Repository scope,
+contribution terms, trademark use, package identifiers, and third-party
+material are in the
+[license, trademark, and asset policy](docs/47-license-trademark-assets.md) and
+[third-party notices](THIRD_PARTY_NOTICES.md). This summary is not legal advice.
