@@ -79,14 +79,14 @@ state. The duplicated source archive is locally generated; its compact digest
 report is retained with project evidence.
 
 The prepared target is commit
-`5a08e8e2e5cea4a2cad1ec511e97ab16cac53c85`, tree
-`626d47e8c79252f592fd13782347b9dc686a55d1`. Its 678 tracked files total
-15,509,820 bytes. The deterministic archive is 6,712,258 bytes with SHA-256
-`36f1cab72fcaa76efa29134dbe705775afbccd76cf30a7db2d3ffa2ae4ff831e`.
+`78b504df6423f5ca204199b4dbfdecc5c694b031`, tree
+`6f2555cbcee87966f210af76c7315a1d9be21936`. Its 787 tracked files total
+20,310,981 bytes. The deterministic archive is 9,654,286 bytes with SHA-256
+`63984ad25f428b44334818f25ecef3e5951215de08fa9da1a30720fe06420ef9`.
 The retained
-[package report](../security-review/stable-v1/evidence/komms-security-review-5a08e8e2e5ce.json)
+[package report](../security-review/stable-v1/evidence/komms-security-review-78b504df6423.json)
 has SHA-256
-`b15c7420b9a07abae7804eb49479af391a152b02d734ba0bba4aa62c6f5a254f`.
+`b82b80ace160d9b83f8d3e84a7ea51bc20e28c55e56d72f0c2aa315447fa0f94`.
 
 ## 3. Candidate research
 

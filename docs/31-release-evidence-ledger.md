@@ -777,6 +777,20 @@ open and waiting on a named conflict-checked external reviewer, a complete
 public finding/disposition/retest/residual-risk record, and separately
 produced interoperability evidence.
 
+On 2026-08-03, the cumulative stabilization source scope was refreshed at
+commit `78b504df6423f5ca204199b4dbfdecc5c694b031`, tree
+`6f2555cbcee87966f210af76c7315a1d9be21936`. The required-prefix contract now
+names the dedicated mailbox, reference, rendezvous, wake, and OHTTP relay
+components. Two builds produced the same 9,654,286-byte archive from 787 files
+and 20,310,981 source bytes. The archive SHA-256 is
+`63984ad25f428b44334818f25ecef3e5951215de08fa9da1a30720fe06420ef9`;
+the separately verified
+[package report](../security-review/stable-v1/evidence/komms-security-review-78b504df6423.json)
+has SHA-256
+`b82b80ace160d9b83f8d3e84a7ea51bc20e28c55e56d72f0c2aa315447fa0f94`.
+It still records an unassigned reviewer, no findings, and no independent-review
+claim, so the gate remains open.
+
 ### Session 19 field-program validation
 
 On 2026-07-31, commit
