@@ -193,7 +193,7 @@ jobs:
           workspaces: apps/desktop/src-tauri
       - name: Build native validation packages
         id: tauri
-        uses: tauri-apps/tauri-action@944946e3e4cac6603d1fe8f514171e9ecd3c78aa # v1
+        uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # v1
         with:
           projectPath: apps/desktop/src-tauri
           args: ${{ matrix.args }}
@@ -289,7 +289,7 @@ jobs:
         with:
           workspaces: apps/desktop/src-tauri
       - name: Build Linux packages
-        uses: tauri-apps/tauri-action@944946e3e4cac6603d1fe8f514171e9ecd3c78aa # v1
+        uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # v1
         with:
           projectPath: apps/desktop/src-tauri
           args: --bundles deb,rpm,appimage
