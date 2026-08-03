@@ -379,7 +379,15 @@ def check_workflows(errors: list[str]) -> None:
     for workflow in workflows:
         source = workflow.read_text(encoding="utf-8")
         combined_source += source + "\n"
-        if not re.search(r"(?m)^permissions:\n(?:  .+\n)*?  contents: read$", source):
+        reusable = "  workflow_call:" in source
+        has_top_level_read = re.search(
+            r"(?m)^permissions:\n(?:  .+\n)*?  contents: read$", source
+        )
+        if reusable and re.search(r"(?m)^\s*permissions:", source):
+            errors.append(
+                f"{workflow.relative_to(ROOT)}: reusable workflow must inherit caller permissions"
+            )
+        elif not reusable and not has_top_level_read:
             errors.append(f"{workflow.relative_to(ROOT)}: no top-level contents: read default")
         for number, line in enumerate(source.splitlines(), start=1):
             match = ACTION_REF_RE.match(line)

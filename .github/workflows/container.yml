@@ -16,16 +16,10 @@ on:
 env:
   IMAGE_NAME: ghcr.io/andrigitdev/komms-kultd
 
-permissions:
-  contents: read
-
 jobs:
   build:
     name: ${{ inputs.push && 'publish multi-arch image' || 'build image' }}
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
