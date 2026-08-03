@@ -89,14 +89,25 @@ class SettingsActivity : SecureActivity() {
                 },
             )
         }
+        val language = findViewById<RadioGroup>(R.id.set_language)
+        language.check(LocaleController.checkedId())
+        language.setOnCheckedChangeListener { _, checked ->
+            LocaleController.select(LocaleController.preferenceFor(checked))
+        }
         val screenSecurity = androidScreenSecurityPolicy()
-        findViewById<TextView>(R.id.screen_security_mechanism).text = screenSecurity.mechanism
+        findViewById<TextView>(R.id.screen_security_mechanism).text =
+            localizedSource(screenSecurity.mechanism)
         findViewById<TextView>(R.id.screen_security_limits).text =
-            screenSecurity.limitations.joinToString(separator = "\n") { "• $it" }
+            screenSecurity.limitations.joinToString(separator = "\n") {
+                getString(R.string.screen_limitation_bullet, localizedSource(it))
+            }
         val inputPrivacy = androidIncognitoKeyboardPolicy()
-        findViewById<TextView>(R.id.incognito_keyboard_mechanism).text = inputPrivacy.mechanism
+        findViewById<TextView>(R.id.incognito_keyboard_mechanism).text =
+            localizedSource(inputPrivacy.mechanism)
         findViewById<TextView>(R.id.incognito_keyboard_limits).text =
-            inputPrivacy.limitations.joinToString(separator = "\n") { "• $it" }
+            inputPrivacy.limitations.joinToString(separator = "\n") {
+                getString(R.string.screen_limitation_bullet, localizedSource(it))
+            }
         val nativeWake = findViewById<RadioGroup>(R.id.set_native_wake)
         nativeWake.check(
             when (NativeWakePreferences(this).load()) {
@@ -121,7 +132,7 @@ class SettingsActivity : SecureActivity() {
         } catch (e: SettingsException) {
             // Surface the corruption; edit from defaults without silently
             // overwriting until the user saves.
-            toast(e.message ?: getString(R.string.settings_corrupt))
+            toast(getString(R.string.error_settings))
             NetworkSettings()
         }
 
@@ -270,7 +281,7 @@ class SettingsActivity : SecureActivity() {
                 toast(getString(R.string.settings_saved))
                 finish()
             } catch (e: Exception) {
-                toast(e.message ?: getString(R.string.settings_corrupt))
+                toast(getString(R.string.error_settings))
             }
         }
     }

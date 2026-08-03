@@ -28,7 +28,9 @@ The available profiles are:
 | `desktop` | the desktop backend and shell |
 | `android-core` | generated Kotlin bindings and JVM behavior without an Android SDK |
 | `ios-core` | generated Swift bindings and host behavior without Xcode |
+| `localization` | catalogs, generated shell resources, source coverage, plurals, bidi safety, and fallback behavior without a platform SDK |
 | `documentation` | prose, evidence vocabulary, and consent-accessibility copy |
+| `stewardship` | operator, licensing, funding, privacy, legal-process, incident, and public-evidence records without deployment or credentials |
 
 Run the selected profile before opening a pull request:
 
@@ -127,6 +129,8 @@ authorized publication candidate runs the complete
 | Android asks for an SDK | Use `android-core`; it forces `-Pkomms.androidApp=false`. The application profile is a separate platform task. |
 | Swift host linking fails | Run `apps/ios/scripts/test-core.sh` from the repository root; it builds the host FFI library before Swift tests. |
 | Desktop system library is missing | Install the packages listed in `apps/desktop/README.md`; no packaging/signing setup is needed. |
+| A localization output is stale | Edit the canonical catalogs, run `python3 scripts/localization.py generate`, and rerun the `localization` profile. Do not edit generated platform resources directly. |
+| An accessibility contract check fails | Read [Localization and Accessibility](45-localization-accessibility.md), fix the affected semantic or presentation boundary, and retain physical/external rows as open unless they were genuinely run. |
 | A fixture changed unexpectedly | Stop and identify the normative owner. Do not regenerate compatibility data merely to accept a new output. |
 | The focused profile passes but another area fails | Report the exact extra command and failure. Do not claim the unrelated target passed. |
 | The proposed change crosses a sensitive boundary | Narrow it, or open a design issue and wait for the recorded owner before implementation. |

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -27,6 +28,9 @@ def require(
 
 def main() -> None:
     errors: list[str] = []
+    canonical = json.loads(
+        source("locales/en-US.json")
+    )["messages"]
 
     desktop_html_path = "apps/desktop/ui/index.html"
     desktop_js_path = "apps/desktop/ui/main.js"
@@ -52,14 +56,14 @@ def main() -> None:
         (
             'card.setAttribute("role", "listitem")',
             'card.setAttribute("aria-labelledby", heading.id)',
-            'name.setAttribute("aria-label", "Private contact name")',
-            'accept.setAttribute("aria-label", "Accept message request")',
-            'discard.setAttribute("aria-label", "Delete message request")',
-            'block.setAttribute("aria-label", "Block message request")',
-            'accept.setAttribute("aria-label", "Accept group invitation")',
-            'discard.setAttribute("aria-label", "Delete group invitation")',
+            'name.setAttribute("aria-label", l10n("message_request_name_hint"))',
+            'accept.setAttribute("aria-label", l10n("message_request_accept"))',
+            'discard.setAttribute("aria-label", l10n("message_request_delete"))',
+            'block.setAttribute("aria-label", l10n("message_request_block"))',
+            'accept.setAttribute("aria-label", l10n("group_invitation_accept"))',
+            'discard.setAttribute("aria-label", l10n("group_invitation_delete"))',
             "focusFirstRequestControl(root)",
-            "cannot delete remote copies",
+            'l10n("message_request_block_explanation")',
         ),
     )
     require(
@@ -124,25 +128,39 @@ def main() -> None:
             'Button("Delete", role: .destructive)',
             'Button("Block", role: .destructive)',
             'Button("Join group")',
-            "It cannot delete remote copies.",
-            "People you have not accepted stay separate from contacts and ",
+            'L10n.text("message_request_block_explanation")',
+            'L10n.text("message_requests_intro")',
         ),
     )
 
-    parity_terms = (
-        "Message requests",
-        "Accept",
-        "Delete",
-        "Block",
-        "Safety number",
+    parity_ids = (
+        "message_requests_title",
+        "message_request_accept",
+        "message_request_delete",
+        "message_request_block",
+        "message_request_safety",
     )
-    for term in parity_terms:
-        if term not in desktop_html + desktop_js:
-            errors.append(f"desktop message-request UI: missing parity term {term!r}")
-        if term not in android_strings:
-            errors.append(f"Android message-request UI: missing parity term {term!r}")
-        if term not in ios:
-            errors.append(f"iOS message-request UI: missing parity term {term!r}")
+    for message_id in parity_ids:
+        if message_id not in canonical:
+            errors.append(f"canonical catalog: missing parity id {message_id!r}")
+        if (
+            f'"{message_id}"' not in desktop_js
+            and f'data-l10n="{message_id}"' not in desktop_html
+        ):
+            errors.append(
+                f"desktop message-request UI: missing parity id {message_id!r}"
+            )
+        if f'name="{message_id}"' not in android_strings:
+            errors.append(
+                f"Android message-request UI: missing parity id {message_id!r}"
+            )
+        if (
+            f'L10n.text("{message_id}"' not in ios
+            and canonical[message_id] not in ios
+        ):
+            errors.append(
+                f"iOS message-request UI: missing parity id {message_id!r}"
+            )
 
     if errors:
         for error in errors:

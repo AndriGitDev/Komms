@@ -811,8 +811,17 @@ class MainActivity : SecureActivity() {
             }
             val status = findViewById<TextView>(R.id.main_label_filter_status)
             status.text = when {
-                snapshot.unavailableCount > 0 -> getString(R.string.label_filter_unavailable, snapshot.unavailableCount)
-                announce && selectedLabels.isNotEmpty() -> getString(R.string.label_filter_result, snapshot.matching.size, requestedMode)
+                snapshot.unavailableCount > 0 -> resources.getQuantityString(
+                    R.plurals.label_filter_unavailable,
+                    snapshot.unavailableCount,
+                    snapshot.unavailableCount,
+                )
+                announce && selectedLabels.isNotEmpty() -> resources.getQuantityString(
+                    R.plurals.label_filter_result,
+                    snapshot.matching.size,
+                    snapshot.matching.size,
+                    requestedMode,
+                )
                 else -> ""
             }
             if (announce && status.text.isNotEmpty()) status.announceForAccessibility(status.text)

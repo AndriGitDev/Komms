@@ -77,19 +77,19 @@ struct ScreenPrivacyShield: View {
                 Image(systemName: "lock.shield.fill")
                     .font(.system(size: 44))
                     .accessibilityHidden(true)
-                Text("Komms is protected")
+                Text(L10n.text("ui_komms_is_protected"))
                     .font(.headline)
-                Text(captureDetected
-                     ? "Sensitive content is hidden while iOS reports screen capture."
-                     : "Sensitive content is hidden outside the active app.")
+                Text(L10n.text(captureDetected
+                     ? "screen_shield_capture_message"
+                     : "screen_shield_inactive_message"))
                     .multilineTextAlignment(.center)
                     .foregroundStyle(.secondary)
             }
             .padding(32)
         }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel(captureDetected
-            ? "Komms protected. Sensitive content hidden during screen capture."
-            : "Komms protected. Sensitive content hidden outside the active app.")
+        .accessibilityLabel(L10n.text(captureDetected
+            ? "screen_shield_capture_accessibility"
+            : "screen_shield_inactive_accessibility"))
     }
 }

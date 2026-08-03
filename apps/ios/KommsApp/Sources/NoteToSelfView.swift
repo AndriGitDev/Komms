@@ -68,7 +68,11 @@ struct NoteToSelfView: View {
             ToolbarItemGroup(placement: .primaryAction) {
                 Button("Folder") { showFolder = true }
                 Button("Labels") { showLabels = true }
-                Button(model.isPinned(PinTarget(kind: .noteToSelf, id: nil)) ? "Unpin" : "Pin") {
+                Button(
+                    model.isPinned(PinTarget(kind: .noteToSelf, id: nil))
+                        ? L10n.text("pins_unpin")
+                        : L10n.source("Pin")
+                ) {
                     model.togglePin(PinTarget(kind: .noteToSelf, id: nil))
                 }
             }
@@ -76,16 +80,16 @@ struct NoteToSelfView: View {
         .sheet(isPresented: $showFolder) {
             FolderAssignmentView(
                 target: FolderTarget(kind: .noteToSelf, id: nil),
-                targetName: "Note to self")
+                targetName: L10n.text("note_to_self_title"))
         }
         .sheet(isPresented: $showLabels) {
             LabelAssignmentView(
                 target: LabelTarget(kind: .noteToSelf, id: nil),
-                targetName: "Note to self")
+                targetName: L10n.text("note_to_self_title"))
         }
         .task {
             if conversationId != model.noteToSelfId() {
-                error = "Unknown local conversation"
+                error = L10n.text("note_unknown_local_conversation")
             } else {
                 await model.refresh()
             }

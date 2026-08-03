@@ -16,11 +16,7 @@ struct MessageRequestsView: View {
         NavigationStack {
             List {
                 Section {
-                    Text(
-                        "People you have not accepted stay separate from contacts and "
-                        + "conversation history. Review the preview and safety number "
-                        + "before deciding."
-                    )
+                    Text(L10n.text("message_requests_intro"))
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                 }
@@ -81,15 +77,12 @@ struct MessageRequestsView: View {
                     blockCandidate = nil
                     perform(request.id) {
                         try await model.blockMessageRequest(request.id)
-                        status = "Sender blocked locally."
+                        status = L10n.text("request_blocked_status")
                     }
                 }
                 Button("Cancel", role: .cancel) { blockCandidate = nil }
             } message: {
-                Text(
-                    "Blocking removes this sender’s local capabilities and queues. "
-                    + "It cannot delete remote copies."
-                )
+                Text(L10n.text("message_request_block_explanation"))
             }
             .safeAreaInset(edge: .bottom) {
                 if !status.isEmpty {
@@ -113,20 +106,30 @@ struct MessageRequestsView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .accessibilityLabel(
-                    "Request expires \(Date(timeIntervalSince1970: TimeInterval(request.expiresAt)).formatted())"
+                    L10n.text(
+                        "message_request_expires",
+                        Date(
+                            timeIntervalSince1970:
+                                TimeInterval(request.expiresAt)).formatted())
                 )
-            Text(request.preview.isEmpty ? "No text preview" : request.preview)
+            Text(
+                request.preview.isEmpty
+                    ? L10n.text("request_no_preview")
+                    : request.preview)
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(10)
                 .background(ThemePalette.surfaceRaised, in: RoundedRectangle(cornerRadius: 8))
-            Text("Safety number: \(request.safetyNumber)")
+            Text(L10n.text("message_request_safety", request.safetyNumber))
                 .font(.caption.monospaced())
                 .textSelection(.enabled)
             TextField(
                 "Private contact name",
                 text: Binding(
-                    get: { names[request.id] ?? "New contact" },
+                    get: {
+                        names[request.id]
+                            ?? L10n.text("message_request_default_name")
+                    },
                     set: { names[request.id] = $0 }
                 )
             )
@@ -136,15 +139,18 @@ struct MessageRequestsView: View {
             .incognitoKeyboard(capitalization: .words)
             VStack(alignment: .leading, spacing: 8) {
                 Button("Accept") {
-                    let name = (names[request.id] ?? "New contact")
+                    let name = (
+                        names[request.id]
+                            ?? L10n.text("message_request_default_name")
+                    )
                         .trimmingCharacters(in: .whitespacesAndNewlines)
                     guard !name.isEmpty else {
-                        error = "Choose a private contact name."
+                        error = L10n.text("request_name_required")
                         return
                     }
                     perform(request.id) {
                         _ = try await model.acceptMessageRequest(request.id, name: name)
-                        status = "Request accepted. Its first message is now in conversation history."
+                        status = L10n.text("request_accepted_status")
                     }
                 }
                 .buttonStyle(.borderedProminent)
@@ -152,7 +158,7 @@ struct MessageRequestsView: View {
                 Button("Delete", role: .destructive) {
                     perform(request.id) {
                         try await model.deleteMessageRequest(request.id)
-                        status = "Request deleted locally."
+                        status = L10n.text("request_deleted_status")
                     }
                 }
                 .frame(minHeight: 44)
@@ -167,25 +173,25 @@ struct MessageRequestsView: View {
     @ViewBuilder
     private func groupInvitation(_ invitation: GroupInvitation) -> some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text(invitation.name.isEmpty ? "Unnamed group" : invitation.name)
+            Text(
+                invitation.name.isEmpty
+                    ? L10n.text("group_unnamed")
+                    : invitation.name)
                 .font(.headline)
             Text(
-                "\(invitation.memberCount) "
-                + (invitation.memberCount == 1 ? "member" : "members")
-            )
+                L10n.plural(
+                    "group_member_count",
+                    count: Int(invitation.memberCount)))
             .font(.caption)
             .foregroundStyle(.secondary)
-            Text(
-                "Joining creates group state only after you accept. "
-                + "Earlier group history is not imported."
-            )
+            Text(L10n.text("group_invitation_explanation"))
             .font(.footnote)
             .foregroundStyle(.secondary)
             VStack(alignment: .leading, spacing: 8) {
                 Button("Join group") {
                     perform(invitation.id) {
                         _ = try await model.acceptGroupInvitation(invitation.id)
-                        status = "Group invitation accepted."
+                        status = L10n.text("group_invitation_accepted_status")
                     }
                 }
                 .buttonStyle(.borderedProminent)
@@ -193,7 +199,7 @@ struct MessageRequestsView: View {
                 Button("Delete", role: .destructive) {
                     perform(invitation.id) {
                         try await model.deleteGroupInvitation(invitation.id)
-                        status = "Group invitation deleted locally."
+                        status = L10n.text("group_invitation_deleted_status")
                     }
                 }
                 .frame(minHeight: 44)
@@ -214,9 +220,9 @@ struct MessageRequestsView: View {
             do {
                 try await operation()
             } catch let ffi as FfiError {
-                error = ffi.reasonText
+                error = L10n.error(ffi)
             } catch {
-                self.error = error.localizedDescription
+                self.error = L10n.error(error)
             }
         }
     }

@@ -481,9 +481,9 @@ fn desktop_status_poll_is_bounded_and_never_leaves_loading_placeholders() {
     let frontend = include_str!("../../ui/main.js");
     assert!(ffi.contains("rt.block_on(async {"));
     assert!(ffi.contains("tokio::time::timeout(Duration::from_secs(1), rt.net.nat_status()).await"));
-    assert!(frontend.contains("Discovery: unavailable"));
-    assert!(frontend.contains("NAT: unavailable"));
-    assert!(frontend.contains("Node status unavailable:"));
+    assert!(frontend.contains("l10n(\"status_discovery_unavailable\")"));
+    assert!(frontend.contains("l10n(\"status_nat_unavailable\")"));
+    assert!(frontend.contains("l10n(\"status_unavailable\")"));
 }
 
 #[test]
@@ -512,10 +512,14 @@ fn operating_mode_contract_and_familiar_status_are_present_in_every_shell() {
     ] {
         assert!(html.contains(&format!("id=\"{field}\"")));
     }
-    for status in ["Connected", "Fallback ready", "Waiting for a route"] {
+    for status in [
+        "connection_connected",
+        "connection_fallback_ready",
+        "connection_waiting",
+    ] {
         assert!(frontend.contains(status));
     }
-    assert!(frontend.contains("It does not claim provider non-collusion"));
+    assert!(frontend.contains("set_mode_private_disclosure"));
     assert!(frontend.contains("sovereign-direct-row"));
 
     let android_layout =
@@ -539,13 +543,17 @@ fn operating_mode_contract_and_familiar_status_are_present_in_every_shell() {
 
     let ios_settings = include_str!("../../../ios/KommsApp/Sources/SettingsView.swift");
     let ios_status = include_str!("../../../ios/KommsApp/Sources/MainView.swift");
-    for mode in ["Standard", "Private", "Sovereign"] {
-        assert!(ios_settings.contains(&format!("Text(\"{mode}\").tag")));
+    for mode in ["mode_standard", "mode_private", "mode_sovereign"] {
+        assert!(ios_settings.contains(mode));
     }
-    for status in ["Connected", "Fallback ready", "Waiting for a route"] {
+    for status in [
+        "connection_connected",
+        "connection_fallback_ready",
+        "connection_waiting",
+    ] {
         assert!(ios_status.contains(status));
     }
-    assert!(ios_settings.contains("does not claim provider non-collusion"));
+    assert!(ios_settings.contains("set_mode_private_disclosure"));
 }
 
 #[test]
@@ -553,7 +561,7 @@ fn desktop_share_dialog_surfaces_generation_errors_and_scopes_its_listener() {
     let html = include_str!("../../ui/index.html");
     let frontend = include_str!("../../ui/main.js");
     assert!(html.contains("data-f=\"share-status\" role=\"status\""));
-    assert!(frontend.contains("Could not prepare sharing details"));
+    assert!(frontend.contains("l10n(\"share_unavailable\")"));
     assert!(frontend.contains("[bundle, addrSvg, nodeStatus] = await Promise.all(["));
     assert!(frontend.contains("invoke(\"my_bundle\")"));
     assert!(frontend.contains("invoke(\"address_qr\")"));

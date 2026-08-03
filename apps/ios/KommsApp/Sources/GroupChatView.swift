@@ -19,7 +19,7 @@ struct GroupChatView: View {
     @State private var draftMentions: [MentionDraftSpan] = []
     @State private var mentionCapability: GroupMentionCapability?
     @State private var mentionInsertion: MentionInsertion?
-    @State private var mentionStatus = "Use Mention to choose an exact current roster identity."
+    @State private var mentionStatus = L10n.text("mention_member_description")
     @State private var showMentionPicker = false
     @State private var showPlainFallback = false
     @State private var showFolder = false
@@ -78,13 +78,17 @@ struct GroupChatView: View {
 
     private var presentedContent: some View {
         conversationContent
-            .navigationTitle(group?.name ?? "Group")
+            .navigationTitle(group?.name ?? L10n.text("group_default_name"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItemGroup(placement: .primaryAction) {
                     Button("Folder") { showFolder = true }
                     Button("Labels") { showLabels = true }
-                    Button(model.isPinned(PinTarget(kind: .group, id: groupId)) ? "Unpin" : "Pin") {
+                    Button(
+                        model.isPinned(PinTarget(kind: .group, id: groupId))
+                            ? L10n.text("pins_unpin")
+                            : L10n.source("Pin")
+                    ) {
                         model.togglePin(PinTarget(kind: .group, id: groupId))
                     }
                     Button("Members") { showMembers = true }
@@ -97,15 +101,17 @@ struct GroupChatView: View {
             .sheet(isPresented: $showFolder) {
                 FolderAssignmentView(
                     target: FolderTarget(kind: .group, id: groupId),
-                    targetName: group?.name ?? "Group")
+                    targetName: group?.name ?? L10n.text("group_default_name"))
             }
             .sheet(isPresented: $showLabels) {
                 LabelAssignmentView(
                     target: LabelTarget(kind: .group, id: groupId),
-                    targetName: group?.name ?? "Group")
+                    targetName: group?.name ?? L10n.text("group_default_name"))
             }
             .sheet(isPresented: $showCreatePoll) {
-                CreateGroupPollView(groupId: groupId, groupName: group?.name ?? "Group")
+                CreateGroupPollView(
+                    groupId: groupId,
+                    groupName: group?.name ?? L10n.text("group_default_name"))
             }
             .confirmationDialog(
                 "Mention a current member",
@@ -194,14 +200,20 @@ struct GroupChatView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(.yellow.opacity(0.16))
             case .upgrading:
-                Text("Upgrading group security. \(security.pendingDevices.count) device(s) are still waiting; Komms will continue automatically.")
+                Text(
+                    L10n.text(
+                        "group_security_upgrading",
+                        security.pendingDevices.count))
                     .font(.footnote)
                     .padding()
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background(.yellow.opacity(0.16))
                     .accessibilityAddTraits(.updatesFrequently)
             case .recipientAuthenticated where security.legacyHistoryRows > 0:
-                Text("New messages are recipient-authenticated. \(security.legacyHistoryRows) older message(s) remain labelled as legacy membership-authenticated history.")
+                Text(
+                    L10n.text(
+                        "group_security_authenticated_with_legacy",
+                        Int(clamping: security.legacyHistoryRows)))
                     .font(.footnote)
                     .padding()
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -283,7 +295,7 @@ struct GroupChatView: View {
                 .onChange(of: ephemeralLifetime) { value in
                     if value != nil && !draftMentions.isEmpty {
                         draftMentions = []
-                        setMentionStatus("Semantic mentions were removed because disappearing text is a distinct authenticated content type.")
+                        setMentionStatus(L10n.text("mention_disappearing_removed"))
                     }
                 }
             if !draftMentions.isEmpty {
@@ -339,9 +351,9 @@ struct GroupChatView: View {
             insertion: $mentionInsertion,
             memberName: memberLabel,
             invalidated: { name in
-                mentionStatus = "Mention of \(name) was removed because its text changed."
+                mentionStatus = L10n.text("mention_removed", name)
             })
-            .frame(minHeight: 38, maxHeight: 100)
+            .frame(minHeight: 44, maxHeight: 100)
             .overlay(
                 RoundedRectangle(cornerRadius: 7)
                     .stroke(.secondary.opacity(0.45)))
@@ -359,7 +371,10 @@ struct GroupChatView: View {
                         Label(memberLabel(mention.target), systemImage: "xmark.circle")
                     }
                     .buttonStyle(.bordered)
-                    .accessibilityLabel("Remove mention of \(memberLabel(mention.target))")
+                    .accessibilityLabel(
+                        L10n.text(
+                            "mention_remove_action",
+                            memberLabel(mention.target)))
                 }
             }
         }
@@ -379,14 +394,14 @@ struct GroupChatView: View {
     }
 
     private func memberName(_ peer: String) -> String {
-        if peer == model.status?.peer { return "You" }
+        if peer == model.status?.peer { return L10n.text("group_you") }
         if let contact = model.contacts.first(where: { $0.peer == peer }) {
             return contact.name
         }
         if let position = group?.members.firstIndex(of: peer) {
-            return "Group member \(position + 1)"
+            return L10n.text("group_member_position", position + 1)
         }
-        return "Unavailable group member"
+        return L10n.text("group_member_unavailable")
     }
 
     private func memberLabel(_ peer: String) -> String {
@@ -395,7 +410,7 @@ struct GroupChatView: View {
         let duplicates = group.members.filter { memberName($0) == base }
         guard duplicates.count > 1 else { return base }
         let position = (group.members.firstIndex(of: peer) ?? 0) + 1
-        return "\u{2068}\(base)\u{2069}, group member \(position)"
+        return L10n.text("group_member_disambiguated", base, position)
     }
 
     private func setMentionStatus(_ value: String) {
@@ -409,14 +424,15 @@ struct GroupChatView: View {
                 let capability = try await model.groupMentionCapability(group: groupId)
                 mentionCapability = capability
                 if capability.supported {
-                    setMentionStatus(
-                        "All current members support semantic mentions. Review the exact final text before Send.")
+                    setMentionStatus(L10n.text("mention_ready"))
                 } else {
                     let blockers = capability.issues.map {
-                        "\(memberLabel($0.peer)) (\(String(describing: $0.reason).lowercased()))"
+                        L10n.text(
+                            "mention_blocker",
+                            memberLabel($0.peer),
+                            mentionIssueName($0.reason))
                     }.joined(separator: ", ")
-                    setMentionStatus(
-                        "Semantic mentions are unavailable for \(blockers). Send can use plain text with no mention notification.")
+                    setMentionStatus(L10n.text("mention_unavailable", blockers))
                 }
                 showMentionPicker = true
             } catch {
@@ -427,8 +443,7 @@ struct GroupChatView: View {
 
     private func selectMention(_ peer: String) {
         mentionInsertion = MentionInsertion(target: peer, visible: "@\(memberName(peer))")
-        setMentionStatus(
-            "Mention of \(memberLabel(peer)) inserted. Review the exact final text before Send.")
+        setMentionStatus(L10n.text("mention_inserted", memberLabel(peer)))
     }
 
     private func removeMention(_ mention: MentionDraftSpan) {
@@ -445,7 +460,15 @@ struct GroupChatView: View {
         draft = source.replacingCharacters(
             in: NSRange(location: mention.start, length: mention.end - mention.start),
             with: "")
-        setMentionStatus("Mention of \(memberLabel(mention.target)) removed with its visible text.")
+        setMentionStatus(
+            L10n.text("mention_removed_with_text", memberLabel(mention.target)))
+    }
+
+    private func mentionIssueName(_ reason: MentionCapabilityIssueReason) -> String {
+        switch reason {
+        case .unknown: return L10n.text("mention_capability_unknown")
+        case .unsupported: return L10n.text("mention_capability_unsupported")
+        }
     }
 
     private func send() {
@@ -569,20 +592,28 @@ private struct GroupPollCard: View {
     private var visibleVotes: String {
         let rows = poll.votes.map { vote in
             let choice = poll.options.first(where: { $0.id == vote.optionId })?.text
-                ?? "unavailable choice"
-            return "\(memberName(vote.voter)) → \(choice)"
+                ?? L10n.text("poll_unavailable_choice")
+            return L10n.text(
+                "poll_visible_vote_row",
+                memberName(vote.voter),
+                choice)
         }
-        return rows.isEmpty ? "No votes yet." : "Visible votes: \(rows.joined(separator: ", "))."
+        return rows.isEmpty
+            ? L10n.text("poll_no_votes")
+            : L10n.text("poll_visible_votes", rows.joined(separator: ", "))
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(poll.question).font(.headline)
-            Text(poll.closed
-                 ? (poll.moderatedBy.map {
-                    "Closed by owner \(memberName($0)) · signed moderation snapshot · votes visible to all members"
-                 } ?? "Closed · final creator snapshot · votes visible to all members")
-                 : "Open · single choice · votes visible to all members · not anonymous")
+            Text(
+                poll.closed
+                    ? (poll.moderatedBy.map {
+                        L10n.text(
+                            "poll_moderated_policy",
+                            memberName($0))
+                    } ?? L10n.text("poll_closed_policy"))
+                    : L10n.text("poll_open_policy"))
                 .font(.caption)
                 .foregroundStyle(.secondary)
             ForEach(poll.options, id: \.id) { option in
@@ -599,8 +630,14 @@ private struct GroupPollCard: View {
                 .tint(option.selectedByMe ? .accentColor : .secondary)
                 .disabled(poll.closed || !poll.eligible)
                 .accessibilityLabel(
-                    "\(option.text), \(option.votes) votes"
-                    + (option.selectedByMe ? ", your choice" : ""))
+                    L10n.plural(
+                        "poll_option_accessibility",
+                        count: Int(clamping: option.votes),
+                        option.text,
+                        Int(clamping: option.votes),
+                        option.selectedByMe
+                            ? L10n.text("poll_your_choice_suffix")
+                            : ""))
             }
             Text(visibleVotes)
                 .font(.caption)
@@ -611,7 +648,8 @@ private struct GroupPollCard: View {
             }
             if canModerate {
                 Button(authority?.myRole == .owner
-                       ? "Moderate close…" : "Request moderation close…") {
+                       ? L10n.text("poll_moderate_action")
+                       : L10n.text("poll_moderate_request_action")) {
                     showModerateConfirmation = true
                 }
                 .buttonStyle(.bordered)
@@ -621,7 +659,7 @@ private struct GroupPollCard: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(.secondary.opacity(0.10), in: RoundedRectangle(cornerRadius: 12))
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("Poll: \(poll.question)")
+        .accessibilityLabel(L10n.text("poll_accessibility", poll.question))
         .alert("Cast visible vote?", isPresented: Binding(
             get: { pendingOption != nil },
             set: { if !$0 { pendingOption = nil } }
@@ -633,13 +671,16 @@ private struct GroupPollCard: View {
             }
             Button("Cancel", role: .cancel) { pendingOption = nil }
         } message: {
-            Text("Choose “\(pendingOption?.text ?? "")”? Your identity and choice are visible to group members. You can change it until the poll closes.")
+            Text(
+                L10n.text(
+                    "poll_vote_confirm",
+                    pendingOption?.text ?? ""))
         }
         .alert("Close poll?", isPresented: $showCloseConfirmation) {
             Button("Close poll", role: .destructive) { Task { await close() } }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("Close “\(poll.question)” with the visible vote heads shown now? This cannot be undone.")
+            Text(L10n.text("poll_close_confirm", poll.question))
         }
         .alert("Close through group authority?", isPresented: $showModerateConfirmation) {
             Button("Submit", role: .destructive) { Task { await moderate() } }
@@ -676,7 +717,10 @@ private struct CreateGroupPollView: View {
                 Section("Choices") {
                     ForEach(options.indices, id: \.self) { index in
                         HStack {
-                            TextField("Choice \(index + 1)", text: $options[index], axis: .vertical)
+                            TextField(
+                                L10n.text("poll_choice_hint", index + 1),
+                                text: $options[index],
+                                axis: .vertical)
                                 .incognitoKeyboard(capitalization: .sentences)
                             if options.count > 2 {
                                 Button(role: .destructive) {
@@ -684,7 +728,10 @@ private struct CreateGroupPollView: View {
                                 } label: {
                                     Image(systemName: "minus.circle")
                                 }
-                                .accessibilityLabel("Remove choice \(index + 1)")
+                                .accessibilityLabel(
+                                    L10n.text(
+                                        "poll_remove_choice",
+                                        index + 1))
                             }
                         }
                     }
@@ -692,10 +739,12 @@ private struct CreateGroupPollView: View {
                         .disabled(options.count >= 12)
                 }
                 if let error {
-                    Text(error).foregroundStyle(.red).accessibilityLabel("Poll error: \(error)")
+                    Text(error).foregroundStyle(.red)
+                        .accessibilityLabel(
+                            L10n.text("poll_error_accessibility", error))
                 }
             }
-            .navigationTitle("Create poll in \(groupName)")
+            .navigationTitle(L10n.text("poll_create_title", groupName))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -712,15 +761,15 @@ private struct CreateGroupPollView: View {
     private func create() {
         let blank = CharacterSet.whitespacesAndNewlines
         if question.trimmingCharacters(in: blank).isEmpty {
-            error = "Enter a poll question."
+            error = L10n.text("poll_need_question")
         } else if question.utf8.count > 1_024 {
-            error = "The poll question is longer than 1,024 UTF-8 bytes."
+            error = L10n.text("poll_question_too_long")
         } else if options.count < 2 || options.contains(where: {
             $0.trimmingCharacters(in: blank).isEmpty
         }) {
-            error = "Enter at least two non-empty choices."
+            error = L10n.text("poll_need_choices")
         } else if options.contains(where: { $0.utf8.count > 256 }) {
-            error = "Each poll choice must be at most 256 UTF-8 bytes."
+            error = L10n.text("poll_choice_too_long")
         } else {
             saving = true
             error = nil
@@ -860,7 +909,7 @@ private struct MentionComposer: UIViewRepresentable {
         view.adjustsFontForContentSizeCategory = true
         view.isScrollEnabled = true
         view.textContainerInset = UIEdgeInsets(top: 8, left: 5, bottom: 8, right: 5)
-        view.accessibilityLabel = "Group message"
+        view.accessibilityLabel = L10n.source("Group message")
         view.textAlignment = .natural
         return view
     }
@@ -1006,12 +1055,18 @@ private struct GroupMessageBubble: View {
                     .textSelection(.enabled)
                 if message.contentKind == .mention {
                     ForEach(Array(message.mentionSpans.enumerated()), id: \.offset) { _, span in
-                        Text("Mention: \(memberName(span.target))")
+                        Text(
+                            L10n.text(
+                                "mention_label",
+                                memberName(span.target)))
                             .font(.caption.bold())
                             .padding(.horizontal, 6)
                             .padding(.vertical, 2)
                             .overlay(Capsule().stroke(.primary))
-                            .accessibilityLabel("Mention of \(memberName(span.target))")
+                            .accessibilityLabel(
+                                L10n.text(
+                                    "mention_of",
+                                    memberName(span.target)))
                     }
                 }
                 Text(Date(timeIntervalSince1970: TimeInterval(message.timestamp)), style: .time)
@@ -1031,14 +1086,24 @@ private struct GroupMessageBubble: View {
                             "Local only until every recipient wrapper is authenticated and queued")
                 }
                 if message.contentKind == .disappearingText, let expiresAt = message.expiresAt {
-                    Text("Removes \(Date(timeIntervalSince1970: TimeInterval(expiresAt)), style: .relative)")
+                    (
+                        Text(L10n.text("removes_prefix"))
+                        + Text(
+                            Date(
+                                timeIntervalSince1970:
+                                    TimeInterval(expiresAt)),
+                            style: .relative)
+                    )
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                         .accessibilityHint("Removed locally; other devices may retain copies")
                 }
                 HStack(spacing: 4) {
                     if message.edited {
-                        Text("edited r\(message.editRevision)")
+                        Text(
+                            L10n.text(
+                                "revision_short",
+                                Int(message.editRevision)))
                             .foregroundStyle(.secondary)
                     }
                     if outbound && message.contentKind == .text {
@@ -1052,7 +1117,11 @@ private struct GroupMessageBubble: View {
                 }
                 if outbound {
                     ForEach(message.deliveries, id: \.peer) { delivery in
-                        Text("\(memberName(delivery.peer)) · \(stateText(delivery.state))")
+                        Text(
+                            L10n.text(
+                                "group_delivery_row",
+                                memberName(delivery.peer),
+                                stateText(delivery.state)))
                             .font(.caption2)
                             .foregroundStyle(
                                 delivery.state == .delivered ? .green : .secondary)
@@ -1065,11 +1134,11 @@ private struct GroupMessageBubble: View {
 
     private func stateText(_ state: DeliveryState) -> String {
         switch state {
-        case .queued: return "queued"
-        case .sent: return "sent"
-        case .delivered: return "delivered"
-        case .received: return "received"
-        case .failed: return "delivery failed after 30 days"
+        case .queued: return L10n.text("state_queued")
+        case .sent: return L10n.text("state_sent")
+        case .delivered: return L10n.text("state_delivered")
+        case .received: return L10n.text("state_received")
+        case .failed: return L10n.text("state_failed")
         }
     }
 }
@@ -1114,7 +1183,11 @@ private struct GroupMembersView: View {
                                 .textInputAutocapitalization(.sentences)
                                 .autocorrectionDisabled()
                                 .incognitoKeyboard(capitalization: .sentences)
-                            Button(isOwner ? "Rename" : "Request rename") { renameGroup() }
+                            Button(
+                                isOwner
+                                    ? L10n.text("group_rename_action")
+                                    : L10n.text("group_rename_request_action")
+                            ) { renameGroup() }
                                 .disabled(working || rename.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                         }
                     }
@@ -1131,7 +1204,11 @@ private struct GroupMembersView: View {
                                 Spacer()
                                 if isOwner && member.role != .owner {
                                     Menu("Role") {
-                                        Button(member.role == .admin ? "Make member" : "Make admin") {
+                                        Button(
+                                            member.role == .admin
+                                                ? L10n.text("group_make_member")
+                                                : L10n.text("group_make_admin")
+                                        ) {
                                             setRole(
                                                 member.peer,
                                                 member.role == .admin ? .member : .admin)
@@ -1167,8 +1244,8 @@ private struct GroupMembersView: View {
                             .disabled(working || isOwner)
                     } footer: {
                         Text(isOwner
-                             ? "Transfer ownership before leaving."
-                             : "Message history stays stored on this device after leaving.")
+                             ? L10n.text("group_owner_must_transfer")
+                             : L10n.text("group_history_stays_after_leaving"))
                     }
                 }
 
@@ -1176,7 +1253,9 @@ private struct GroupMembersView: View {
                     Section { Text(error).foregroundStyle(.red) }
                 }
             }
-            .navigationTitle(group.map { "Members of \($0.name)" } ?? "Members")
+            .navigationTitle(
+                group.map { L10n.text("group_members_title", $0.name) }
+                    ?? L10n.text("group_members_heading"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
@@ -1194,11 +1273,14 @@ private struct GroupMembersView: View {
                 Button("Cancel", role: .cancel) { removalPeer = nil }
             } message: {
                 Text(
-                    "Remove \(memberName(removalPeer ?? ""))? "
-                        + "Group keys rotate immediately for everyone who remains.")
+                    L10n.text(
+                        "group_remove_warning",
+                        memberName(removalPeer ?? "")))
             }
             .confirmationDialog(
-                "Leave \(group?.name ?? "group")?",
+                L10n.text(
+                    "group_leave_named_title",
+                    group?.name ?? L10n.text("group_default_name")),
                 isPresented: $showLeave,
                 titleVisibility: .visible
             ) {
@@ -1211,33 +1293,42 @@ private struct GroupMembersView: View {
     }
 
     private func memberName(_ peer: String) -> String {
-        if peer == ownPeer { return "You" }
+        if peer == ownPeer { return L10n.text("group_you") }
         if let contact = model.contacts.first(where: { $0.peer == peer }) {
             return contact.name
         }
         if let position = group?.members.firstIndex(of: peer) {
-            return "Group member \(position + 1)"
+            return L10n.text("group_member_position", position + 1)
         }
-        return "Unavailable group member"
+        return L10n.text("group_member_unavailable")
     }
 
     private func summary(_ group: KommsCore.Group) -> String {
-        let count = "\(group.members.count) "
-            + (group.members.count == 1 ? "member" : "members")
+        let count = L10n.plural(
+            "group_member_count",
+            count: group.members.count)
         guard let authority else { return count }
         let origin = switch group.security {
-        case .upgradeRequired: "security upgrade required"
-        case .upgrading: "origin upgrade in progress"
-        case .recipientAuthenticated: "recipient-authenticated origins"
+        case .upgradeRequired: L10n.text("group_origin_upgrade_required")
+        case .upgrading: L10n.text("group_origin_upgrade_in_progress")
+        case .recipientAuthenticated: L10n.text("group_origin_authenticated")
         }
-        return "\(count) · \(memberName(authority.owner)) owns this group · generation \(authority.generation) · \(authority.signed ? "signed authority" : "legacy authority") · \(origin)."
+        return L10n.text(
+            "group_authority_security_summary",
+            count,
+            memberName(authority.owner),
+            Int(clamping: authority.generation),
+            authority.signed
+                ? L10n.text("group_authority_signed")
+                : L10n.text("group_authority_legacy"),
+            origin)
     }
 
     private func roleName(_ role: GroupRole) -> String {
         switch role {
-        case .owner: return "owner"
-        case .admin: return "admin"
-        case .member: return "member"
+        case .owner: return L10n.text("group_role_owner")
+        case .admin: return L10n.text("group_role_admin")
+        case .member: return L10n.text("group_role_member")
         }
     }
 

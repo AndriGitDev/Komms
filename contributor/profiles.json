@@ -112,6 +112,58 @@
         }
       ]
     },
+    "localization": {
+      "description": "Validate canonical catalogs, generated shell resources, source coverage, plurals, bidi safety, and fallback behavior without a platform SDK.",
+      "paths": [
+        "locales",
+        "scripts/localization.py",
+        "scripts/check-localization-sources.py",
+        "scripts/test-localization.py",
+        "scripts/check-shell-accessibility.py",
+        "apps/desktop/ui",
+        "apps/android/app/src/main",
+        "apps/ios/KommsApp"
+      ],
+      "commands": [
+        {
+          "cwd": ".",
+          "argv": [
+            "python3",
+            "scripts/localization.py",
+            "check"
+          ]
+        },
+        {
+          "cwd": ".",
+          "argv": [
+            "python3",
+            "scripts/check-localization-sources.py"
+          ]
+        },
+        {
+          "cwd": ".",
+          "argv": [
+            "python3",
+            "scripts/test-localization.py"
+          ]
+        },
+        {
+          "cwd": ".",
+          "argv": [
+            "python3",
+            "scripts/check-shell-accessibility.py"
+          ]
+        },
+        {
+          "cwd": ".",
+          "argv": [
+            "git",
+            "diff",
+            "--check"
+          ]
+        }
+      ]
+    },
     "protocol": {
       "description": "Format, lint, and test the bounded crypto/protocol layer.",
       "paths": [
@@ -211,6 +263,57 @@
             "--",
             "--skip",
             "million_message_qualification"
+          ]
+        }
+      ]
+    },
+    "stewardship": {
+      "description": "Validate operator, licensing, funding, privacy, legal-process, incident, and evidence-boundary records without deployment or credentials.",
+      "paths": [
+        "operations",
+        "LICENSES",
+        "THIRD_PARTY_NOTICES.md",
+        "GOVERNANCE.md",
+        "SECURITY.md",
+        "CONTRIBUTING.md",
+        "docs/46-operator-program.md",
+        "docs/47-license-trademark-assets.md",
+        "docs/48-funding-transparency.md",
+        "docs/49-privacy-legal-incident-readiness.md",
+        "docs/50-mailbox-service-operations.md",
+        "crates/kult-mailbox",
+        "deploy/mailbox-service",
+        "scripts/check-stewardship.py",
+        "scripts/test-stewardship.py"
+      ],
+      "commands": [
+        {
+          "cwd": ".",
+          "argv": [
+            "python3",
+            "scripts/check-stewardship.py"
+          ]
+        },
+        {
+          "cwd": ".",
+          "argv": [
+            "python3",
+            "scripts/test-stewardship.py"
+          ]
+        },
+        {
+          "cwd": ".",
+          "argv": [
+            "python3",
+            "scripts/check-docs.py"
+          ]
+        },
+        {
+          "cwd": ".",
+          "argv": [
+            "git",
+            "diff",
+            "--check"
           ]
         }
       ]

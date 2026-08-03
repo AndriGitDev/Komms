@@ -2,12 +2,12 @@
 // security-scoped picker URLs; AppModel stages bounded copies in app-private
 // storage, and completed objects leave through a caller-selected export picker.
 
+import AVFoundation
 import KommsCore
 import QuickLook
 import SwiftUI
 import UniformTypeIdentifiers
 import UIKit
-import AVFoundation
 
 enum RecordedAudioDestination: Sendable {
     case peer(String)
@@ -23,7 +23,7 @@ struct ProtectedAudio: Identifiable {
 }
 
 @MainActor
-final class AudioRecorderModel: NSObject, ObservableObject, AVAudioRecorderDelegate {
+final class AudioRecorderModel: NSObject, ObservableObject {
     @Published private(set) var isRecording = false
     @Published private(set) var elapsed = 0
     @Published private(set) var status = ""
@@ -44,7 +44,10 @@ final class AudioRecorderModel: NSObject, ObservableObject, AVAudioRecorderDeleg
             AVAudioSession.routeChangeNotification,
         ] {
             observers.append(center.addObserver(forName: name, object: nil, queue: .main) {
-                [weak self] _ in self?.discard(reason: "Recording interrupted and discarded.")
+                [weak self] _ in
+                MainActor.assumeIsolated {
+                    self?.discard(reason: L10n.text("audio_interrupted_discarded"))
+                }
             })
         }
     }
@@ -64,7 +67,7 @@ final class AudioRecorderModel: NSObject, ObservableObject, AVAudioRecorderDeleg
             }
         }
         guard allowed else {
-            status = "Microphone permission was denied; the composer remains available."
+            status = L10n.text("audio_permission_denied")
             throw InputError(status)
         }
         try start()
@@ -75,7 +78,7 @@ final class AudioRecorderModel: NSObject, ObservableObject, AVAudioRecorderDeleg
         let session = AVAudioSession.sharedInstance()
         try session.setCategory(
             .playAndRecord, mode: .spokenAudio,
-            options: [.defaultToSpeaker, .allowBluetooth])
+            options: [.defaultToSpeaker, .allowBluetoothHFP])
         try session.setActive(true)
         let source = FileManager.default.temporaryDirectory
             .appendingPathComponent("komms-audio-\(UUID().uuidString).native.wav")
@@ -108,11 +111,15 @@ final class AudioRecorderModel: NSObject, ObservableObject, AVAudioRecorderDeleg
         isRecording = true
         reviewOnFinish = true
         elapsed = 0
-        status = "Recording audio. Stop to review; it is not sent yet."
+        status = L10n.text("audio_recording")
         timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
-            guard let self else { return }
-            self.elapsed = min(60, Int(self.recorder?.currentTime ?? 0))
-            self.status = "Recording audio, \(self.elapsed) seconds elapsed."
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.elapsed = min(60, Int(self.recorder?.currentTime ?? 0))
+                self.status = L10n.plural(
+                    "recording_elapsed",
+                    count: self.elapsed)
+            }
         }
     }
 
@@ -122,7 +129,7 @@ final class AudioRecorderModel: NSObject, ObservableObject, AVAudioRecorderDeleg
         recorder?.stop()
     }
 
-    func discard(reason: String = "Audio recording discarded.") {
+    func discard(reason: String = L10n.text("audio_discarded")) {
         guard recorder != nil || reviewSource != nil else { return }
         reviewOnFinish = false
         let source = recorder?.url
@@ -142,27 +149,39 @@ final class AudioRecorderModel: NSObject, ObservableObject, AVAudioRecorderDeleg
         reviewSource = nil
     }
 
-    func audioRecorderDidFinishRecording(_ recorder: AVAudioRecorder, successfully flag: Bool) {
+    private func finishRecording(at url: URL, successfully flag: Bool) {
         timer?.invalidate()
         timer = nil
         self.recorder = nil
         isRecording = false
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
         if flag && reviewOnFinish {
-            reviewSource = recorder.url
+            reviewSource = url
             status = elapsed >= 60
-                ? "Maximum duration reached. Review before sending."
-                : "Recording stopped. Review before sending or discarding."
+                ? L10n.text("audio_limit_reached")
+                : L10n.text("audio_review_ready")
         } else {
-            try? FileManager.default.removeItem(at: recorder.url)
-            status = "Audio recording discarded."
+            try? FileManager.default.removeItem(at: url)
+            status = L10n.text("audio_discarded")
         }
         reviewOnFinish = false
     }
 }
 
+extension AudioRecorderModel: AVAudioRecorderDelegate {
+    nonisolated func audioRecorderDidFinishRecording(
+        _ recorder: AVAudioRecorder,
+        successfully flag: Bool
+    ) {
+        let url = recorder.url
+        Task { @MainActor [weak self] in
+            self?.finishRecording(at: url, successfully: flag)
+        }
+    }
+}
+
 @MainActor
-final class ProtectedAudioPlayer: NSObject, ObservableObject, AVAudioPlayerDelegate {
+final class ProtectedAudioPlayer: NSObject, ObservableObject {
     @Published var playing = false
     @Published var position = 0.0
     private var player: AVAudioPlayer?
@@ -184,7 +203,11 @@ final class ProtectedAudioPlayer: NSObject, ObservableObject, AVAudioPlayerDeleg
             player.play(); playing = true
             timer?.invalidate()
             timer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) {
-                [weak self] _ in self?.position = player.currentTime
+                [weak self] _ in
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    self.position = self.player?.currentTime ?? 0
+                }
             }
         }
     }
@@ -201,8 +224,14 @@ final class ProtectedAudioPlayer: NSObject, ObservableObject, AVAudioPlayerDeleg
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
     }
 
-    func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
-        stop()
+}
+
+extension ProtectedAudioPlayer: AVAudioPlayerDelegate {
+    nonisolated func audioPlayerDidFinishPlaying(
+        _ player: AVAudioPlayer,
+        successfully flag: Bool
+    ) {
+        Task { @MainActor [weak self] in self?.stop() }
     }
 }
 
@@ -238,14 +267,21 @@ struct ProtectedAudioView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("\(duration(audio.info.durationMs)) · mono PCM WAV · 16 kHz")
+            Text(
+                L10n.text(
+                    "attachment_audio_summary",
+                    duration(audio.info.durationMs)))
                 .font(.caption).foregroundStyle(.secondary)
             AudioWaveform(peaks: audio.info.waveform)
             Slider(
                 value: Binding(get: { player.position }, set: { player.seek($0) }),
                 in: 0...max(seconds, 0.001))
                 .accessibilityLabel("Audio playback position")
-            Button(player.playing ? "Pause" : "Play") {
+            Button(
+                player.playing
+                    ? L10n.text("audio_pause")
+                    : L10n.text("audio_play")
+            ) {
                 do { try player.toggle(file: audio.file) }
                 catch { self.error = errorText(error) }
             }
@@ -282,8 +318,15 @@ struct AudioComposerButton: View {
         }
         .disabled(preparing)
         .accessibilityLabel(
-            recorder.isRecording ? "Stop recording and review" : "Record audio message")
-        .accessibilityValue(recorder.isRecording ? "\(recorder.elapsed) seconds elapsed" : "")
+            recorder.isRecording
+                ? L10n.text("attachment_stop_recording")
+                : L10n.text("attachment_record_audio"))
+        .accessibilityValue(
+            recorder.isRecording
+                ? L10n.plural(
+                    "recording_elapsed",
+                    count: Int(clamping: recorder.elapsed))
+                : "")
         .onChange(of: recorder.reviewSource) { source in
             guard source != nil, let source = recorder.consumeReviewSource() else { return }
             preparing = true
@@ -333,12 +376,12 @@ struct AudioComposerButton: View {
         .onAppear { visible = true }
         .onDisappear {
             visible = false
-            recorder.discard(reason: "Recording discarded because Komms left the foreground.")
+            recorder.discard(reason: L10n.text("audio_interrupted_discarded"))
             discardReview()
         }
         .onChange(of: scenePhase) { phase in
             guard phase != .active else { return }
-            recorder.discard(reason: "Recording interrupted and discarded.")
+            recorder.discard(reason: L10n.text("audio_interrupted_discarded"))
             discardReview()
             review = nil
         }
@@ -462,7 +505,7 @@ private struct AttachmentReviewSheet: View {
     let reportError: (String?) -> Void
 
     @State private var prepared: PreparedAttachment
-    @State private var carrier = "Loading current carrier policy…"
+    @State private var carrier = L10n.text("attachment_carrier_loading")
     @State private var carrierSnapshot = ""
     @State private var busy = false
     @State private var localError: String?
@@ -524,11 +567,17 @@ private struct AttachmentReviewSheet: View {
                 Section("Current carrier policy") {
                     Text(carrier)
                         .foregroundStyle(.secondary)
-                        .accessibilityLabel("Current attachment carrier policy: \(carrier)")
+                        .accessibilityLabel(
+                            L10n.text(
+                                "attachment_carrier_accessibility",
+                                carrier))
                 }
                 if let localError {
                     Text(localError).foregroundStyle(.red)
-                        .accessibilityLabel("Attachment error: \(localError)")
+                        .accessibilityLabel(
+                            L10n.text(
+                                "attachment_error_accessibility",
+                                localError))
                 }
             }
             .navigationTitle(title)
@@ -551,13 +600,17 @@ private struct AttachmentReviewSheet: View {
     }
 
     private var title: String {
-        if case .image = prepared.kind { return "Edit and review image" }
-        return "Review attachment"
+        if case .image = prepared.kind {
+            return L10n.text("attachment_review_image_title")
+        }
+        return L10n.text("attachment_review_title")
     }
 
     private var sendLabel: String {
-        if case .image = prepared.kind { return "Send exact final" }
-        return "Send attachment"
+        if case .image = prepared.kind {
+            return L10n.text("attachment_send_exact_final")
+        }
+        return L10n.text("ui_send_attachment")
     }
 
     @ViewBuilder
@@ -565,7 +618,7 @@ private struct AttachmentReviewSheet: View {
         Section("Exact file") {
             TextField("Display filename", text: $filename)
                 .incognitoKeyboard()
-            LabeledContent("Type", value: file.mediaType)
+            LabeledContent(L10n.text("attachment_type"), value: file.mediaType)
             Text("The security-scoped source was copied into protected app-private storage. It is deleted after send or discard.")
                 .font(.footnote).foregroundStyle(.secondary)
         }
@@ -582,21 +635,36 @@ private struct AttachmentReviewSheet: View {
             } else {
                 Label("Preview unavailable", systemImage: "photo")
             }
-            Text("\(image.width) × \(image.height) pixels · \(image.encodedBytes) bytes · PNG re-encoded without source metadata")
+            Text(
+                L10n.text(
+                    "attachment_image_summary",
+                    Int(image.width),
+                    Int(image.height),
+                    Int(clamping: image.encodedBytes)))
                 .font(.footnote).foregroundStyle(.secondary)
             TextField("Display filename", text: $filename)
                 .incognitoKeyboard()
         }
         Section("Crop in oriented pixels") {
             Picker("Crop preset", selection: $cropPreset) {
-                ForEach(["Original", "Free", "Square 1:1", "4:3", "16:9"], id: \.self) {
-                    Text($0)
+                ForEach(
+                    [
+                        ("message_history_original", "Original"),
+                        ("ui_free", "Free"),
+                        ("ui_square_1_1", "Square 1:1"),
+                        ("", "4:3"),
+                        ("", "16:9"),
+                    ],
+                    id: \.1
+                ) { messageId, value in
+                    Text(messageId.isEmpty ? value : L10n.text(messageId))
+                        .tag(value)
                 }
             }
-            integerField("Crop X", text: $cropX)
-            integerField("Crop Y", text: $cropY)
-            integerField("Crop width", text: $cropWidth)
-            integerField("Crop height", text: $cropHeight)
+            integerField(L10n.text("attachment_crop_x"), text: $cropX)
+            integerField(L10n.text("attachment_crop_y"), text: $cropY)
+            integerField(L10n.text("attachment_crop_width"), text: $cropWidth)
+            integerField(L10n.text("attachment_crop_height"), text: $cropHeight)
             Button("Apply crop") { applyCrop(image) }
         }
         Section("Rotation") {
@@ -611,25 +679,36 @@ private struct AttachmentReviewSheet: View {
         Section("Manual privacy region") {
             Picker("Operation", selection: $regionKind) {
                 ForEach(LocalImageRegionKind.allCases, id: \.self) {
-                    Text($0.rawValue.capitalized)
+                    Text(regionKindText($0))
                 }
             }
-            integerField("Region X", text: $regionX)
-            integerField("Region Y", text: $regionY)
-            integerField("Region width", text: $regionWidth)
-            integerField("Region height", text: $regionHeight)
-            integerField("Strength", text: $regionStrength)
+            integerField(L10n.text("attachment_region_x"), text: $regionX)
+            integerField(L10n.text("attachment_region_y"), text: $regionY)
+            integerField(L10n.text("attachment_region_width"), text: $regionWidth)
+            integerField(L10n.text("attachment_region_height"), text: $regionHeight)
+            integerField(L10n.text("ui_strength"), text: $regionStrength)
             Button("Add privacy region") { addRegion(image) }
             ForEach(image.recipe.regions) { region in
                 HStack {
-                    Text("\(region.kind.rawValue), x \(region.x), y \(region.y), \(region.width) × \(region.height), strength \(region.strength)")
+                    Text(
+                        L10n.text(
+                            "attachment_privacy_region_summary",
+                            regionKindText(region.kind),
+                            Int(region.x),
+                            Int(region.y),
+                            Int(region.width),
+                            Int(region.height),
+                            Int(region.strength)))
                     Spacer()
                     Button("Remove", role: .destructive) {
                         var recipe = image.recipe
                         recipe.regions.removeAll { $0.id == region.id }
                         update(image, recipe: recipe)
                     }
-                    .accessibilityLabel("Remove \(region.kind.rawValue) region")
+                    .accessibilityLabel(
+                        L10n.text(
+                            "attachment_remove_privacy_region",
+                            regionKindText(region.kind)))
                 }
             }
         }
@@ -744,10 +823,14 @@ private struct AttachmentReviewSheet: View {
         busy = true
         localError = nil
         if case .image(var image) = prepared.kind {
-            image.filename = filename.isEmpty ? "edited-image.png" : filename
+            image.filename = filename.isEmpty
+                ? L10n.text("attachment_default_edited_filename")
+                : filename
             prepared.kind = .image(image)
         } else if case .generic(var file) = prepared.kind {
-            file.filename = filename.isEmpty ? "attachment" : filename
+            file.filename = filename.isEmpty
+                ? L10n.text("attachment_default_name")
+                : filename
             prepared.kind = .generic(file)
         }
         Task {
@@ -764,7 +847,7 @@ private struct AttachmentReviewSheet: View {
                     let changed = String(message.dropFirst("carrier_changed:".count))
                     carrier = changed
                     carrierSnapshot = changed
-                    localError = "Carrier state changed. Review the updated explanation, then confirm again."
+                    localError = L10n.text("attachment_carrier_changed_confirm")
                     busy = false
                 } else {
                     prepared.remove()
@@ -812,21 +895,33 @@ struct AttachmentTransferView: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
                 Image(systemName: mediaIcon)
-                Text(attachment.viewOnce
-                    ? "View once · \(isolated(primary?.filename ?? "attachment"))"
-                    : primary?.mediaType == "audio/wav" ? "Audio message" : isolated(primary?.filename ?? "attachment"))
+                Text(
+                    attachment.viewOnce
+                        ? L10n.text(
+                            "attachment_view_once_filename",
+                            primary?.filename
+                                ?? L10n.text("attachment_default_name"))
+                        : primary?.mediaType == "audio/wav"
+                            ? L10n.text("attachment_audio_message")
+                            : isolated(
+                                primary?.filename
+                                    ?? L10n.text("attachment_default_name")))
                     .font(.headline)
                 Spacer()
                 if working { ProgressView().controlSize(.small) }
             }
 
-            Text("\(directionText) · \(stateText(attachment.state))")
+            Text(
+                L10n.text(
+                    "attachment_direction_state",
+                    directionText,
+                    stateText(attachment.state)))
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
             Text(attachment.viewOnce
-                ? "Sender-provided name and type. Not scanned. Opening is terminal here; other devices may retain copies."
-                : "Sender-provided name and type. Not scanned for malware; completed files never open automatically.")
+                ? L10n.text("attachment_view_once_safety")
+                : L10n.text("attachment_safety_notice"))
                 .font(.caption2)
                 .foregroundStyle(.secondary)
 
@@ -850,7 +945,7 @@ struct AttachmentTransferView: View {
             if let protectedAudio, !attachment.viewOnce {
                 ProtectedAudioView(audio: protectedAudio)
             } else if !attachment.viewOnce && primary?.mediaType == "audio/wav" && attachment.state == .complete {
-                ProgressView("Preparing protected audio playback…")
+                ProgressView(L10n.text("attachment_preparing_audio"))
             }
 
             Text("iOS transfers continue only while the system allows background execution; verified progress resumes when Komms returns to the foreground.")
@@ -947,7 +1042,9 @@ struct AttachmentTransferView: View {
     }
 
     private var directionText: String {
-        attachment.direction == .inbound ? "inbound" : "outbound"
+        attachment.direction == .inbound
+            ? L10n.text("attachment_inbound")
+            : L10n.text("attachment_outbound")
     }
 
     private var mediaIcon: String {
@@ -1010,13 +1107,24 @@ struct AttachmentTransferView: View {
     @ViewBuilder
     private func objectProgress(_ object: AttachmentObject) -> some View {
         VStack(alignment: .leading, spacing: 3) {
-            Text("\(object.preview ? "Preview" : "Primary") · \(object.mediaType)")
+            Text(
+                L10n.text(
+                    "attachment_object_kind",
+                    object.preview
+                        ? L10n.text("attachment_preview")
+                        : L10n.text("attachment_primary"),
+                    object.mediaType))
                 .font(.caption)
             ProgressView(
                 value: Double(min(object.verifiedBytes, object.totalBytes)),
                 total: Double(max(object.totalBytes, 1)))
                 .accessibilityLabel("Verified attachment progress")
-            Text("\(object.verifiedBytes) / \(object.totalBytes) verified bytes · \(stateText(object.state))")
+            Text(
+                L10n.text(
+                    "attachment_progress",
+                    String(object.verifiedBytes),
+                    String(object.totalBytes),
+                    stateText(object.state)))
                 .font(.caption2)
                 .foregroundStyle(.secondary)
         }
@@ -1061,7 +1169,7 @@ struct AttachmentTransferView: View {
 
     private func prepareOpen() {
         guard primary?.presentation.openPolicy == .externalOpen else {
-            error = "This file can only be exported because its name or type is unknown, mismatched, or potentially active."
+            error = L10n.text("attachment_export_only")
             return
         }
         working = true
@@ -1185,16 +1293,23 @@ private struct AttachmentExportPicker: UIViewControllerRepresentable {
 
 private func stateText(_ state: AttachmentState) -> String {
     switch state {
-    case .offered: return "offered"
-    case .awaitingConsent: return "awaiting consent"
-    case .queued: return "queued"
-    case .transferring: return "transferring"
-    case .paused: return "paused"
-    case .complete: return "complete"
-    case .rejected: return "rejected"
-    case .cancelled: return "cancelled"
-    case .corrupt: return "integrity check failed"
-    case .unavailable: return "unavailable"
+    case .offered: return L10n.text("attachment_state_offered")
+    case .awaitingConsent: return L10n.text("attachment_state_awaiting_consent")
+    case .queued: return L10n.text("attachment_state_queued")
+    case .transferring: return L10n.text("attachment_state_transferring")
+    case .paused: return L10n.text("attachment_state_paused")
+    case .complete: return L10n.text("attachment_state_complete")
+    case .rejected: return L10n.text("attachment_state_rejected")
+    case .cancelled: return L10n.text("attachment_state_cancelled")
+    case .corrupt: return L10n.text("attachment_state_corrupt")
+    case .unavailable: return L10n.text("attachment_state_unavailable")
+    }
+}
+
+private func regionKindText(_ kind: LocalImageRegionKind) -> String {
+    switch kind {
+    case .blur: return L10n.text("ui_blur")
+    case .pixelate: return L10n.text("ui_pixelate")
     }
 }
 
@@ -1203,12 +1318,12 @@ private func isolated(_ value: String) -> String { "\u{2068}\(value)\u{2069}" }
 private func warningText(_ warning: AttachmentFileWarning) -> String {
     switch warning {
     case .mediaTypeMismatch:
-        return "The filename extension and claimed media type disagree."
+        return L10n.text("attachment_warning_mismatch")
     case .dangerousType:
-        return "This name or type can contain executable or active content."
+        return L10n.text("attachment_warning_dangerous")
     case .unrecognizedType:
-        return "Komms does not recognize this file type."
+        return L10n.text("attachment_warning_unrecognized")
     case .missingFilename:
-        return "No filename was supplied, so its extension cannot be checked."
+        return L10n.text("attachment_warning_missing_name")
     }
 }

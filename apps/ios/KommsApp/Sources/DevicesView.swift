@@ -124,7 +124,9 @@ struct DevicesView: View {
                 }
             }
             .confirmationDialog(
-                "Permanently revoke \(revokeDevice?.name ?? "device")?",
+                L10n.text(
+                    "device_revoke_confirmation",
+                    revokeDevice?.name ?? L10n.text("device_generic_name")),
                 isPresented: Binding(
                     get: { revokeDevice != nil }, set: { if !$0 { revokeDevice = nil } }),
                 titleVisibility: .visible
@@ -160,18 +162,28 @@ struct DevicesView: View {
     private func conflictText(_ conflict: DeviceAuthorityConflict) -> String {
         switch conflict.kind {
         case .fork:
-            "Concurrent device-authority branches were detected in recovery epoch \(conflict.recoveryEpoch). Authority is fail-closed and requires offline recovery."
+            L10n.text(
+                "device_authority_fork",
+                Int(clamping: conflict.recoveryEpoch))
         case .recovery:
-            "Different recoveries claim epoch \(conflict.recoveryEpoch). Authority is fail-closed; re-verify contacts after resolving with offline recovery."
+            L10n.text(
+                "device_authority_recovery_conflict",
+                Int(clamping: conflict.recoveryEpoch))
         }
     }
 
     private func contactConflictText(_ conflict: ContactAuthorityConflict) -> String {
         switch conflict.kind {
         case .fork:
-            "Contact \(conflict.account) presented concurrent device-authority branches in recovery epoch \(conflict.recoveryEpoch). The accepted branch was retained; offline recovery is required."
+            L10n.text(
+                "device_authority_contact_fork",
+                conflict.account,
+                Int(clamping: conflict.recoveryEpoch))
         case .recovery:
-            "Contact \(conflict.account) presented different recoveries for epoch \(conflict.recoveryEpoch). The accepted branch was retained and verification was cleared."
+            L10n.text(
+                "device_authority_contact_recovery_conflict",
+                conflict.account,
+                Int(clamping: conflict.recoveryEpoch))
         }
     }
 }
@@ -217,7 +229,9 @@ private struct DeviceLinkSourceView: View {
                 }
                 if let code {
                     Section("Compare on both devices") {
-                        Text(code).font(.largeTitle.monospacedDigit()).accessibilityLabel("Comparison code \(code)")
+                        Text(code).font(.largeTitle.monospacedDigit())
+                            .accessibilityLabel(
+                                L10n.text("comparison_code_accessibility", code))
                         Toggle("Contacts and verification", isOn: $contacts)
                         Toggle("Folders, labels, pins, icons, and appearance", isOn: $organization)
                         Toggle("Non-ephemeral history", isOn: $history)
@@ -294,7 +308,7 @@ private struct DeviceLinkSourceView: View {
                     additionalApproval = ""
                     error = nil
                 } else {
-                    error = "Approval accepted; another active device is still required."
+                    error = L10n.text("device_approval_more_required")
                 }
             } catch {
                 self.error = errorText(error)
@@ -306,7 +320,7 @@ private struct DeviceLinkSourceView: View {
 private struct DeviceLinkTargetView: View {
     @EnvironmentObject private var model: AppModel
     @Environment(\.dismiss) private var dismiss
-    @State private var name = "iPhone"
+    @State private var name = L10n.text("device_default_ios_name")
     @State private var offer = ""
     @State private var response = ""
     @State private var code: String?
@@ -328,7 +342,9 @@ private struct DeviceLinkTargetView: View {
                 }
                 if let code {
                     Section("Compare on both devices") {
-                        Text(code).font(.largeTitle.monospacedDigit()).accessibilityLabel("Comparison code \(code)")
+                        Text(code).font(.largeTitle.monospacedDigit())
+                            .accessibilityLabel(
+                                L10n.text("comparison_code_accessibility", code))
                         Text(response).font(.caption2.monospaced()).textSelection(.enabled)
                         Button("Copy response") { UIPasteboard.general.string = response }
                         TextEditor(text: $package).frame(minHeight: 120).incognitoKeyboard()
@@ -416,8 +432,11 @@ private struct AnimatedDeviceLinkQr: View {
                     QrCodeView(text: frames[index])
                     Text(
                         frames.count == 1
-                            ? "Device link offer"
-                            : "Device link frame \(index + 1) of \(frames.count) · keep the scanner pointed here"
+                            ? L10n.text("device_link_offer_caption")
+                            : L10n.text(
+                                "device_link_frame_caption",
+                                index + 1,
+                                frames.count)
                     )
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -425,8 +444,11 @@ private struct AnimatedDeviceLinkQr: View {
                 .accessibilityElement(children: .combine)
                 .accessibilityLabel(
                     frames.count == 1
-                        ? "Device link offer QR"
-                        : "Device link frame \(index + 1) of \(frames.count)")
+                        ? L10n.text("device_link_offer_accessibility")
+                        : L10n.text(
+                            "device_link_frame_accessibility",
+                            index + 1,
+                            frames.count))
             }
         }
     }
@@ -445,8 +467,8 @@ private struct DeviceApprovalView: View {
             Form {
                 Text(
                     kind == .link
-                        ? "Verify and sign an exact pending add-device proposal from another active installation."
-                        : "Verify and sign an exact pending rename or revocation proposal from another active installation."
+                        ? L10n.text("device_approval_link_body")
+                        : L10n.text("device_approval_change_body")
                 )
                 TextEditor(text: $request)
                     .frame(minHeight: 160)
@@ -466,7 +488,9 @@ private struct DeviceApprovalView: View {
                 if let error { Text(error).foregroundStyle(ThemePalette.danger) }
             }
             .navigationTitle(
-                kind == .link ? "Approve device link" : "Approve device change")
+                kind == .link
+                    ? L10n.text("device_approval_link_title")
+                    : L10n.text("device_approval_change_title"))
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Done") { dismiss() }
@@ -539,7 +563,7 @@ private struct PendingDeviceAuthorityView: View {
                 if try await model.acceptDeviceAuthorityApproval(approval) {
                     dismiss()
                 } else {
-                    error = "Approval accepted; another active device is still required."
+                    error = L10n.text("device_approval_more_required")
                 }
             } catch {
                 self.error = errorText(error)

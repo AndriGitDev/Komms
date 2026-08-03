@@ -259,7 +259,7 @@ class CallController(
                 }
                 .onFailure { error ->
                     activity.runOnUiThread {
-                        if (!closed) activity.toast(error.message ?: error.toString())
+                        if (!closed) activity.toast(activity.errorText(error))
                     }
                 }
         }
@@ -279,7 +279,7 @@ class CallController(
             active.start()
         } catch (error: Throwable) {
             stopMedia()
-            activity.toast(error.message ?: error.toString())
+            activity.toast(activity.errorText(error))
             runNode { it.hangupCall(callId) }
         }
     }

@@ -44,35 +44,37 @@ class DeviceActivity : SecureActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        title = "Linked devices"
+        title = localizedSource("Linked devices")
         val body = column()
         body.addView(TextView(this).apply {
-            text = "Every installation has independent authenticated keys. Revocation is permanent."
+            text = localizedSource(
+                "Each installation has independent authenticated keys. Revocation is permanent and immediately excludes that exact device from new delivery and sync.",
+            )
         })
         conflicts = column()
         body.addView(conflicts)
         body.addView(Button(this).apply {
-            text = "Link another device"
+            text = localizedSource("Link another device")
             setOnClickListener { beginSourceLink() }
         })
         body.addView(Button(this).apply {
-            text = "Link this new device"
+            text = localizedSource("Link this new device")
             setOnClickListener { beginTargetLink() }
         })
         body.addView(Button(this).apply {
-            text = "Approve another device’s link"
+            text = localizedSource("Approve another device’s link")
             setOnClickListener { approveAnotherRequest(link = true) }
         })
         body.addView(Button(this).apply {
-            text = "Approve another device’s rename or revocation"
+            text = localizedSource("Approve another device’s change")
             setOnClickListener { approveAnotherRequest(link = false) }
         })
         body.addView(Button(this).apply {
-            text = "Continue pending device change"
+            text = localizedSource("Continue pending device change")
             setOnClickListener { continueAuthorityChange() }
         })
         body.addView(Button(this).apply {
-            text = "Import encrypted device sync"
+            text = localizedSource("Import encrypted sync")
             setOnClickListener { importSync() }
         })
         rows = column()
@@ -101,10 +103,14 @@ class DeviceActivity : SecureActivity() {
             for (conflict in authorityConflicts) {
                 conflicts.addView(TextView(this).apply {
                     text = when (conflict.kind) {
-                        DeviceAuthorityConflictKind.FORK ->
-                            "Security conflict: concurrent device-authority branches were detected in recovery epoch ${conflict.recoveryEpoch}. Authority is fail-closed and requires offline recovery."
-                        DeviceAuthorityConflictKind.RECOVERY ->
-                            "Security conflict: different recoveries claim epoch ${conflict.recoveryEpoch}. Authority is fail-closed; re-verify contacts after resolving with offline recovery."
+                        DeviceAuthorityConflictKind.FORK -> getString(
+                            R.string.device_authority_fork,
+                            conflict.recoveryEpoch.toLong(),
+                        )
+                        DeviceAuthorityConflictKind.RECOVERY -> getString(
+                            R.string.device_authority_recovery_conflict,
+                            conflict.recoveryEpoch.toLong(),
+                        )
                     }
                     contentDescription = text
                     setTextColor(getColor(R.color.danger))
@@ -114,10 +120,16 @@ class DeviceActivity : SecureActivity() {
             for (conflict in contactAuthorityConflicts) {
                 conflicts.addView(TextView(this).apply {
                     text = when (conflict.kind) {
-                        DeviceAuthorityConflictKind.FORK ->
-                            "Contact security conflict for ${conflict.account}: concurrent device-authority branches were detected in recovery epoch ${conflict.recoveryEpoch}. The accepted branch was retained; offline recovery is required."
-                        DeviceAuthorityConflictKind.RECOVERY ->
-                            "Contact security conflict for ${conflict.account}: different recoveries claim epoch ${conflict.recoveryEpoch}. The accepted branch was retained and verification was cleared."
+                        DeviceAuthorityConflictKind.FORK -> getString(
+                            R.string.device_authority_contact_fork,
+                            conflict.account,
+                            conflict.recoveryEpoch.toLong(),
+                        )
+                        DeviceAuthorityConflictKind.RECOVERY -> getString(
+                            R.string.device_authority_contact_recovery_conflict,
+                            conflict.account,
+                            conflict.recoveryEpoch.toLong(),
+                        )
                     }
                     contentDescription = text
                     setTextColor(getColor(R.color.danger))
@@ -127,16 +139,35 @@ class DeviceActivity : SecureActivity() {
             rows.removeAllViews()
             for (device in devices) {
                 val row = column()
-                row.contentDescription = buildString {
-                    append(device.name)
-                    append(if (device.current) ", this device" else ", linked device")
-                    if (device.revokedAt != null) append(", permanently revoked")
+                val deviceKind = getString(
+                    if (device.current) {
+                        R.string.device_row_current
+                    } else {
+                        R.string.device_row_linked
+                    },
+                )
+                val revokedSuffix = if (device.revokedAt != null) {
+                    getString(R.string.device_row_revoked_suffix)
+                } else {
+                    ""
                 }
+                row.contentDescription = getString(
+                    R.string.device_row_accessibility,
+                    device.name,
+                    deviceKind,
+                    revokedSuffix,
+                )
                 row.addView(TextView(this).apply {
                     text = buildString {
                         append(device.name)
-                        if (device.current) append(" · this device")
-                        if (device.revokedAt != null) append(" · revoked")
+                        if (device.current) {
+                            append(" · ")
+                            append(localizedSource("This device"))
+                        }
+                        if (device.revokedAt != null) {
+                            append(" · ")
+                            append(localizedSource("Revoked"))
+                        }
                         append("\n")
                         append(device.id)
                     }
@@ -144,18 +175,23 @@ class DeviceActivity : SecureActivity() {
                 })
                 if (device.revokedAt == null) {
                     row.addView(Button(this).apply {
-                        text = "Rename ${device.name}"
+                        text = getString(R.string.device_rename_action, device.name)
                         setOnClickListener { rename(device.id, device.name) }
                     })
                     if (!device.current) {
                         row.addView(Button(this).apply {
-                            text = "Export sync for ${device.name}"
+                            text = getString(R.string.device_export_sync_action, device.name)
                             setOnClickListener {
-                                runNode(work = { session.exportDeviceSync(device.id) }) { showOpaque("Encrypted device sync", it) }
+                                runNode(work = { session.exportDeviceSync(device.id) }) {
+                                    showOpaque(
+                                        localizedSource("Encrypted device sync bundle"),
+                                        it,
+                                    )
+                                }
                             }
                         })
                         row.addView(Button(this).apply {
-                            text = "Permanently revoke ${device.name}"
+                            text = getString(R.string.device_revoke_action, device.name)
                             setOnClickListener { confirmRevoke(device.id, device.name) }
                         })
                     }
@@ -168,10 +204,10 @@ class DeviceActivity : SecureActivity() {
     private fun rename(device: String, prior: String) {
         val field = input(prior, false)
         AlertDialog.Builder(this)
-            .setTitle("Rename linked device")
+            .setTitle(localizedSource("Rename linked device"))
             .setView(field)
             .setNegativeButton(android.R.string.cancel, null)
-            .setPositiveButton("Rename") { _, _ ->
+            .setPositiveButton(localizedSource("Rename")) { _, _ ->
                 NodeHolder.session?.let { session ->
                     runNode(
                         work = { session.renameLinkedDevice(device, field.text.toString()) },
@@ -184,10 +220,14 @@ class DeviceActivity : SecureActivity() {
 
     private fun confirmRevoke(device: String, name: String) {
         AlertDialog.Builder(this)
-            .setTitle("Permanently revoke $name?")
-            .setMessage("This cannot be undone. The exact device immediately loses new delivery and sync access.")
+            .setTitle(getString(R.string.device_revoke_confirmation, name))
+            .setMessage(
+                localizedSource(
+                    "This cannot be undone. The exact device loses new delivery and sync access.",
+                ),
+            )
             .setNegativeButton(android.R.string.cancel, null)
-            .setPositiveButton("Revoke permanently") { _, _ ->
+            .setPositiveButton(localizedSource("Revoke permanently")) { _, _ ->
                 NodeHolder.session?.let { session ->
                     runNode(
                         work = { session.revokeLinkedDevice(device, confirmed = true) },
@@ -203,11 +243,13 @@ class DeviceActivity : SecureActivity() {
         runNode(work = { session.beginDeviceLink() }) { offer ->
             val body = column()
             body.addView(TextView(this).apply {
-                text = "Scan this ten-minute offer on a pristine installation. Nothing transfers before code comparison."
+                text = localizedSource(
+                    "Scan this ten-minute offer on a pristine installation. Nothing transfers before both screens show the same six digits.",
+                )
             })
             val frames = deviceLinkQrFrames(offer)
             val image = ImageView(this).apply {
-                contentDescription = "Device link offer QR"
+                contentDescription = getString(R.string.device_link_offer_accessibility)
                 adjustViewBounds = true
             }
             val frameLabel = TextView(this)
@@ -215,23 +257,38 @@ class DeviceActivity : SecureActivity() {
             body.addView(frameLabel)
             body.addView(input(offer, true))
             val response = input("", true)
-            response.hint = "Response from new device"
+            response.hint = localizedSource("Response from new device")
             body.addView(response)
             var frame = 0
             fun renderFrame() {
                 image.setImageBitmap(qrBitmap(frames[frame]))
                 frameLabel.text = if (frames.size == 1) {
-                    "Device link offer"
+                    getString(R.string.device_link_offer_caption)
                 } else {
-                    "Device link frame ${frame + 1} of ${frames.size} · keep the scanner pointed here"
+                    getString(
+                        R.string.device_link_frame_caption,
+                        frame + 1,
+                        frames.size,
+                    )
+                }
+                image.contentDescription = if (frames.size == 1) {
+                    getString(R.string.device_link_offer_accessibility)
+                } else {
+                    getString(
+                        R.string.device_link_frame_accessibility,
+                        frame + 1,
+                        frames.size,
+                    )
                 }
             }
             renderFrame()
             val dialog = AlertDialog.Builder(this)
-                .setTitle("Link another device")
+                .setTitle(localizedSource("Link another device"))
                 .setView(ScrollView(this).apply { addView(body) })
                 .setNegativeButton(android.R.string.cancel, null)
-                .setPositiveButton("Compare code") { _, _ -> compareAndApprove(response.text.toString()) }
+                .setPositiveButton(localizedSource("Show comparison code")) { _, _ ->
+                    compareAndApprove(response.text.toString())
+                }
                 .create()
             val handler = Handler(Looper.getMainLooper())
             val rotate = object : Runnable {
@@ -257,26 +314,39 @@ class DeviceActivity : SecureActivity() {
             body.addView(TextView(this).apply {
                 text = code
                 textSize = 32f
-                contentDescription = "Comparison code $code"
+                contentDescription = getString(
+                    R.string.comparison_code_accessibility,
+                    code,
+                )
             })
-            val contacts = CheckBox(this).apply { text = "Contacts and verification"; isChecked = true }
-            val organization = CheckBox(this).apply { text = "Folders, labels, pins, icons, and appearance"; isChecked = true }
-            val history = CheckBox(this).apply { text = "Non-ephemeral history" }
-            val confirmed = CheckBox(this).apply { text = "I compared these six digits on both devices" }
+            val contacts = CheckBox(this).apply {
+                text = localizedSource("Contacts and verification")
+                isChecked = true
+            }
+            val organization = CheckBox(this).apply {
+                text = localizedSource("Folders, labels, pins, icons, and appearance")
+                isChecked = true
+            }
+            val history = CheckBox(this).apply {
+                text = localizedSource("Non-ephemeral history")
+            }
+            val confirmed = CheckBox(this).apply {
+                text = localizedSource("I compared the six digits")
+            }
             body.addView(contacts)
             body.addView(organization)
             body.addView(history)
             body.addView(confirmed)
             val dialog = AlertDialog.Builder(this)
-                .setTitle("Compare both devices")
+                .setTitle(localizedSource("Compare on both devices"))
                 .setView(body)
                 .setNegativeButton(android.R.string.cancel, null)
-                .setPositiveButton("Approve", null)
+                .setPositiveButton(localizedSource("Approve and create package"), null)
                 .create()
             dialog.setOnShowListener {
                 dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
                     if (!confirmed.isChecked) {
-                        toast("Compare and confirm the six digits first")
+                        toast(getString(R.string.device_compare_required))
                         return@setOnClickListener
                     }
                     dialog.dismiss()
@@ -297,7 +367,12 @@ class DeviceActivity : SecureActivity() {
                                 toast(error)
                             }
                         },
-                    ) { showOpaque("Encrypted link package", it) }
+                    ) {
+                        showOpaque(
+                            localizedSource("Encrypted package for new device"),
+                            it,
+                        )
+                    }
                 }
             }
             dialog.show()
@@ -306,21 +381,25 @@ class DeviceActivity : SecureActivity() {
 
     private fun beginTargetLink() {
         val session = NodeHolder.session ?: return
-        val name = input("Android device", false)
-        val offer = input("", true).apply { hint = "Scanned or pasted source offer" }
+        val name = input(getString(R.string.device_default_android_name), false)
+        val offer = input("", true).apply { hint = localizedSource("Source offer") }
         val body = column()
         body.addView(name)
         body.addView(offer)
         body.addView(Button(this).apply {
-            text = "Scan offer QR"
+            text = localizedSource("Scan offer QR")
             setOnClickListener { scanTarget = offer; scanner.launch(ScanActivity.intent(this@DeviceActivity)) }
         })
         AlertDialog.Builder(this)
-            .setTitle("Link this new device")
-            .setMessage("Use only on a pristine installation.")
+            .setTitle(localizedSource("Link this new device"))
+            .setMessage(
+                localizedSource(
+                    "Use only on a pristine installation. Scan or paste the source offer.",
+                ),
+            )
             .setView(body)
             .setNegativeButton(android.R.string.cancel, null)
-            .setPositiveButton("Accept offer") { _, _ ->
+            .setPositiveButton(localizedSource("Accept offer")) { _, _ ->
                 runNode(work = { session.acceptDeviceLink(offer.text.toString(), name.text.toString()) }) { accepted ->
                     targetConfirmation(
                         hexEncode(accepted.response),
@@ -333,28 +412,32 @@ class DeviceActivity : SecureActivity() {
 
     private fun targetConfirmation(responseHex: String, code: String) {
         val session = NodeHolder.session ?: return
-        val packageField = input("", true).apply { hint = "Encrypted package from source" }
-        val confirmed = CheckBox(this).apply { text = "I compared these six digits on both devices" }
+        val packageField = input("", true).apply {
+            hint = localizedSource("Encrypted package for new device")
+        }
+        val confirmed = CheckBox(this).apply {
+            text = localizedSource("I compared the six digits")
+        }
         val body = column()
         body.addView(TextView(this).apply { text = code; textSize = 32f })
         body.addView(input(responseHex, true))
         body.addView(packageField)
         body.addView(confirmed)
         val dialog = AlertDialog.Builder(this)
-            .setTitle("Comparison code")
+            .setTitle(localizedSource("Compare on both devices"))
             .setView(body)
             .setNegativeButton(android.R.string.cancel, null)
-            .setPositiveButton("Complete link", null)
+            .setPositiveButton(localizedSource("Complete device link"), null)
             .create()
         dialog.setOnShowListener {
             dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
                 if (!confirmed.isChecked) {
-                    toast("Compare and confirm the six digits first")
+                    toast(getString(R.string.device_compare_required))
                     return@setOnClickListener
                 }
                 runNode(work = { session.completeDeviceLink(packageField.text.toString(), true) }) {
                     dialog.dismiss()
-                    toast("Device linked with independent keys")
+                    toast(getString(R.string.device_linked_success))
                     refresh()
                 }
             }
@@ -374,23 +457,27 @@ class DeviceActivity : SecureActivity() {
         val session = NodeHolder.session ?: return
         runNode(work = { session.deviceLinkApprovalRequest() }) { request ->
             val approval = input("", true).apply {
-                hint = "Detached approval from another active device"
+                hint = localizedSource("Detached approval from another active device")
             }
             val body = column()
             body.addView(TextView(this).apply {
-                text = "This exact add-device proposal needs another active device’s signature. Transfer the request to that device, then paste its detached approval here."
+                text = localizedSource(
+                    "Transfer this exact add-device proposal to another active installation. Its detached signature cannot alter the proposal.",
+                )
             })
             body.addView(input(request, true))
             body.addView(Button(this).apply {
-                text = "Copy approval request"
-                setOnClickListener { copyText("Device link approval request", request) }
+                text = localizedSource("Copy approval request")
+                setOnClickListener {
+                    copyText(localizedSource("Approval request"), request)
+                }
             })
             body.addView(approval)
             val dialog = AlertDialog.Builder(this)
-                .setTitle("Additional device approval required")
+                .setTitle(localizedSource("Additional active-device approval"))
                 .setView(ScrollView(this).apply { addView(body) })
                 .setNegativeButton(android.R.string.cancel, null)
-                .setPositiveButton("Accept approval", null)
+                .setPositiveButton(localizedSource("Accept detached approval"), null)
                 .create()
             dialog.setOnShowListener {
                 dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
@@ -398,10 +485,13 @@ class DeviceActivity : SecureActivity() {
                         session.acceptDeviceLinkApproval(approval.text.toString())
                     }) { packageHex ->
                         if (packageHex == null) {
-                            toast("Approval accepted; another active device is still required")
+                            toast(getString(R.string.device_approval_more_required))
                         } else {
                             dialog.dismiss()
-                            showOpaque("Encrypted link package", packageHex)
+                            showOpaque(
+                                localizedSource("Encrypted package for new device"),
+                                packageHex,
+                            )
                         }
                     }
                 }
@@ -414,23 +504,27 @@ class DeviceActivity : SecureActivity() {
         val session = NodeHolder.session ?: return
         runNode(work = { session.deviceAuthorityApprovalRequest() }) { request ->
             val approval = input("", true).apply {
-                hint = "Detached approval from another active device"
+                hint = localizedSource("Detached approval from another active device")
             }
             val body = column()
             body.addView(TextView(this).apply {
-                text = "Transfer this exact pending rename or revocation proposal to another active device, then paste its detached approval."
+                text = localizedSource(
+                    "Transfer this exact pending rename or revocation proposal to another active device, then paste its detached approval.",
+                )
             })
             body.addView(input(request, true))
             body.addView(Button(this).apply {
-                text = "Copy approval request"
-                setOnClickListener { copyText("Device authority approval request", request) }
+                text = localizedSource("Copy approval request")
+                setOnClickListener {
+                    copyText(localizedSource("Approval request"), request)
+                }
             })
             body.addView(approval)
             val dialog = AlertDialog.Builder(this)
-                .setTitle("Continue pending device change")
+                .setTitle(localizedSource("Continue device change"))
                 .setView(ScrollView(this).apply { addView(body) })
                 .setNegativeButton(android.R.string.cancel, null)
-                .setPositiveButton("Accept approval", null)
+                .setPositiveButton(localizedSource("Accept detached approval"), null)
                 .create()
             dialog.setOnShowListener {
                 dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
@@ -439,10 +533,10 @@ class DeviceActivity : SecureActivity() {
                     }) { committed ->
                         if (committed) {
                             dialog.dismiss()
-                            toast("Device authority change committed")
+                            toast(getString(R.string.device_authority_committed))
                             refresh()
                         } else {
-                            toast("Approval accepted; another active device is still required")
+                            toast(getString(R.string.device_approval_more_required))
                         }
                     }
                 }
@@ -454,32 +548,28 @@ class DeviceActivity : SecureActivity() {
     private fun approveAnotherRequest(link: Boolean) {
         val session = NodeHolder.session ?: return
         val request = input("", true).apply {
-            hint = if (link) {
-                "Add-device approval request"
-            } else {
-                "Rename or revocation approval request"
-            }
+            hint = localizedSource("Approval request")
         }
         val body = column()
         body.addView(TextView(this).apply {
             text = if (link) {
-                "Verify and sign an exact pending add-device proposal from another active installation."
+                getString(R.string.device_approval_link_body)
             } else {
-                "Verify and sign an exact pending rename or revocation proposal from another active installation."
+                getString(R.string.device_approval_change_body)
             }
         })
         body.addView(request)
         AlertDialog.Builder(this)
             .setTitle(
                 if (link) {
-                    "Approve another device’s link"
+                    getString(R.string.device_approval_link_title)
                 } else {
-                    "Approve another device’s change"
+                    getString(R.string.device_approval_change_title)
                 },
             )
             .setView(body)
             .setNegativeButton(android.R.string.cancel, null)
-            .setPositiveButton("Verify and approve") { _, _ ->
+            .setPositiveButton(localizedSource("Verify and approve")) { _, _ ->
                 runNode(work = {
                     if (link) {
                         session.approveDeviceLinkRequest(request.text.toString())
@@ -487,7 +577,7 @@ class DeviceActivity : SecureActivity() {
                         session.approveDeviceAuthorityRequest(request.text.toString())
                     }
                 }) { detached ->
-                    showOpaque("Detached device approval", detached)
+                    showOpaque(localizedSource("Detached approval"), detached)
                 }
             }
             .show()
@@ -495,14 +585,22 @@ class DeviceActivity : SecureActivity() {
 
     private fun importSync() {
         val session = NodeHolder.session ?: return
-        val field = input("", true).apply { hint = "Encrypted sync bundle" }
+        val field = input("", true).apply {
+            hint = localizedSource("Encrypted device sync bundle")
+        }
         AlertDialog.Builder(this)
-            .setTitle("Import linked-device sync")
+            .setTitle(localizedSource("Import device sync"))
             .setView(field)
             .setNegativeButton(android.R.string.cancel, null)
-            .setPositiveButton("Import") { _, _ ->
+            .setPositiveButton(localizedSource("Import encrypted sync")) { _, _ ->
                 runNode(work = { session.importDeviceSync(field.text.toString()) }) { inserted ->
-                    toast("Imported $inserted new sync events")
+                    toast(
+                        resources.getQuantityString(
+                            R.plurals.device_imported_sync_events,
+                            inserted.toInt(),
+                            inserted.toLong(),
+                        ),
+                    )
                     refresh()
                 }
             }
@@ -513,10 +611,14 @@ class DeviceActivity : SecureActivity() {
         val field = input(value, true)
         AlertDialog.Builder(this)
             .setTitle(title)
-            .setMessage("Transfer only to the intended linked installation.")
+            .setMessage(
+                localizedSource(
+                    "Transfer only to the intended linked installation.",
+                ),
+            )
             .setView(field)
             .setNegativeButton(android.R.string.cancel, null)
-            .setPositiveButton("Copy") { _, _ ->
+            .setPositiveButton(localizedSource("Copy")) { _, _ ->
                 copyText(title, value)
             }
             .show()

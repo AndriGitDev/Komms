@@ -264,15 +264,13 @@ final class AppModel: ObservableObject {
         }
 
         if nativeWakeNetworkConfigurationStale {
+            let unavailable = L10n.text("native_wake_temporarily_unavailable")
             do {
                 _ = try await run { try session.revokeNativeWake() }
                 nativeWakeSnapshot = nativeWakeSnapshot?.withAdvertised(false)
             } catch {
-                if notices.last !=
-                    "Native wake is unavailable right now. Ordinary delivery and fallbacks remain active." {
-                    notices.append(
-                        "Native wake is unavailable right now. "
-                        + "Ordinary delivery and fallbacks remain active.")
+                if notices.last != unavailable {
+                    notices.append(unavailable)
                 }
             }
             return
@@ -340,11 +338,9 @@ final class AppModel: ObservableObject {
                 nativeWakeSnapshot = current.withAdvertised(decision.advertise)
             }
         } catch {
-            if notices.last !=
-                "Native wake is unavailable right now. Ordinary delivery and fallbacks remain active." {
-                notices.append(
-                    "Native wake is unavailable right now. "
-                    + "Ordinary delivery and fallbacks remain active.")
+            let unavailable = L10n.text("native_wake_temporarily_unavailable")
+            if notices.last != unavailable {
+                notices.append(unavailable)
             }
         }
     }
@@ -546,13 +542,15 @@ final class AppModel: ObservableObject {
             }
         case .deviceAuthorityFork(_, _, let recoveryEpoch):
             notices.append(
-                "A device-authority fork was detected in recovery epoch \(recoveryEpoch). "
-                + "Authority is fail-closed; review Linked devices.")
+                L10n.text(
+                    "device_authority_fork_notice",
+                    Int(clamping: recoveryEpoch)))
             Task { await refreshDevices() }
         case .deviceRecoveryConflict(_, _, let recoveryEpoch):
             notices.append(
-                "Conflicting recoveries claim epoch \(recoveryEpoch). "
-                + "Authority is fail-closed; review Linked devices.")
+                L10n.text(
+                    "device_authority_recovery_notice",
+                    Int(clamping: recoveryEpoch)))
             Task { await refreshDevices() }
         case .deviceLinkCompleted:
             Task {
@@ -561,13 +559,9 @@ final class AppModel: ObservableObject {
                 await synchronizeNativeWake(forceRefresh: true)
             }
         case .rendezvousConflict:
-            notices.append(
-                "Conflicting authenticated route records were detected. "
-                + "No route was selected; retry later or verify this contact through another channel.")
+            notices.append(L10n.text("rendezvous_conflict"))
         case .wakeConflict:
-            notices.append(
-                "Conflicting authenticated wake state was detected. "
-                + "Native wake was disabled for this device; ordinary delivery remains available.")
+            notices.append(L10n.text("wake_conflict"))
         case .themeChanged:
             Task { await refreshTheme() }
         case .customIconsChanged:
@@ -584,7 +578,7 @@ final class AppModel: ObservableObject {
              .foldersChanged, .labelsChanged, .pinsChanged:
             Task { await refresh() }
         case .messageRequestReceived:
-            notices.append("New message request.")
+            notices.append(L10n.text("message_request_received"))
             Task { await refresh() }
         case .messageRequestAccepted, .messageRequestDeleted,
              .messageRequestBlocked, .messageRequestExpired:
@@ -593,17 +587,17 @@ final class AppModel: ObservableObject {
                 await synchronizeNativeWake(forceRefresh: true)
             }
         case .groupInvitationReceived:
-            notices.append("New group invitation.")
+            notices.append(L10n.text("group_invitation_received"))
             Task { await refresh() }
         case .groupInvitationAccepted, .groupInvitationDeleted, .groupInvitationExpired:
             Task { await refresh() }
         case .mentionReceived:
-            notices.append("You were mentioned in a group.")
+            notices.append(L10n.text("mention_notification_private"))
             Task { await refresh() }
-        case .groupAdminRequestResolved(_, _, let accepted, _, _, let reason):
+        case .groupAdminRequestResolved(_, _, let accepted, _, _, _):
             notices.append(accepted
-                ? "The owner accepted your group administration request."
-                : "The owner rejected your group administration request (reason \(reason)).")
+                ? L10n.text("group_admin_request_accepted")
+                : L10n.text("group_admin_request_rejected"))
             Task { await refresh() }
         case .contactAdded, .contactRenamed:
             Task {
@@ -614,16 +608,14 @@ final class AppModel: ObservableObject {
             // A re-establishment for a known contact means their key or
             // device changed — say so, next to their name.
             if let known = contacts.first(where: { $0.peer == peer }) {
-                notices.append(
-                    "Session with \(known.name) re-established — their key or device "
-                    + "may have changed. Verify safety numbers again.")
+                notices.append(L10n.text("key_changed_body", known.name))
             }
             Task {
                 await refresh()
                 await synchronizeNativeWake(forceRefresh: true)
             }
         case .awaitingFasterLink:
-            notices.append("A message is held — will send when a faster link exists.")
+            notices.append(L10n.text("message_held_notice"))
         }
     }
 
@@ -701,7 +693,9 @@ final class AppModel: ObservableObject {
     private func activateAudio(_ call: KommsCore.Call) {
         guard let session else { return }
         guard callAudioAllowed else {
-            callAudioFailed(call: call.id, reason: "Komms left the foreground")
+            callAudioFailed(
+                call: call.id,
+                reason: L10n.text("call_audio_foreground_exit"))
             return
         }
         do {
@@ -712,7 +706,7 @@ final class AppModel: ObservableObject {
     }
 
     private func callAudioFailed(call: String, reason: String) {
-        notices.append("Live call audio stopped: \(reason)")
+        notices.append(L10n.text("call_audio_stopped_notice", reason))
         callAudio?.stop(call: call)
         guard let session else { return }
         Task { try? await run { try session.hangupCall(call: call) } }
@@ -981,10 +975,13 @@ final class AppModel: ObservableObject {
             customIcons = snapshot.customIcons
             customIconUsage = snapshot.customIconUsage
             if snapshot.folderWasMissing {
-                notices.append("The selected private folder is unavailable; showing All conversations.")
+                notices.append(L10n.text("folder_selection_unavailable"))
             }
             if snapshot.filter.unavailableLabels.isEmpty == false {
-                notices.append("\(snapshot.filter.unavailableLabels.count) unavailable selected label(s) were removed.")
+                notices.append(
+                    L10n.text(
+                        "label_filter_unavailable",
+                        snapshot.filter.unavailableLabels.count))
             }
             selectedLabelIds = snapshot.filter.selectedLabels
             persistLabelFilter()
@@ -1087,7 +1084,7 @@ final class AppModel: ObservableObject {
                 if isPinned(target) { _ = try await run { try session.unpinConversation(target: target) } }
                 else { _ = try await run { try session.pinConversation(target: target) } }
                 await refresh()
-            } catch { notices.append(error.localizedDescription) }
+            } catch { notices.append(L10n.error(error)) }
         }
     }
 
@@ -1099,9 +1096,10 @@ final class AppModel: ObservableObject {
         guard pins.indices.contains(destination) else { return }
         var order = pins.map(\.target)
         order.swapAt(index, destination)
+        let reordered = order
         Task {
-            do { _ = try await run { try session.reorderPins(targets: order) }; await refresh() }
-            catch { notices.append(error.localizedDescription) }
+            do { _ = try await run { try session.reorderPins(targets: reordered) }; await refresh() }
+            catch { notices.append(L10n.error(error)) }
         }
     }
 
@@ -1109,7 +1107,7 @@ final class AppModel: ObservableObject {
         guard let session else { return }
         Task {
             do { _ = try await run { try session.cleanupStalePin(target: target) }; await refresh() }
-            catch { notices.append(error.localizedDescription) }
+            catch { notices.append(L10n.error(error)) }
         }
     }
 
@@ -2105,8 +2103,5 @@ private extension NativeWakeSnapshot {
 /// One error string for any failure the UI shows: the node's words for FFI
 /// errors, this layer's words for input it rejected.
 func errorText(_ error: Error) -> String {
-    if let ffi = error as? FfiError { return ffi.reasonText }
-    if let input = error as? InputError { return input.message }
-    if let settings = error as? SettingsError { return settings.message }
-    return String(describing: error)
+    L10n.error(error)
 }

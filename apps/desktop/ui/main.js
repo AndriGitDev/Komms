@@ -90,6 +90,9 @@ const state = {
 function toast(text, isError = false) {
   const el = document.createElement("div");
   el.className = "toast" + (isError ? " error" : "");
+  el.setAttribute("role", isError ? "alert" : "status");
+  el.setAttribute("aria-live", isError ? "assertive" : "polite");
+  el.setAttribute("aria-atomic", "true");
   el.textContent = text;
   $("#toasts").append(el);
   setTimeout(() => el.remove(), isError ? 8000 : 4000);
@@ -99,7 +102,7 @@ async function call(cmd, args) {
   try {
     return await invoke(cmd, args);
   } catch (err) {
-    toast(String(err), true);
+    toast(localizedError(err), true);
     throw err;
   }
 }
@@ -107,7 +110,7 @@ async function call(cmd, args) {
 async function copyText(text) {
   try {
     await navigator.clipboard.writeText(text);
-    toast("Copied");
+    toast(l10n("clipboard_copied"));
   } catch {
     // WebKitGTK can refuse the async clipboard; fall back.
     const ta = document.createElement("textarea");
@@ -116,7 +119,7 @@ async function copyText(text) {
     ta.select();
     document.execCommand("copy");
     ta.remove();
-    toast("Copied");
+    toast(l10n("clipboard_copied"));
   }
 }
 
@@ -124,25 +127,50 @@ function fmtTime(unixSecs) {
   const d = new Date(unixSecs * 1000);
   const today = new Date().toDateString() === d.toDateString();
   return today
-    ? d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
-    : d.toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+    ? d.toLocaleTimeString(
+      KommsLocalization.activeLocale(),
+      { hour: "2-digit", minute: "2-digit" },
+    )
+    : d.toLocaleString(
+      KommsLocalization.activeLocale(),
+      { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" },
+    );
 }
 
 function fmtExpiry(unixSecs) {
-  return new Date(unixSecs * 1000).toLocaleString([], {
+  return new Date(unixSecs * 1000).toLocaleString(KommsLocalization.activeLocale(), {
     month: "short", day: "numeric", hour: "2-digit", minute: "2-digit",
   });
 }
 
 const LABEL_COLORS = ["neutral", "red", "orange", "yellow", "green", "teal", "blue", "purple", "pink"];
-const LABEL_COLOR_NAMES = Object.fromEntries(LABEL_COLORS.map((color) => [color, color[0].toUpperCase() + color.slice(1)]));
+const LABEL_COLOR_IDS = Object.freeze({
+  neutral: "label_color_neutral",
+  red: "label_color_red",
+  orange: "label_color_orange",
+  yellow: "label_color_yellow",
+  green: "label_color_green",
+  teal: "label_color_teal",
+  blue: "label_color_blue",
+  purple: "label_color_purple",
+  pink: "label_color_pink",
+});
 
 function labelCue(label) {
-  return `${LABEL_COLOR_NAMES[label.color] ?? "Neutral"}, label ${label.order + 1}`;
+  return l10n(
+    "label_cue",
+    l10n(LABEL_COLOR_IDS[label.color] ?? "label_color_neutral"),
+    label.order + 1,
+  );
 }
 
 function labelAccessibleName(label) {
-  return `${label.name}, ${labelCue(label)}`;
+  return l10n(
+    "label_accessible_summary",
+    label.name,
+    l10n(LABEL_COLOR_IDS[label.color] ?? "label_color_neutral"),
+    label.order + 1,
+  );
 }
 
 function labelChip(label) {
@@ -222,7 +250,7 @@ async function applyCustomIcon(avatar, target, fallback, accessibleName) {
     image.width = icon.width;
     image.height = icon.height;
     avatar.replaceChildren(image);
-    avatar.title = `Private local icon for ${accessibleName}`;
+    avatar.title = l10n("icons_private_for", accessibleName);
   } catch {
     // Missing, corrupt, or concurrently removed icons always retain initials.
   }
@@ -239,14 +267,14 @@ async function refreshVisibleCustomIcons(clearCache = false) {
       avatar,
       target,
       avatar.dataset.iconFallback || "?",
-      avatar.dataset.iconName || "conversation",
+      avatar.dataset.iconName || l10nSource("Conversation"),
     );
   });
   await Promise.all(work);
 }
 
 function folderAccessibleName(folder) {
-  return `${folder.name}, folder ${folder.order + 1}`;
+  return l10n("folder_accessible_summary", folder.name, folder.order + 1);
 }
 
 function exactFolderNameValid(name) {
@@ -255,8 +283,10 @@ function exactFolderNameValid(name) {
 
 function currentTargetName() {
   if (state.currentKind === "contact") return contactName(state.currentId);
-  if (state.currentKind === "group") return currentGroup()?.name ?? "Unavailable group";
-  return "Note to self";
+  if (state.currentKind === "group") {
+    return currentGroup()?.name ?? l10n("group_unavailable");
+  }
+  return l10n("note_to_self_title");
 }
 
 function exactLabelNameValid(name) {
@@ -271,12 +301,106 @@ function dateTimeLocalValue(unixSecs) {
   return local.toISOString().slice(0, 16);
 }
 
-const STATE_GLYPH = {
-  queued: "queued ○",
-  sent: "sent ✓",
-  delivered: "delivered ✓✓",
-  failed: "delivery failed after 30 days",
-};
+function deliveryState(stateValue) {
+  const id = {
+    queued: "state_queued",
+    sent: "state_sent",
+    delivered: "state_delivered",
+    received: "state_received",
+    failed: "state_failed",
+  }[stateValue];
+  return id ? l10n(id) : l10n("state_unknown");
+}
+
+function attachmentDirection(direction) {
+  return l10n(
+    direction === "inbound" ? "attachment_inbound" : "attachment_outbound",
+  );
+}
+
+function attachmentState(stateValue) {
+  const id = {
+    offered: "attachment_state_offered",
+    awaiting_consent: "attachment_state_awaiting_consent",
+    queued: "attachment_state_queued",
+    transferring: "attachment_state_transferring",
+    paused: "attachment_state_paused",
+    complete: "attachment_state_complete",
+    rejected: "attachment_state_rejected",
+    cancelled: "attachment_state_cancelled",
+    corrupt: "attachment_state_corrupt",
+    unavailable: "attachment_state_unavailable",
+  }[stateValue];
+  return l10n(id ?? "attachment_state_unavailable");
+}
+
+function modeName(mode) {
+  return l10n({
+    private: "mode_private",
+    sovereign: "mode_sovereign",
+    standard: "mode_standard",
+  }[mode] ?? "mode_standard");
+}
+
+function connectionName(connection) {
+  return l10n({
+    connected: "connection_connected",
+    fallback_ready: "connection_fallback_ready",
+    waiting_for_route: "connection_waiting",
+  }[connection] ?? "connection_waiting");
+}
+
+function directoryName(status) {
+  return l10n({
+    current: "directory_current",
+    retained_last_valid: "directory_retained",
+    stale: "directory_stale",
+    conflict: "directory_conflict",
+    unavailable: "directory_unavailable",
+    not_configured: "directory_not_configured",
+  }[status] ?? "directory_unavailable");
+}
+
+function natName(nat) {
+  return l10n({
+    public: "nat_public",
+    private: "nat_private",
+    unknown: "nat_unknown",
+  }[nat] ?? "nat_unknown");
+}
+
+function conversationKindName(kind) {
+  return l10n({
+    contact: "label_contact_conversation",
+    pairwise: "label_contact_conversation",
+    group: "label_group_conversation",
+    note_to_self: "note_to_self_title",
+  }[kind] ?? "conversation_unavailable");
+}
+
+function staleReasonName(reason) {
+  return l10n({
+    folder_missing: "stale_folder_missing",
+    label_missing: "stale_label_missing",
+    target_missing: "stale_target_missing",
+    conversation_missing: "stale_target_missing",
+  }[reason] ?? "stale_record_unavailable");
+}
+
+function groupRoleName(role) {
+  return l10n({
+    owner: "group_role_owner",
+    admin: "group_role_admin",
+    member: "group_role_member",
+  }[role] ?? "group_role_member");
+}
+
+function groupOriginName(security) {
+  return l10n({
+    recipient_authenticated: "group_origin_authenticated",
+    upgrading: "group_origin_upgrade_in_progress",
+  }[security] ?? "group_origin_upgrade_required");
+}
 
 const MIME_BY_EXTENSION = {
   txt: "text/plain",
@@ -297,7 +421,8 @@ const MIME_BY_EXTENSION = {
 };
 
 function pathBasename(path) {
-  return String(path).replace(/\\/g, "/").split("/").filter(Boolean).pop() ?? "attachment";
+  return String(path).replace(/\\/g, "/").split("/").filter(Boolean).pop()
+    ?? l10n("attachment_default_name");
 }
 
 function guessedMime(filename) {
@@ -306,7 +431,11 @@ function guessedMime(filename) {
 }
 
 function exactBytes(verified, total) {
-  return `${Number(verified).toLocaleString()} / ${Number(total).toLocaleString()} bytes`;
+  return l10n(
+    "attachment_exact_bytes",
+    Number(verified),
+    Number(total),
+  );
 }
 
 function formatDuration(milliseconds) {
@@ -340,13 +469,17 @@ function renderWaveform(peaks, label) {
 function renderAudioPlayer(container, source, durationMs, waveform, label) {
   const meta = document.createElement("div");
   meta.className = "audio-meta";
-  meta.textContent = `${formatDuration(durationMs)} · mono PCM WAV · 16 kHz`;
+  meta.textContent = l10n("attachment_audio_summary", formatDuration(durationMs));
   const audio = document.createElement("audio");
   audio.controls = true;
   audio.preload = "metadata";
   audio.src = source;
   audio.setAttribute("aria-label", label);
-  container.append(meta, renderWaveform(waveform, `${label} waveform`), audio);
+  container.append(
+    meta,
+    renderWaveform(waveform, l10n("audio_waveform_for", label)),
+    audio,
+  );
 }
 
 function resampleMono(samples, sourceRate) {
@@ -405,7 +538,7 @@ function discardAudioDraft() {
   if (!state.audioDraft) return;
   URL.revokeObjectURL(state.audioDraft.url);
   state.audioDraft = null;
-  $("#recording-status").textContent = "Audio recording discarded.";
+  $("#recording-status").textContent = l10n("audio_discarded");
 }
 
 function discardImageDraft() {
@@ -428,7 +561,7 @@ function releaseRecorder(recorder) {
   const button = $("#btn-record");
   button.classList.remove("recording");
   button.setAttribute("aria-pressed", "false");
-  button.textContent = "Record audio";
+  button.textContent = l10n("audio_record");
 }
 
 function abortRecording(reason) {
@@ -463,19 +596,19 @@ async function stopRecording(capped = false) {
       waveform: waveformFromSamples(samples),
     };
     $("#recording-status").textContent = capped
-      ? "Maximum duration reached. Recording stopped; review before sending."
-      : "Recording stopped. Review before sending.";
+      ? l10n("audio_limit_reached")
+      : l10n("audio_review_ready");
     const carrier = await call("audio_carrier_explanation", {
       conversation: state.currentKind === "group" ? "group" : "pairwise",
       destination: state.currentId,
     });
-    const root = openModal("Review audio message", "tpl-audio-review");
+    const root = openModal(l10n("audio_review_title"), "tpl-audio-review");
     renderAudioPlayer(
       root.querySelector('[data-f="audio-review"]'),
       url,
       state.audioDraft.durationMs,
       state.audioDraft.waveform,
-      "Review recorded audio"
+      l10n("audio_review_recorded"),
     );
     const carrierText = root.querySelector('[data-f="carrier"]');
     carrierText.textContent = carrier;
@@ -497,7 +630,7 @@ async function stopRecording(capped = false) {
           carrierText.textContent = latestCarrier;
           carrierText.dataset.snapshot = latestCarrier;
           button.disabled = false;
-          showError(root, "Carrier state changed. Review the updated explanation, then choose Send audio again.");
+          showError(root, l10n("audio_carrier_changed"));
           return;
         }
         const encoded = bytesBase64(state.audioDraft.bytes);
@@ -516,8 +649,8 @@ async function stopRecording(capped = false) {
     });
   } catch (error) {
     discardAudioDraft();
-    $("#recording-status").textContent = `Recording failed: ${error}`;
-    toast(String(error), true);
+    $("#recording-status").textContent = l10n("audio_record_failed");
+    toast(localizedError(error), true);
   }
 }
 
@@ -564,24 +697,28 @@ async function startRecording() {
     source.connect(processor);
     processor.connect(context.destination);
     stream.getAudioTracks().forEach((track) => {
-      track.onended = () => abortRecording("Microphone input was interrupted; recording discarded.");
+      track.onended = () => abortRecording(l10n("audio_interrupted_discarded"));
     });
     state.recording = recorder;
     const button = $("#btn-record");
     button.classList.add("recording");
     button.setAttribute("aria-pressed", "true");
-    button.textContent = "Stop 0:00";
-    $("#recording-status").textContent = "Recording audio. Activate Stop when finished.";
+    button.textContent = `${l10n("audio_stop")} 0:00`;
+    $("#recording-status").textContent = l10n("audio_recording");
     recorder.timer = setInterval(() => {
       const elapsed = Math.min(60, Math.floor((performance.now() - recorder.started) / 1000));
-      button.textContent = `Stop ${Math.floor(elapsed / 60)}:${String(elapsed % 60).padStart(2, "0")}`;
-      $("#recording-status").textContent = `Recording audio, ${elapsed} seconds elapsed.`;
+      button.textContent = `${l10n("audio_stop")} ${Math.floor(elapsed / 60)}:${String(elapsed % 60).padStart(2, "0")}`;
+      $("#recording-status").textContent = l10nPlural(
+        "recording_elapsed",
+        elapsed,
+        elapsed,
+      );
     }, 1000);
   } catch (error) {
     stream?.getTracks().forEach((track) => track.stop());
     if (context && context.state !== "closed") await context.close().catch(() => {});
-    $("#recording-status").textContent = "Microphone permission was denied or unavailable.";
-    toast(`Microphone unavailable: ${error}`, true);
+    $("#recording-status").textContent = l10n("audio_permission_denied");
+    toast(localizedError(error), true);
   }
 }
 
@@ -592,15 +729,15 @@ $("#btn-record").addEventListener("click", () => {
 
 document.addEventListener("visibilitychange", () => {
   if (!document.hidden) return;
-  abortRecording("Recording stopped and discarded because Komms was hidden or locked.");
+  abortRecording(l10n("audio_interrupted_discarded"));
   if (state.audioDraft) {
     closeModal();
-    $("#recording-status").textContent = "Audio review discarded because Komms was hidden or locked.";
+    $("#recording-status").textContent = l10n("audio_interrupted_discarded");
   }
   if (state.imageDraft) closeModal();
 });
 window.addEventListener("pagehide", () => {
-  abortRecording("Recording discarded on shutdown.");
+  abortRecording(l10n("audio_interrupted_discarded"));
   discardAudioDraft();
   discardImageDraft();
 });
@@ -611,6 +748,10 @@ let gateMode = "open";
 
 applyTheme(cachedTheme(), false);
 $("#gate-theme").addEventListener("change", (event) => applyTheme(event.target.value));
+$("#gate-locale").value = KommsLocalization.localePreference();
+$("#gate-locale").addEventListener("change", (event) => {
+  KommsLocalization.setLocale(event.target.value);
+});
 
 function readSettings() {
   const lines = (el) => el.value.split("\n").map((s) => s.trim()).filter(Boolean);
@@ -697,12 +838,12 @@ function fillSettings(s) {
 
 function updateModeDisclosure() {
   const mode = document.querySelector('input[name="set-mode"]:checked')?.value ?? "standard";
-  const text = {
-    standard: "Standard uses disclosed, replaceable providers when configured. Providers can observe network addresses, timing, and availability—not message content.",
-    private: "Private sends optional rendezvous and native-wake requests through your local Tor proxy. It does not claim provider non-collusion or hide every DHT and mailbox metadata surface.",
-    sovereign: "Sovereign disables directory defaults, optional rendezvous, and native wake. Direct, DHT, user-selected mailboxes, LAN, mesh, and file transfer remain available.",
+  const messageIds = {
+    standard: "set_mode_standard_disclosure",
+    private: "set_mode_private_disclosure",
+    sovereign: "set_mode_sovereign_disclosure",
   };
-  $("#mode-disclosure").textContent = text[mode];
+  $("#mode-disclosure").textContent = l10n(messageIds[mode]);
   $("#standard-disclosure-row").hidden = mode !== "standard";
   $("#sovereign-direct-row").hidden = mode !== "sovereign";
 }
@@ -719,11 +860,17 @@ async function probeGate(dir) {
   const exists = probe.exists;
   $("#gate-tabs").hidden = exists;
   if (exists) setGateMode("open");
-  $("#gate-go").textContent = exists ? "Unlock" : gateMode === "restore" ? "Restore" : "Create";
+  $("#gate-go").textContent = exists
+    ? l10n("gate_unlock")
+    : gateMode === "restore"
+      ? l10n("gate_restore")
+      : l10n("gate_create");
   $("#gate-note").textContent = exists
-    ? "This directory holds an existing encrypted store."
-    : "No store here yet — a new identity will be created, or restore one from a backup.";
-  $("#gate-pass-label").textContent = exists ? "Passphrase" : "New passphrase (encrypts the local store)";
+    ? l10n("gate_existing_store")
+    : l10n("gate_new_store");
+  $("#gate-pass-label").textContent = exists
+    ? l10n("gate_passphrase")
+    : l10n("gate_new_passphrase");
 }
 
 function setGateMode(mode) {
@@ -731,7 +878,11 @@ function setGateMode(mode) {
   $$("#gate-tabs .tab").forEach((t) => t.classList.toggle("active", t.dataset.tab === mode));
   $("#restore-fields").hidden = mode !== "restore";
   const exists = $("#gate-tabs").hidden;
-  $("#gate-go").textContent = exists ? "Unlock" : mode === "restore" ? "Restore" : "Create";
+  $("#gate-go").textContent = exists
+    ? l10n("gate_unlock")
+    : mode === "restore"
+      ? l10n("gate_restore")
+      : l10n("gate_create");
 }
 
 $("#gate-tabs").addEventListener("click", (e) => {
@@ -765,25 +916,27 @@ function openAuthorityUpgrade(kind, args) {
   const reset = kind === "reset" || legacyBackupReset;
   const root = openModal(
     legacyBackupReset
-      ? "Recover legacy backup with a new identity"
+      ? l10n("gate_upgrade_legacy_title")
       : reset
-        ? "Required new-identity security reset"
-        : "Required device-authority migration",
+        ? l10n("gate_upgrade_reset_title")
+        : l10n("gate_upgrade_migration_title"),
     "tpl-authority-upgrade",
   );
   root.querySelector('[data-f="explanation"]').textContent = legacyBackupReset
-    ? "This legacy backup contains an account root that may have been copied. It cannot safely resume the former address. Komms will decrypt it only into an unpublished migration projection, then publish a fresh account containing cleared petnames and accurately labelled local pairwise/note history. Groups, routes, sessions, devices, queues, and service capabilities will not transfer."
+    ? l10n("gate_upgrade_legacy_explanation")
     : reset
-    ? "This Alpha profile copied its account root to another device. Revoking that device cannot erase its copy, so the old address cannot be made permanently revocable. The safe upgrade creates a new account, clears every live route/session/device/group capability, and keeps only clearly marked local pairwise/note history and petnames."
-    : "Komms found no linked-device root copy in this store. Keep this address only if you also never exported or copied a legacy KKR7 backup. If you did, choose the conservative new-identity reset below. In-place migration keeps this device, petnames, and history after the root is saved as a separate offline authority.";
+      ? l10n("gate_upgrade_reset_explanation")
+      : l10n("gate_upgrade_migration_explanation");
   root.querySelector('[data-f="consequence"]').textContent = reset
-    ? "These words open the new account authority. The old safety number and device revocations are not preserved. Every retained contact is blocked until you compare the new safety number."
-    : "These words open the offline authority for the same account. The live database will retain only the public account anchor and this device’s independent key.";
+    ? l10n("gate_upgrade_reset_words")
+    : l10n("gate_upgrade_same_identity_words");
   root.querySelector('[data-f="identity-confirm-row"]').hidden = !reset;
   root.querySelector('[data-act="reset-instead"]').hidden = reset;
   if (legacyBackupReset) {
-    root.querySelector('[data-act="prepare"]').textContent = "Prepare fresh recovery authority";
-    root.querySelector('[data-act="complete"]').textContent = "Create new identity and import archive";
+    root.querySelector('[data-act="prepare"]').textContent =
+      l10n("gate_upgrade_prepare_fresh");
+    root.querySelector('[data-act="complete"]').textContent =
+      l10n("gate_upgrade_import_action");
   }
   const path = root.querySelector('[data-f="path"]');
   let mnemonic = "";
@@ -797,7 +950,7 @@ function openAuthorityUpgrade(kind, args) {
       const error = root.querySelector('[data-f="error"]');
       error.hidden = true;
       if (!path.value.trim()) {
-        error.textContent = "Choose an offline or removable destination first.";
+        error.textContent = l10n("gate_upgrade_choose_destination");
         error.hidden = false;
         return;
       }
@@ -836,7 +989,7 @@ function openAuthorityUpgrade(kind, args) {
         root.querySelector('[data-f="prepare-stage"]').hidden = true;
         root.querySelector('[data-f="confirm-stage"]').hidden = false;
       } catch (failure) {
-        error.textContent = String(failure);
+        error.textContent = localizedError(failure);
         error.hidden = false;
         event.target.disabled = false;
       }
@@ -848,7 +1001,7 @@ function openAuthorityUpgrade(kind, args) {
       const identityConfirmed =
         !reset || root.querySelector('[data-f="identity-confirm"]').checked;
       if (!saved || !identityConfirmed) {
-        error.textContent = "Confirm both security statements before continuing.";
+        error.textContent = l10n("authority_upgrade_confirmation_required");
         error.hidden = false;
         return;
       }
@@ -866,10 +1019,10 @@ function openAuthorityUpgrade(kind, args) {
         state.dataDir = args.dataDir;
         enterApp(address);
         if (reset) {
-          toast("New identity created · re-verify every preserved contact");
+          toast(l10n("gate_upgrade_reset_done"));
         }
       } catch (failure) {
-        error.textContent = String(failure);
+        error.textContent = localizedError(failure);
         error.hidden = false;
         event.target.disabled = false;
       }
@@ -884,7 +1037,7 @@ $("#gate-form").addEventListener("submit", async (e) => {
   const startupDialog = $("#startup-dialog");
   errEl.hidden = true;
   btn.disabled = true;
-  btn.textContent = "Opening… (up to 30 seconds)";
+  btn.textContent = l10n("gate_opening_short");
   if (!startupDialog.open) startupDialog.showModal();
   let deferredUpgrade = null;
   try {
@@ -929,7 +1082,7 @@ $("#gate-form").addEventListener("submit", async (e) => {
         settings: readSettings(),
       }];
     } else {
-      errEl.textContent = String(err);
+      errEl.textContent = localizedError(err);
       errEl.hidden = false;
     }
   } finally {
@@ -953,8 +1106,8 @@ function enterApp(address) {
   // Transport status is essential, so start it before optional list, icon,
   // and theme setup. A failure in any independent UI surface must not leave
   // these indicators at the static HTML placeholders.
-  $("#stat-discovery").textContent = "Discovery: starting";
-  $("#stat-nat").textContent = "NAT: checking";
+  $("#stat-discovery").textContent = l10n("status_discovery_starting");
+  $("#stat-nat").textContent = l10n("status_nat_checking");
   clearInterval(state.statusTimer);
   refreshStatus();
   state.statusTimer = setInterval(refreshStatus, 5000);
@@ -969,7 +1122,7 @@ function enterApp(address) {
     $("#note-to-self .avatar"),
     { kind: "note_to_self", id: null },
     "N",
-    "Note to self",
+    l10n("note_to_self_title"),
   );
   syncThemeAfterUnlock();
 }
@@ -987,8 +1140,17 @@ async function refreshAuthorityResetHistory() {
       record.preserved_pairwise_messages ?? record.preservedPairwiseMessages ?? 0;
     const notes = record.preserved_note_messages ?? record.preservedNoteMessages ?? 0;
     const omittedGroups = record.omitted_groups ?? record.omittedGroups ?? 0;
-    $("#authority-reset-summary").textContent =
-      `${pairwise} pairwise rows and ${notes} notes below were copied locally from the former identity; ${omittedGroups} active groups were not transferred. ${pending.length} contact${pending.length === 1 ? "" : "s"} still require a new safety-number comparison.`;
+    const omittedMessages =
+      record.omitted_group_messages ?? record.omittedGroupMessages ?? 0;
+    $("#authority-reset-summary").textContent = l10n(
+      "authority_reset_archive_summary",
+      l10n("authority_reset_archive_title"),
+      Number(pairwise),
+      Number(notes),
+      Number(omittedGroups),
+      Number(omittedMessages),
+      pending.length,
+    );
     banner.hidden = false;
   } catch {
     banner.hidden = true;
@@ -1006,12 +1168,12 @@ async function syncThemeAfterUnlock() {
     await invoke("set_theme", { preference });
     applyTheme(preference);
   } catch (error) {
-    toast(String(error), true);
+    toast(localizedError(error), true);
   }
 }
 
 async function leaveApp() {
-  abortRecording("Recording stopped and discarded because Komms was locked.");
+  abortRecording(l10n("audio_interrupted_discarded"));
   stopCallMedia();
   closeModal();
   clearInterval(state.statusTimer);
@@ -1071,27 +1233,27 @@ listen("screen-security-focus", ({ payload: focused }) => {
 });
 
 invoke("screen_security_policy").then((policy) => {
-  $("#screen-security-mechanism").textContent = policy.mechanism;
+  $("#screen-security-mechanism").textContent = l10nSource(policy.mechanism);
   const limits = $("#screen-security-limitations");
   limits.replaceChildren(...policy.limitations.map((text) => {
     const item = document.createElement("li");
-    item.textContent = text;
+    item.textContent = l10nSource(text);
     return item;
   }));
-}).catch((error) => {
-  $("#screen-security-mechanism").textContent = `Protection status unavailable: ${String(error)}`;
+}).catch(() => {
+  $("#screen-security-mechanism").textContent = l10n("screen_security_status_unavailable");
 });
 
 invoke("incognito_keyboard_policy").then((policy) => {
-  $("#incognito-keyboard-mechanism").textContent = policy.mechanism;
+  $("#incognito-keyboard-mechanism").textContent = l10nSource(policy.mechanism);
   const limits = $("#incognito-keyboard-limitations");
   limits.replaceChildren(...policy.limitations.map((text) => {
     const item = document.createElement("li");
-    item.textContent = text;
+    item.textContent = l10nSource(text);
     return item;
   }));
-}).catch((error) => {
-  $("#incognito-keyboard-mechanism").textContent = `Input privacy status unavailable: ${String(error)}`;
+}).catch(() => {
+  $("#incognito-keyboard-mechanism").textContent = l10n("input_privacy_status_unavailable");
 });
 
 $("#btn-copy-address").addEventListener("click", () => copyText(state.address));
@@ -1102,13 +1264,13 @@ async function refreshStatus() {
     s = await invoke("status");
   } catch (error) {
     if ($("#app").hidden) return; // locked or shutting down
-    const message = `Node status unavailable: ${String(error)}`;
+    const message = l10n("status_unavailable");
     const discovery = $("#stat-discovery");
-    discovery.textContent = "Discovery: unavailable";
+    discovery.textContent = l10n("status_discovery_unavailable");
     discovery.className = "stat warn";
     discovery.title = message;
     const nat = $("#stat-nat");
-    nat.textContent = "NAT: unavailable";
+    nat.textContent = l10n("status_nat_unavailable");
     nat.className = "stat warn";
     nat.title = message;
     return;
@@ -1117,38 +1279,46 @@ async function refreshStatus() {
   state.address = s.connect_code;
   $("#my-address").textContent = s.connect_code;
   const nat = $("#stat-nat");
-  nat.textContent = `NAT: ${s.nat}`;
+  nat.textContent = l10n("status_nat_value", natName(s.nat));
   nat.className = "stat " + (s.nat === "public" ? "good" : s.nat === "private" ? "warn" : "");
-  nat.title = `Listening on:\n${s.listen.join("\n") || "(binding…)"}`;
+  nat.title = l10n(
+    "status_listening_on",
+    s.listen.join("\n") || l10n("status_binding"),
+  );
   const lan = $("#stat-lan");
-  lan.textContent = `LAN: ${s.lan_peers.length}`;
+  lan.textContent = l10n("status_lan_count", s.lan_peers.length);
   lan.className = "stat " + (s.lan_peers.length ? "good" : s.mdns_enabled ? "" : "warn");
   lan.title = s.lan_peers.length
-    ? `Peers on this network:\n${s.lan_peers.join("\n")}`
+    ? l10n("status_lan_peers", s.lan_peers.join("\n"))
     : s.mdns_enabled
-      ? "LAN discovery is on; no peers are visible yet"
-      : "LAN discovery is off in Network settings";
+      ? l10n("status_lan_empty")
+      : l10n("status_lan_disabled");
   const mode = $("#stat-mode");
-  mode.textContent = s.mode === "private" ? "Private" :
-    s.mode === "sovereign" ? "Sovereign" : "Standard";
+  mode.textContent = modeName(s.mode);
   mode.className = "stat good";
   mode.title = s.mode === "private"
-    ? "Optional rendezvous uses the configured Tor ingress; this is not a non-collusion claim."
+    ? l10n("set_mode_private_disclosure")
     : s.mode === "sovereign"
-      ? "Directory defaults and optional rendezvous are disabled."
-      : "Configured convenience providers are disclosed and replaceable.";
+      ? l10n("set_mode_sovereign_disclosure")
+      : l10n("set_mode_standard_disclosure");
   const discovery = $("#stat-discovery");
-  discovery.textContent = s.connection === "connected" ? "Connected" :
-    s.connection === "fallback_ready" ? "Fallback ready" : "Waiting for a route";
+  discovery.textContent = connectionName(s.connection);
   discovery.className = "stat " + (s.connection === "connected" ? "good" :
     s.connection === "fallback_ready" ? "" : "warn");
-  discovery.title = `Directory: ${s.provider_directory.replaceAll("_", " ")}. ` +
-    `${s.connected_peers} live transport peer${s.connected_peers === 1 ? "" : "s"}.`;
-  $("#stat-queued").textContent = `Queued: ${s.queued}`;
-  $("#stat-scheduled").textContent = `Scheduled: ${s.scheduled}`;
+  discovery.title = l10nPlural(
+    "status_directory_peers",
+    s.connected_peers,
+    directoryName(s.provider_directory),
+    s.connected_peers,
+  );
+  $("#stat-queued").textContent = l10n("status_queued_count", s.queued);
+  $("#stat-scheduled").textContent = l10n(
+    "status_scheduled_count",
+    s.scheduled,
+  );
   const transit = $("#stat-transit");
   transit.hidden = s.transit === 0;
-  transit.textContent = `Bridging: ${s.transit}`;
+  transit.textContent = l10n("status_bridging_count", s.transit);
 }
 
 // ── contacts ────────────────────────────────────────────────────────────
@@ -1216,7 +1386,9 @@ async function renderPinnedList() {
     avatar.textContent = row.target.kind === "note_to_self" ? "N" : row.target.kind === "group" ? "G" : (row.display_name?.[0] ?? "?").toUpperCase();
     const name = document.createElement("span");
     name.className = "c-name";
-    name.textContent = row.target.kind === "note_to_self" ? "Note to self" : (row.display_name ?? "Unavailable");
+    name.textContent = row.target.kind === "note_to_self"
+      ? l10n("note_to_self_title")
+      : (row.display_name ?? l10n("pin_unavailable"));
     const iconTarget = row.target.kind === "peer"
       ? { kind: "contact", id: row.target.id }
       : { kind: row.target.kind, id: row.target.id };
@@ -1230,20 +1402,20 @@ async function renderPinnedList() {
     up.type = "button";
     up.className = "ghost";
     up.textContent = "↑";
-    up.title = "Move pin earlier";
-    up.setAttribute("aria-label", `Move ${name.textContent} pin earlier`);
+    up.title = l10n("pins_earlier");
+    up.setAttribute("aria-label", l10n("pin_move_earlier", name.textContent));
     up.addEventListener("click", () => reorderPinTarget(row.target, -1));
     const down = document.createElement("button");
     down.type = "button";
     down.className = "ghost";
     down.textContent = "↓";
-    down.title = "Move pin later";
-    down.setAttribute("aria-label", `Move ${name.textContent} pin later`);
+    down.title = l10n("pins_later");
+    down.setAttribute("aria-label", l10n("pin_move_later", name.textContent));
     down.addEventListener("click", () => reorderPinTarget(row.target, 1));
     const remove = document.createElement("button");
     remove.type = "button";
     remove.className = "ghost";
-    remove.textContent = "Unpin";
+    remove.textContent = l10n("pins_unpin");
     remove.addEventListener("click", async () => {
       await call("unpin_conversation", { target: row.target });
       await runLabelFilter(true);
@@ -1255,20 +1427,19 @@ async function renderPinnedList() {
     const wrap = document.createElement("div");
     wrap.className = "pinned-row stale-pin-row";
     const description = document.createElement("span");
-    const targetName = pin.target.kind === "note_to_self" ? "note-to-self" : `${pin.target.kind} conversation`;
-    description.textContent = `Unavailable ${targetName} pin`;
+    description.textContent = l10n("pin_unavailable");
     const cleanup = document.createElement("button");
     cleanup.type = "button";
     cleanup.className = "danger";
-    cleanup.textContent = "Clean up";
-    cleanup.setAttribute("aria-label", `Clean up unavailable ${targetName} pin`);
+    cleanup.textContent = l10n("pins_cleanup");
+    cleanup.setAttribute("aria-label", l10n("pin_cleanup_accessibility"));
     cleanup.addEventListener("click", async () => {
       try {
         await call("cleanup_stale_pin", { target: pin.target });
-        $("#pin-status").textContent = `Unavailable ${targetName} pin removed.`;
+        $("#pin-status").textContent = l10n("pin_cleanup_done");
         await runLabelFilter(true);
       } catch (error) {
-        $("#pin-status").textContent = String(error);
+        $("#pin-status").textContent = localizedError(error);
       }
     });
     wrap.append(description, cleanup);
@@ -1290,13 +1461,31 @@ async function runLabelFilter(announce = false) {
   state.pinRows = result.conversations;
   state.pins = await call("pins");
   if (result.unavailable_labels.length > 0) {
-    $("#label-filter-status").textContent = `${result.unavailable_labels.length} unavailable selected label ${result.unavailable_labels.length === 1 ? "was" : "were"} removed.`;
+    $("#label-filter-status").textContent = l10nPlural(
+      "label_filter_unavailable",
+      result.unavailable_labels.length,
+      result.unavailable_labels.length,
+    );
   } else if (announce) {
     $("#label-filter-status").textContent = state.labelFilter.selected.length === 0
-      ? "Label filter cleared; every conversation is shown."
-      : `${result.conversations.length} conversation ${result.conversations.length === 1 ? "matches" : "match"} ${state.labelFilter.mode === "any" ? "any" : "all"} selected labels.`;
+      ? l10n("label_filter_cleared")
+      : l10nPlural(
+        "label_filter_result",
+        result.conversations.length,
+        result.conversations.length,
+        l10n(
+          state.labelFilter.mode === "any"
+            ? "label_filter_mode_any"
+            : "label_filter_mode_all",
+        ),
+      );
   } else if (prior !== result.selected.length) {
-    $("#label-filter-status").textContent = "Unavailable label selections were removed.";
+    const removed = Math.max(1, prior - result.selected.length);
+    $("#label-filter-status").textContent = l10nPlural(
+      "label_filter_unavailable",
+      removed,
+      removed,
+    );
   }
   $("#btn-clear-label-filter").hidden = state.labelFilter.selected.length === 0;
   applyLabelFilterVisibility();
@@ -1307,7 +1496,8 @@ async function refreshFolders(announce = false) {
   state.folders = await call("folders");
   if (state.folderSelection.kind === "folder" && !state.folders.some((folder) => folder.id === state.folderSelection.id)) {
     state.folderSelection = { kind: "all", id: null };
-    $("#folder-navigation-status").textContent = "The selected folder is unavailable; showing All conversations.";
+    $("#folder-navigation-status").textContent =
+      l10n("folder_selection_unavailable");
   }
   const items = $("#folder-navigation-items");
   items.replaceChildren();
@@ -1317,7 +1507,10 @@ async function refreshFolders(announce = false) {
     button.className = "ghost";
     button.dataset.folderKind = "folder";
     button.dataset.folderId = folder.id;
-    button.setAttribute("aria-label", `Show ${folderAccessibleName(folder)}`);
+    button.setAttribute(
+      "aria-label",
+      l10n("folder_filter_description", folderAccessibleName(folder)),
+    );
     const avatar = document.createElement("span");
     avatar.className = "avatar";
     const fallback = generatedInitials(folder.name);
@@ -1330,13 +1523,16 @@ async function refreshFolders(announce = false) {
       avatar,
       { kind: "folder", id: folder.id },
       fallback,
-      `folder ${folder.name}`,
+      folderAccessibleName(folder),
     );
     button.addEventListener("click", async () => {
       state.folderSelection = { kind: "folder", id: folder.id };
       await runLabelFilter(true);
       renderFolderNavigationSelection();
-      $("#folder-navigation-status").textContent = `Showing ${folderAccessibleName(folder)}.`;
+      $("#folder-navigation-status").textContent = l10n(
+        "folder_showing",
+        folderAccessibleName(folder),
+      );
     });
     items.append(button);
   }
@@ -1358,7 +1554,10 @@ for (const button of $$('#folder-navigation > button[data-folder-kind]')) {
     state.folderSelection = { kind: button.dataset.folderKind, id: null };
     await runLabelFilter(true);
     renderFolderNavigationSelection();
-    $("#folder-navigation-status").textContent = `Showing ${button.textContent}.`;
+    $("#folder-navigation-status").textContent = l10n(
+      "folder_showing",
+      button.textContent,
+    );
   });
 }
 
@@ -1378,7 +1577,7 @@ async function refreshLabels(announce = false) {
   if (state.labels.length === 0) {
     const empty = document.createElement("p");
     empty.className = "hint";
-    empty.textContent = "No labels yet";
+    empty.textContent = l10n("labels_empty");
     options.append(empty);
   }
   for (const label of state.labels) {
@@ -1388,7 +1587,10 @@ async function refreshLabels(announce = false) {
     input.type = "checkbox";
     input.value = label.id;
     input.checked = state.labelFilter.selected.includes(label.id);
-    input.setAttribute("aria-label", `Filter by ${labelAccessibleName(label)}`);
+    input.setAttribute(
+      "aria-label",
+      l10n("label_filter_by", labelAccessibleName(label)),
+    );
     input.addEventListener("change", async () => {
       state.labelFilter.selected = $$('input[type="checkbox"]', options).filter((item) => item.checked).map((item) => item.value);
       await runLabelFilter(true);
@@ -1459,7 +1661,7 @@ async function refreshContacts() {
       const badge = document.createElement("span");
       badge.className = "badge";
       badge.textContent = "✓";
-      badge.title = "Safety number verified";
+      badge.title = l10n("verify_safety_verified");
       btn.append(badge);
     }
     const unread = state.unread.get(c.peer) ?? 0;
@@ -1483,11 +1685,13 @@ function contactName(peer) {
 }
 
 function memberName(peer) {
-  if (peer === state.peer) return "You";
+  if (peer === state.peer) return l10n("group_you");
   const contact = state.contacts.find((candidate) => candidate.peer === peer);
   if (contact) return contact.name;
   const position = (currentGroup()?.members ?? []).indexOf(peer);
-  return position >= 0 ? `Group member ${position + 1}` : "Unavailable group member";
+  return position >= 0
+    ? l10n("group_member_position", position + 1)
+    : l10n("group_member_unavailable");
 }
 
 function resetMentionDraft(message = "") {
@@ -1508,7 +1712,7 @@ function memberLabel(peer, group = currentGroup()) {
   const sameName = (group?.members ?? []).filter((member) => memberName(member) === base);
   if (sameName.length < 2) return base;
   const position = (group?.members ?? []).indexOf(peer) + 1;
-  return `\u2068${base}\u2069, group member ${position}`;
+  return l10n("group_member_disambiguated", base, position);
 }
 
 function hasUnpairedSurrogate(text) {
@@ -1572,7 +1776,11 @@ function reconcileMentionEdit(oldText, newText) {
     return [];
   });
   if (removed > 0) {
-    $("#mention-status").textContent = `${removed} semantic mention ${removed === 1 ? "link was" : "links were"} removed because its text was edited.`;
+    $("#mention-status").textContent = l10nPlural(
+      "mention_links_removed",
+      removed,
+      removed,
+    );
   }
   renderMentionTokens();
 }
@@ -1599,12 +1807,18 @@ function renderMentionTokens() {
     const button = document.createElement("button");
     button.type = "button";
     button.className = "mention-token";
-    button.textContent = `Mention ${memberLabel(span.target)} ×`;
-    button.setAttribute("aria-label", `Remove mention of ${memberLabel(span.target)}`);
+    button.textContent = `${l10n("mention_label", memberLabel(span.target))} ×`;
+    button.setAttribute(
+      "aria-label",
+      l10n("mention_remove_action", memberLabel(span.target)),
+    );
     button.addEventListener("click", () => {
       state.mentionDraft.spans.splice(index, 1);
       replaceDraftRange(span.start, span.end, "");
-      $("#mention-status").textContent = `Mention of ${memberLabel(span.target)} removed with its visible text.`;
+      $("#mention-status").textContent = l10n(
+        "mention_removed_with_text",
+        memberLabel(span.target),
+      );
       renderMentionTokens();
       $("#composer-input").focus();
     });
@@ -1625,10 +1839,18 @@ async function openMentionPicker() {
   const capability = await call("group_mention_capability", { group: group.id });
   state.mentionDraft.capability = capability;
   state.mentionDraft.group = group.id;
-  const blockers = capability.issues.map((issue) => `${memberLabel(issue.peer, group)} (${issue.reason})`);
+  const blockers = capability.issues.map((issue) => l10n(
+    "mention_blocker",
+    memberLabel(issue.peer, group),
+    l10n(
+      issue.reason === "unsupported"
+        ? "mention_capability_unsupported"
+        : "mention_capability_unknown",
+    ),
+  ));
   $("#mention-status").textContent = capability.supported
-    ? "All current members support semantic mentions. Review the exact final text before Send."
-    : `Semantic mentions cannot be sent now: ${blockers.join(", ")}. Send will offer plain-text fallback with no mention notification.`;
+    ? l10n("mention_ready")
+    : l10n("mention_unavailable", blockers.join(", "));
 
   const picker = $("#mention-picker");
   picker.replaceChildren();
@@ -1647,7 +1869,7 @@ async function openMentionPicker() {
   picker.querySelector('[role="option"]')?.focus();
 }
 
-async function refreshMentionReview(reason) {
+async function refreshMentionReview(_reason) {
   if (
     state.currentKind !== "group"
     || state.mentionDraft.spans.length === 0
@@ -1656,7 +1878,7 @@ async function refreshMentionReview(reason) {
   const fresh = await call("group_mention_capability", { group: state.currentId });
   if (!state.mentionDraft.capability || fresh.review_token !== state.mentionDraft.capability.review_token) {
     state.mentionDraft.capability = fresh;
-    $("#mention-status").textContent = `${reason} Review the exact text and mention tokens before sending.`;
+    $("#mention-status").textContent = l10n("mention_review_again");
   }
 }
 
@@ -1671,7 +1893,10 @@ function insertMention(peer) {
   state.mentionDraft.spans.sort((left, right) => left.start - right.start || left.end - right.end);
   renderMentionTokens();
   closeMentionPicker();
-  $("#mention-status").textContent = `Mention of ${memberLabel(peer)} inserted. Review the exact final text before Send.`;
+  $("#mention-status").textContent = l10n(
+    "mention_inserted",
+    memberLabel(peer),
+  );
 }
 
 function formattingHighlights(message) {
@@ -1691,7 +1916,7 @@ function styledRun(run) {
     if (style === "highlight") {
       wrapper.className = "mention-highlight";
       wrapper.tabIndex = 0;
-      wrapper.setAttribute("aria-label", "Highlighted mention");
+      wrapper.setAttribute("aria-label", l10n("mention_highlighted"));
     }
     wrapper.append(node);
     node = wrapper;
@@ -1742,15 +1967,19 @@ async function refreshGroups() {
     btn.dataset.group = group.id;
     const avatar = document.createElement("span");
     avatar.className = "avatar";
-    const fallback = generatedInitials(group.name || "Group");
+    const fallback = generatedInitials(group.name || l10n("group_default_name"));
     avatar.textContent = fallback;
     const name = document.createElement("span");
     name.className = "c-name";
-    name.textContent = group.name || "Unnamed group";
+    name.textContent = group.name || l10n("group_unnamed");
     applyCustomIcon(avatar, { kind: "group", id: group.id }, fallback, name.textContent);
     const detail = document.createElement("span");
     detail.className = "c-detail";
-    detail.textContent = `${group.members.length} members`;
+    detail.textContent = l10nPlural(
+      "group_member_count",
+      group.members.length,
+      group.members.length,
+    );
     const labels = document.createElement("span");
     labels.className = "label-badges";
     btn.append(avatar, name, labels, detail);
@@ -1778,7 +2007,11 @@ function updateChatHead() {
   const isGroup = state.currentKind === "group";
   const contact = isGroup || isNote ? null : state.contacts.find((x) => x.peer === state.currentId);
   const group = isGroup ? currentGroup() : null;
-  $("#chat-name").textContent = isNote ? "Note to self" : isGroup ? (group?.name ?? "") : contactName(state.currentId);
+  $("#chat-name").textContent = isNote
+    ? l10n("note_to_self_title")
+    : isGroup
+      ? (group?.name ?? "")
+      : contactName(state.currentId);
   $("#chat-verified").hidden = isGroup || isNote || !contact?.verified;
   $("#btn-verify").hidden = isGroup || isNote;
   $("#btn-rename-contact").hidden = isGroup || isNote;
@@ -1795,11 +2028,13 @@ function updateChatHead() {
   $("#note-to-self").classList.toggle("active", isNote);
   const target = labelTarget();
   const isPinned = target && state.pins.some((pin) => labelTargetKey(pin.target) === labelTargetKey(target));
-  $("#btn-conversation-pin").textContent = isPinned ? "Unpin" : "Pin";
+  $("#btn-conversation-pin").textContent = isPinned
+    ? l10n("pins_unpin")
+    : l10nSource("Pin");
   $("#btn-conversation-pin").setAttribute("aria-pressed", isPinned ? "true" : "false");
   if (target) renderTargetBadges($("#chat-label-badges"), target);
   else $("#chat-label-badges").replaceChildren();
-  updateCallButton().catch((error) => toast(String(error), true));
+  updateCallButton().catch((error) => toast(localizedError(error), true));
 }
 
 function callMediaSupported() {
@@ -1814,26 +2049,26 @@ function callMediaSupported() {
 }
 
 function callEndText(reason) {
-  return {
-    declined: "Call declined",
-    busy: "Contact is already in a call",
-    cancelled: "Call cancelled",
-    hung_up: "Call ended",
-    expired: "Call was not answered",
-    answered_elsewhere: "Answered on another linked device",
-    route_lost: "Direct QUIC route lost",
-  }[reason] ?? "Call ended";
+  return l10n({
+    declined: "call_declined",
+    busy: "call_busy",
+    cancelled: "call_cancelled",
+    hung_up: "call_ended",
+    expired: "call_expired",
+    answered_elsewhere: "call_answered_elsewhere",
+    route_lost: "call_route_lost",
+  }[reason] ?? "call_ended");
 }
 
 function callUnavailableText(reason) {
-  return {
-    offline_or_unknown: "No fresh direct QUIC route",
-    bulk_only: "Direct QUIC connection is not ready",
-    mesh_only: "Calls never use radio mesh",
-    missing_session: "Send a message first to establish encryption",
-    unsupported: "A linked device does not support calls",
-    already_in_call: "Another call is already active",
-  }[reason] ?? "Call unavailable";
+  return l10n({
+    offline_or_unknown: "call_offline",
+    bulk_only: "call_bulk_only",
+    mesh_only: "call_mesh_only",
+    missing_session: "call_missing_session",
+    unsupported: "call_unsupported",
+    already_in_call: "call_already_active",
+  }[reason] ?? "call_unavailable");
 }
 
 function showCallStatus(text, className = "") {
@@ -1856,27 +2091,27 @@ async function updateCallButton() {
   if (current) {
     button.disabled = false;
     button.textContent = current.phase === "ringing" && current.direction === "outgoing"
-      ? "Cancel call" : "End call";
-    button.title = "Call media uses only the authenticated direct QUIC stream";
+      ? l10n("call_cancel") : l10n("call_hangup");
+    button.title = l10n("call_direct_quic_note");
     showCallStatus(
-      current.phase === "ringing" ? "Calling… direct QUIC only"
-        : current.phase === "connecting" ? "Authenticating direct QUIC media…"
-          : "Live audio · direct QUIC · end-to-end encrypted",
+      current.phase === "ringing" ? l10n("call_ringing")
+        : current.phase === "connecting" ? l10n("call_connecting")
+          : l10n("call_active"),
       current.phase === "active" ? "active" : "",
     );
     return;
   }
-  button.textContent = "Call";
+  button.textContent = l10n("call_start");
   if (!callMediaSupported()) {
     button.disabled = true;
-    button.title = "This webview lacks WebCodecs Opus or microphone stream support";
-    showCallStatus("Live calls need WebCodecs Opus and microphone support in this webview.");
+    button.title = l10n("call_webview_unsupported");
+    showCallStatus(l10n("call_webview_unsupported"));
     return;
   }
   const availability = await invoke("call_availability", { peer: state.currentId });
   button.disabled = !availability.available;
   button.title = availability.available
-    ? "Start end-to-end encrypted audio over direct QUIC"
+    ? l10n("call_start_description")
     : callUnavailableText(availability.unavailable);
   showCallStatus(availability.available ? "" : callUnavailableText(availability.unavailable));
 }
@@ -1916,7 +2151,7 @@ async function startCallMedia(snapshot) {
   if (state.callMedia?.call === snapshot.id) return;
   if (!callMediaSupported()) {
     await invoke("hangup_call", { call: snapshot.id }).catch(() => {});
-    toast("This webview cannot encode and decode Opus call audio.", true);
+    toast(l10n("call_webview_unsupported"), true);
     return;
   }
   const stream = state.pendingCallStream ?? await acquireCallStream();
@@ -1938,7 +2173,7 @@ async function startCallMedia(snapshot) {
   state.callMedia = media;
 
   media.decoder = new AudioDecoder({
-    error: (error) => toast(`Call decoder: ${error}`, true),
+    error: () => toast(l10n("call_media_failed"), true),
     output: (audio) => {
       if (media.stopped) { audio.close(); return; }
       const buffer = context.createBuffer(audio.numberOfChannels, audio.numberOfFrames, audio.sampleRate);
@@ -1960,7 +2195,7 @@ async function startCallMedia(snapshot) {
   media.decoder.configure({ codec: "opus", sampleRate: 48_000, numberOfChannels: 1 });
 
   media.encoder = new AudioEncoder({
-    error: (error) => toast(`Call encoder: ${error}`, true),
+    error: () => toast(l10n("call_media_failed"), true),
     output: async (chunk) => {
       if (media.stopped || chunk.byteLength > 1_275) return;
       const packet = new Uint8Array(chunk.byteLength);
@@ -1972,7 +2207,7 @@ async function startCallMedia(snapshot) {
           opusPacket: [...packet],
         });
       } catch (error) {
-        if (!media.stopped) toast(String(error), true);
+        if (!media.stopped) toast(localizedError(error), true);
       } finally {
         packet.fill(0);
       }
@@ -1995,7 +2230,7 @@ async function startCallMedia(snapshot) {
       value.close();
     }
   })().catch((error) => {
-    if (!media.stopped) toast(`Microphone stream: ${error}`, true);
+    if (!media.stopped) toast(l10n("call_media_failed"), true);
   });
 
   media.pollTimer = setInterval(async () => {
@@ -2014,7 +2249,9 @@ async function startCallMedia(snapshot) {
         packet.fill(0);
       }
     } catch (error) {
-      if (!media.stopped && !String(error).includes("invalid call")) toast(String(error), true);
+      if (!media.stopped && !String(error).includes("invalid call")) {
+        toast(localizedError(error), true);
+      }
     } finally {
       media.polling = false;
     }
@@ -2026,7 +2263,9 @@ async function handleCallUpdate(snapshot) {
   if (snapshot.phase === "ringing" && snapshot.direction === "incoming"
       && !state.callPrompted.has(snapshot.id)) {
     state.callPrompted.add(snapshot.id);
-    const answer = window.confirm(`${contactName(snapshot.peer)} is calling over direct QUIC. Answer audio call?`);
+    const answer = window.confirm(
+      l10n("call_incoming_prompt", contactName(snapshot.peer)),
+    );
     if (answer) {
       try {
         state.pendingCallStream = await acquireCallStream();
@@ -2034,7 +2273,7 @@ async function handleCallUpdate(snapshot) {
       } catch (error) {
         stopCallMedia();
         await invoke("decline_call", { call: snapshot.id }).catch(() => {});
-        toast(String(error), true);
+        toast(localizedError(error), true);
       }
     } else {
       await invoke("decline_call", { call: snapshot.id });
@@ -2070,23 +2309,27 @@ $("#btn-call").addEventListener("click", async () => {
     }
   } catch (error) {
     stopCallMedia();
-    toast(String(error), true);
+    toast(localizedError(error), true);
   }
 });
 
 function contactNameWarningText(assessment) {
   const messages = [];
   if (assessment.warnings.includes("duplicate_name")) {
-    messages.push(`${assessment.duplicate_count} other contact${assessment.duplicate_count === 1 ? " has" : "s have"} this exact private petname.`);
+    messages.push(l10nPlural(
+      "contact_warning_duplicate",
+      assessment.duplicate_count,
+      assessment.duplicate_count,
+    ));
   }
   if (assessment.warnings.includes("confusable_name")) {
-    messages.push("This name mixes lookalike scripts or resembles another local petname.");
+    messages.push(l10n("contact_warning_confusable"));
   }
   if (assessment.warnings.includes("bidirectional_control")) {
-    messages.push("This name contains directional controls that can change display order.");
+    messages.push(l10n("contact_warning_bidi"));
   }
   if (assessment.warnings.includes("invisible_character")) {
-    messages.push("This name contains invisible formatting characters.");
+    messages.push(l10n("contact_warning_invisible"));
   }
   return messages.join("\n");
 }
@@ -2095,7 +2338,7 @@ $("#btn-rename-contact").addEventListener("click", () => {
   const peer = state.currentId;
   const contact = state.contacts.find((candidate) => candidate.peer === peer);
   if (!peer || !contact) return;
-  const root = openModal(`Rename ${contact.name || "contact"}`, "tpl-rename-contact");
+  const root = openModal(l10n("contact_rename_title"), "tpl-rename-contact");
   const input = root.querySelector('[data-f="name"]');
   input.value = contact.name;
   root.querySelector('[data-act="save"]').addEventListener("click", async () => {
@@ -2107,7 +2350,12 @@ $("#btn-rename-contact").addEventListener("click", () => {
       let acceptWarnings = false;
       if (assessment.warnings.length > 0) {
         const warning = contactNameWarningText(assessment);
-        acceptWarnings = window.confirm(`${warning}\n\nStore “${assessment.normalized_name}” anyway? Duplicate names remain separate by peer identity.`);
+        acceptWarnings = window.confirm(
+          `${warning}\n\n${l10n(
+            "contact_warning_identity",
+            assessment.normalized_name,
+          )}`,
+        );
         if (!acceptWarnings) return;
       }
       const renamed = await invoke("rename_contact", {
@@ -2118,9 +2366,9 @@ $("#btn-rename-contact").addEventListener("click", () => {
       closeModal();
       await refreshContacts();
       await refreshGroups();
-      toast(`Private petname changed to ${renamed.normalized_name}`);
+      toast(l10n("contact_rename_done", renamed.normalized_name));
     } catch (e) {
-      error.textContent = String(e);
+      error.textContent = localizedError(e);
       error.hidden = false;
     }
   });
@@ -2133,7 +2381,9 @@ $("#btn-conversation-pin").addEventListener("click", async () => {
   await call(isPinned ? "unpin_conversation" : "pin_conversation", { target });
   await runLabelFilter(true);
   updateChatHead();
-  $("#pin-status").textContent = isPinned ? "Conversation unpinned." : "Conversation pinned.";
+  $("#pin-status").textContent = l10n(
+    isPinned ? "pin_unpinned_status" : "pin_pinned_status",
+  );
 });
 
 // ── conversation ────────────────────────────────────────────────────────
@@ -2178,7 +2428,7 @@ async function openGroup(group) {
   $("#chat-empty").hidden = true;
   $("#chat-pane").hidden = false;
   $("#composer-input").value = "";
-  resetMentionDraft("Use Mention member to choose an exact current roster identity.");
+  resetMentionDraft(l10n("mention_member_description"));
   updateChatHead();
   await renderMessages();
   refreshGroups();
@@ -2254,10 +2504,14 @@ function messageDaySeparator(unixSecs) {
   separator.className = "message-day";
   separator.setAttribute("role", "separator");
   separator.textContent = date.toDateString() === today.toDateString()
-    ? "Today"
+    ? l10n("date_today")
     : date.toDateString() === yesterday.toDateString()
-      ? "Yesterday"
-      : date.toLocaleDateString([], { month: "long", day: "numeric", year: "numeric" });
+      ? l10n("date_yesterday")
+      : date.toLocaleDateString(KommsLocalization.activeLocale(), {
+        month: "long",
+        day: "numeric",
+        year: "numeric",
+      });
   return separator;
 }
 
@@ -2274,7 +2528,7 @@ function bubble(m, formatted) {
     st.className = "state"
       + (m.state === "delivered" ? " state-delivered" : "")
       + (m.state === "failed" ? " state-failed" : "");
-    st.textContent = " · " + (STATE_GLYPH[m.state] ?? m.state);
+    st.textContent = ` · ${deliveryState(m.state)}`;
     meta.append(st);
   }
   el.append(meta);
@@ -2289,7 +2543,7 @@ function noteBubble(m, formatted) {
   appendFormattedBody(el, formatted);
   const meta = document.createElement("span");
   meta.className = "meta";
-  meta.textContent = `${fmtTime(m.timestamp)} · local only`;
+  meta.textContent = `${fmtTime(m.timestamp)} · ${l10n("note_local_only")}`;
   el.append(meta);
   state.msgEls.set(m.id, el);
   return el;
@@ -2311,13 +2565,13 @@ function groupBubble(m, formatted) {
   appendExpiryMetadata(meta, m);
   if (m.authentication === "legacy_membership") {
     const authentication = document.createElement("span");
-    authentication.textContent = " · legacy group origin";
-    authentication.title = "This historical row is membership-authenticated; it is not proof of the individual sender.";
+    authentication.textContent = ` · ${l10n("group_message_legacy_origin")}`;
+    authentication.title = l10n("group_message_legacy_origin_detail");
     meta.append(authentication);
   } else if (m.authentication === "pending_recipient_authentication") {
     const authentication = document.createElement("span");
-    authentication.textContent = " · securing recipients";
-    authentication.title = "This attachment is local-only until every recipient wrapper is authenticated and queued.";
+    authentication.textContent = ` · ${l10n("group_message_pending_origin")}`;
+    authentication.title = l10n("group_message_pending_origin_detail");
     meta.append(authentication);
   }
   el.append(meta);
@@ -2331,7 +2585,11 @@ function groupBubble(m, formatted) {
         + (delivery.state === "delivered" ? " state-delivered" : "")
         + (delivery.state === "failed" ? " state-failed" : "");
       item.dataset.peer = delivery.peer;
-      item.textContent = `${memberName(delivery.peer)} · ${STATE_GLYPH[delivery.state] ?? delivery.state}`;
+      item.textContent = l10n(
+        "group_delivery_row",
+        memberName(delivery.peer),
+        deliveryState(delivery.state),
+      );
       deliveries.append(item);
     }
     el.append(deliveries);
@@ -2344,8 +2602,8 @@ function appendExpiryMetadata(meta, message) {
   if (message.content_kind !== "disappearing_text" || !message.expires_at) return;
   const marker = document.createElement("span");
   marker.className = "expiry-marker";
-  marker.textContent = ` · removes ${fmtExpiry(message.expires_at)}`;
-  marker.title = "Removed locally at this time. Other devices may retain copies.";
+  marker.textContent = ` · ${l10n("ephemeral_remove_at", fmtExpiry(message.expires_at))}`;
+  marker.title = l10n("ephemeral_honesty");
   meta.append(marker);
 }
 
@@ -2353,15 +2611,15 @@ function appendEditMetadata(container, meta, message, group) {
   if (message.edited) {
     const marker = document.createElement("span");
     marker.className = "edited-marker";
-    marker.textContent = ` · edited r${message.edit_revision}`;
+    marker.textContent = ` · ${l10n("message_edited_revision", message.edit_revision)}`;
     meta.append(marker);
   }
   if (message.outbound && message.content_kind === "text") {
     const edit = document.createElement("button");
     edit.type = "button";
     edit.className = "message-edit ghost";
-    edit.textContent = "Edit";
-    edit.setAttribute("aria-label", "Edit this message");
+    edit.textContent = l10n("message_edit_action");
+    edit.setAttribute("aria-label", l10n("message_edit_action_description"));
     edit.addEventListener("click", () => openMessageEdit(message, group));
     meta.append(" · ", edit);
   }
@@ -2369,13 +2627,19 @@ function appendEditMetadata(container, meta, message, group) {
   const history = document.createElement("details");
   history.className = "edit-history";
   const summary = document.createElement("summary");
-  summary.textContent = `Version history (${message.versions.length})`;
+  summary.textContent = l10nPlural(
+    "message_version_history",
+    message.versions.length,
+    message.versions.length,
+  );
   history.append(summary);
   const list = document.createElement("ol");
   for (const version of [...message.versions].reverse()) {
     const item = document.createElement("li");
     const label = document.createElement("strong");
-    label.textContent = version.revision === 0 ? "Original" : `Revision ${version.revision}`;
+    label.textContent = version.revision === 0
+      ? l10n("message_history_original")
+      : l10n("message_history_revision", version.revision);
     const time = document.createElement("span");
     time.className = "version-time";
     time.textContent = ` · ${fmtTime(version.timestamp)}`;
@@ -2392,14 +2656,14 @@ function appendEditMetadata(container, meta, message, group) {
 function openMessageEdit(message, group) {
   if (!message.outbound || message.content_kind !== "text") return;
   const conversation = state.currentId;
-  const root = openModal("Edit message", "tpl-message-edit");
+  const root = openModal(l10n("message_edit_title"), "tpl-message-edit");
   const body = root.querySelector('[data-f="body"]');
   body.value = message.body;
   root.addEventListener("click", async (event) => {
     if (!event.target.matches('[data-act="save"]')) return;
     event.preventDefault();
     try {
-      if (body.value.length === 0) throw "write replacement text first";
+      if (body.value.length === 0) throw l10n("message_edit_empty");
       const exact = {
         targetAuthor: state.peer,
         targetContentId: message.id,
@@ -2426,20 +2690,20 @@ function scheduledBubble(message, formatted) {
   appendFormattedBody(el, formatted);
   const meta = document.createElement("span");
   meta.className = "meta scheduled-meta";
-  meta.textContent = `scheduled for ${fmtTime(message.not_before)}`;
+  meta.textContent = l10n("scheduled_send_at", fmtTime(message.not_before));
   const actions = document.createElement("span");
   actions.className = "scheduled-actions";
   const edit = document.createElement("button");
   edit.type = "button";
   edit.className = "ghost";
-  edit.textContent = "Edit";
+  edit.textContent = l10n("scheduled_edit");
   edit.addEventListener("click", () => openScheduleModal(message));
   const cancel = document.createElement("button");
   cancel.type = "button";
   cancel.className = "danger";
-  cancel.textContent = "Cancel";
+  cancel.textContent = l10n("scheduled_cancel");
   cancel.addEventListener("click", async () => {
-    if (!window.confirm("Cancel this scheduled message?")) return;
+    if (!window.confirm(l10n("scheduled_cancel_title"))) return;
     await call("cancel_scheduled", { message: message.id });
     await renderMessages();
     await refreshStatus();
@@ -2476,40 +2740,43 @@ async function runAttachmentAction(command, transfer) {
 async function exportAttachment(attachment) {
   const primary = attachment.objects.find((object) => !object.preview) ?? attachment.objects[0];
   const path = await savePath({
-    title: "Export attachment",
-    defaultPath: primary?.filename ?? "attachment",
+    title: l10n("attachment_export_title"),
+    defaultPath: primary?.filename ?? l10n("attachment_default_name"),
   });
   if (!path) return;
   await call("export_attachment", { transfer: attachment.transfer_id, path });
-  toast(`Exported ${primary?.filename ?? "attachment"}`);
+  toast(l10n(
+    "attachment_exported_name",
+    primary?.filename ?? l10n("attachment_default_name"),
+  ));
 }
 
 async function consumeViewOnceAttachment(attachment) {
   const primary = attachment.objects.find((object) => !object.preview) ?? attachment.objects[0];
-  const name = primary?.filename ?? "view-once-attachment";
-  if (!window.confirm(`Reveal “${name}” once? Komms records consumption and removes its local message and media before writing the file. Other devices and applications may retain copies.`)) return;
-  const path = await savePath({ title: "Reveal view-once attachment once", defaultPath: name });
+  const name = primary?.filename ?? l10n("attachment_view_once_filename");
+  if (!window.confirm(l10n("attachment_reveal_once_named_confirmation", name))) return;
+  const path = await savePath({ title: l10n("attachment_reveal_once_title"), defaultPath: name });
   if (!path) return;
   await call("consume_view_once_attachment", { transfer: attachment.transfer_id, path });
-  toast(`Revealed ${name} once and removed it from Komms on this device`);
+  toast(l10n("attachment_revealed_once", name));
   await renderMessages();
 }
 
 async function openAttachment(attachment) {
   const primary = attachment.objects.find((object) => !object.preview) ?? attachment.objects[0];
-  const name = primary?.filename ?? "attachment";
-  if (!window.confirm(`Open “${name}” with another application? The file was not scanned for malware.`)) return;
+  const name = primary?.filename ?? l10n("attachment_default_name");
+  if (!window.confirm(l10n("attachment_open_confirmation", name))) return;
   await call("open_attachment", { transfer: attachment.transfer_id });
-  toast(`Opened ${name}`);
+  toast(l10n("attachment_opened", name));
 }
 
 function attachmentWarningText(warning) {
   switch (warning) {
-    case "media_type_mismatch": return "The filename extension and claimed media type disagree.";
-    case "dangerous_type": return "This name or type can contain executable or active content.";
-    case "unrecognized_type": return "Komms does not recognize this file type.";
-    case "missing_filename": return "No filename was supplied, so its extension cannot be checked.";
-    default: return "This file has an unknown presentation warning.";
+    case "media_type_mismatch": return l10n("attachment_warning_mismatch");
+    case "dangerous_type": return l10n("attachment_warning_dangerous");
+    case "unrecognized_type": return l10n("attachment_warning_unrecognized");
+    case "missing_filename": return l10n("attachment_warning_missing_name");
+    default: return l10n("attachment_warning_unknown");
   }
 }
 
@@ -2523,10 +2790,21 @@ function attachmentRow(attachment) {
   const title = document.createElement("span");
   title.className = "attachment-title";
   const isAudio = primary?.media_type === "audio/wav";
-  title.textContent = attachment.view_once ? `View once · ${primary?.filename ?? "Attachment"}` : isAudio ? "Audio message" : (primary?.filename ?? "Attachment");
+  title.textContent = attachment.view_once
+    ? l10n(
+      "attachment_view_once_named",
+      primary?.filename ?? l10n("attachment_default_name"),
+    )
+    : isAudio
+      ? l10n("attachment_audio_message")
+      : (primary?.filename ?? l10n("attachment_default_name"));
   const transferState = document.createElement("span");
   transferState.className = `attachment-state ${attachment.state}`;
-  transferState.textContent = `${attachment.direction} · ${attachment.state.replaceAll("_", " ")}`;
+  transferState.textContent = l10n(
+    "attachment_direction_state",
+    attachmentDirection(attachment.direction),
+    attachmentState(attachment.state),
+  );
   head.append(title, transferState);
   row.append(head);
 
@@ -2534,8 +2812,10 @@ function attachmentRow(attachment) {
   safety.className = "attachment-safety";
   const noScan = document.createElement("p");
   noScan.textContent = attachment.view_once
-    ? `Sender-provided name and type. Not scanned. Opening is terminal here${attachment.expires_at ? `; unopened copy removes ${fmtExpiry(attachment.expires_at)}` : ""}. Other devices may retain copies.`
-    : "Sender-provided name and type. Not scanned for malware; completed files never open automatically.";
+    ? attachment.expires_at
+      ? l10n("attachment_view_once_expiry_safety", fmtExpiry(attachment.expires_at))
+      : l10n("attachment_view_once_safety")
+    : l10n("attachment_safety_notice");
   safety.append(noScan);
   for (const warning of primary?.presentation?.warnings ?? []) {
     const message = document.createElement("p");
@@ -2549,7 +2829,10 @@ function attachmentRow(attachment) {
   if (preview && !attachment.view_once) {
     const image = document.createElement("img");
     image.className = "attachment-preview";
-    image.alt = `Local preview of ${primary?.filename ?? "attachment"}`;
+    image.alt = l10n(
+      "attachment_preview_named",
+      primary?.filename ?? l10n("attachment_default_name"),
+    );
     image.hidden = true;
     row.append(image);
     invoke("attachment_preview", { transfer: attachment.transfer_id })
@@ -2563,7 +2846,12 @@ function attachmentRow(attachment) {
   if (!attachment.view_once && !preview && primary?.media_type === "image/png" && attachment.state === "complete") {
     const image = document.createElement("img");
     image.className = "attachment-preview";
-    image.alt = `Protected exact image from ${attachment.direction === "inbound" ? "sender" : "you"}`;
+    image.alt = l10n(
+      "attachment_protected_image",
+      attachment.direction === "inbound"
+        ? l10n("attachment_sender")
+        : l10n("group_you"),
+    );
     row.append(image);
     invoke("attachment_image", { transfer: attachment.transfer_id })
       .then((source) => { image.src = source; })
@@ -2574,7 +2862,7 @@ function attachmentRow(attachment) {
     const audioCard = document.createElement("div");
     audioCard.className = "audio-card";
     audioCard.setAttribute("aria-busy", "true");
-    audioCard.textContent = "Preparing protected audio playback…";
+    audioCard.textContent = l10n("attachment_preparing_audio");
     row.append(audioCard);
     invoke("attachment_audio", { transfer: attachment.transfer_id })
       .then((media) => {
@@ -2586,13 +2874,18 @@ function attachmentRow(attachment) {
           media.data_url,
           media.duration_ms,
           media.waveform,
-          `Audio message from ${attachment.direction === "inbound" ? "sender" : "you"}`
+          l10n(
+            "attachment_audio_from",
+            attachment.direction === "inbound"
+              ? l10n("attachment_sender")
+              : l10n("group_you"),
+          ),
         );
       })
       .catch((error) => {
         if (!audioCard.isConnected) return;
         audioCard.setAttribute("aria-busy", "false");
-        audioCard.textContent = `Audio unavailable: ${error}`;
+        audioCard.textContent = l10n("attachment_audio_unavailable");
       });
   }
 
@@ -2602,14 +2895,25 @@ function attachmentRow(attachment) {
     const objectHead = document.createElement("div");
     objectHead.className = "attachment-object-head";
     const description = document.createElement("span");
-    description.textContent = `${object.preview ? "Preview" : "Primary"} · ${object.media_type}`;
+    const objectKind = object.preview
+      ? l10n("attachment_preview")
+      : l10n("attachment_primary");
+    description.textContent = l10n("attachment_object_kind", objectKind, object.media_type);
     const progressText = document.createElement("span");
-    progressText.textContent = `${exactBytes(object.verified_bytes, object.total_bytes)} · ${object.state.replaceAll("_", " ")}`;
+    progressText.textContent = l10n(
+      "attachment_progress",
+      Number(object.verified_bytes),
+      Number(object.total_bytes),
+      attachmentState(object.state),
+    );
     objectHead.append(description, progressText);
     const progress = document.createElement("progress");
     progress.max = Math.max(1, Number(object.total_bytes));
     progress.value = Math.min(Number(object.verified_bytes), progress.max);
-    progress.setAttribute("aria-label", `${object.preview ? "Preview" : "Primary"} verified progress`);
+    progress.setAttribute(
+      "aria-label",
+      l10n("attachment_progress_named", objectKind),
+    );
     objectRow.append(objectHead, progress);
     row.append(objectRow);
   }
@@ -2622,26 +2926,26 @@ function attachmentRow(attachment) {
 
   if (awaitingConsent) {
     actions.append(
-      attachmentButton("Accept", "primary", () => runAttachmentAction("accept_attachment", attachment.transfer_id)),
-      attachmentButton("Reject", "danger", () => runAttachmentAction("reject_attachment", attachment.transfer_id))
+      attachmentButton(l10n("attachment_accept"), "primary", () => runAttachmentAction("accept_attachment", attachment.transfer_id)),
+      attachmentButton(l10n("attachment_reject"), "danger", () => runAttachmentAction("reject_attachment", attachment.transfer_id))
     );
   } else {
     if (attachment.state === "paused") {
-      actions.append(attachmentButton("Resume", "ghost", () => runAttachmentAction("resume_attachment", attachment.transfer_id)));
+      actions.append(attachmentButton(l10n("attachment_resume"), "ghost", () => runAttachmentAction("resume_attachment", attachment.transfer_id)));
     } else if (["offered", "queued", "transferring"].includes(attachment.state)) {
-      actions.append(attachmentButton("Pause", "ghost", () => runAttachmentAction("pause_attachment", attachment.transfer_id)));
+      actions.append(attachmentButton(l10n("attachment_pause"), "ghost", () => runAttachmentAction("pause_attachment", attachment.transfer_id)));
     }
     if (active) {
-      actions.append(attachmentButton("Cancel", "danger", () => runAttachmentAction("cancel_attachment", attachment.transfer_id)));
+      actions.append(attachmentButton(l10n("attachment_cancel"), "danger", () => runAttachmentAction("cancel_attachment", attachment.transfer_id)));
     }
   }
   if (inbound && attachment.state === "complete") {
     if (attachment.view_once) {
-      actions.append(attachmentButton("Reveal once…", "primary", () => consumeViewOnceAttachment(attachment)));
+      actions.append(attachmentButton(l10n("attachment_reveal_once"), "primary", () => consumeViewOnceAttachment(attachment)));
     } else if (primary?.presentation?.open_policy === "external_open") {
-      actions.append(attachmentButton("Open…", "ghost", () => openAttachment(attachment)));
+      actions.append(attachmentButton(l10n("attachment_open"), "ghost", () => openAttachment(attachment)));
     }
-    if (!attachment.view_once) actions.append(attachmentButton("Export…", "primary", () => exportAttachment(attachment)));
+    if (!attachment.view_once) actions.append(attachmentButton(l10n("attachment_export"), "primary", () => exportAttachment(attachment)));
   }
   if (actions.childElementCount > 0) row.append(actions);
   return row;
@@ -2664,7 +2968,11 @@ function renderAttachments(attachments) {
   const toggle = document.createElement("button");
   toggle.type = "button";
   toggle.className = "ghost attachment-panel-toggle";
-  toggle.textContent = `${attachmentsPanelExpanded ? "▾" : "▸"} Attachments (${matching.length})`;
+  toggle.textContent = l10n(
+    "attachment_transfers_toggle",
+    attachmentsPanelExpanded ? "▾" : "▸",
+    matching.length,
+  );
   toggle.setAttribute("aria-expanded", String(attachmentsPanelExpanded));
   toggle.addEventListener("click", () => {
     attachmentsPanelExpanded = !attachmentsPanelExpanded;
@@ -2674,7 +2982,7 @@ function renderAttachments(attachments) {
   if (!attachmentsPanelExpanded) return;
   const policy = document.createElement("p");
   policy.className = "attachment-background-policy";
-  policy.textContent = "Transfers continue while Komms is open or minimized. Closing the app pauses network work; verified progress resumes after unlock.";
+  policy.textContent = l10n("attachment_background_policy");
   panel.append(policy);
   for (const attachment of matching) panel.append(attachmentRow(attachment));
 }
@@ -2686,16 +2994,16 @@ function renderPolls(polls, authority) {
   for (const poll of polls) {
     const card = document.createElement("article");
     card.className = "poll-card";
-    card.setAttribute("aria-label", `Poll: ${poll.question}`);
+    card.setAttribute("aria-label", l10n("poll_accessibility", poll.question));
     const question = document.createElement("h3");
     question.textContent = poll.question;
     const policy = document.createElement("p");
     policy.className = "poll-policy";
     policy.textContent = poll.closed
       ? (poll.moderated_by
-        ? `Closed by owner ${memberLabel(poll.moderated_by)} · signed moderation snapshot · votes visible to all members`
-        : "Closed · final creator snapshot · votes visible to all members")
-      : "Open · single choice · votes visible to all members · not anonymous";
+        ? l10n("poll_moderated_policy", memberLabel(poll.moderated_by))
+        : l10n("poll_closed_policy"))
+      : l10n("poll_open_policy");
     const choices = document.createElement("div");
     choices.className = "poll-options";
     choices.setAttribute("role", "group");
@@ -2706,7 +3014,15 @@ function renderPolls(polls, authority) {
       button.className = "poll-option";
       button.disabled = poll.closed || !poll.eligible;
       button.setAttribute("aria-pressed", option.selected_by_me ? "true" : "false");
-      button.setAttribute("aria-label", `${option.text}, ${option.votes} vote${option.votes === 1 ? "" : "s"}${option.selected_by_me ? ", your choice" : ""}`);
+      button.setAttribute(
+        "aria-label",
+        l10nPlural(
+          option.selected_by_me ? "poll_option_selected" : "poll_option",
+          option.votes,
+          option.text,
+          option.votes,
+        ),
+      );
       const label = document.createElement("span");
       label.textContent = option.text;
       const count = document.createElement("strong");
@@ -2721,7 +3037,7 @@ function renderPolls(polls, authority) {
             optionId: option.id,
           });
           await renderMessages();
-          toast(`Vote recorded for “${option.text}”. Votes are visible to group members.`);
+          toast(l10n("poll_voted"));
         } catch (error) { toast(String(error), true); }
       });
       choices.append(button);
@@ -2729,19 +3045,23 @@ function renderPolls(polls, authority) {
     const voters = document.createElement("p");
     voters.className = "poll-voters";
     voters.textContent = poll.votes.length === 0
-      ? "No votes yet."
-      : `Visible votes: ${poll.votes.map((vote) => {
-        const choice = poll.options.find((option) => option.id === vote.option_id)?.text ?? "unavailable choice";
-        return `${memberLabel(vote.voter)} → ${choice}`;
-      }).join(", ")}.`;
+      ? l10n("poll_no_votes")
+      : l10n(
+        "poll_visible_votes",
+        poll.votes.map((vote) => {
+          const choice = poll.options.find((option) => option.id === vote.option_id)?.text
+            ?? l10n("poll_unavailable_choice");
+          return `${memberLabel(vote.voter)} → ${choice}`;
+        }).join(", "),
+      );
     card.append(question, policy, choices, voters);
     if (poll.can_close) {
       const close = document.createElement("button");
       close.type = "button";
       close.className = "ghost";
-      close.textContent = "Close poll…";
+      close.textContent = l10n("poll_close_action");
       close.addEventListener("click", async () => {
-        if (!confirm(`Close “${poll.question}” with the visible vote heads shown now? This cannot be undone.`)) return;
+        if (!confirm(l10n("poll_close_confirm", poll.question))) return;
         try {
           await call("close_group_poll", {
             group: poll.group,
@@ -2749,7 +3069,7 @@ function renderPolls(polls, authority) {
             pollId: poll.id,
           });
           await renderMessages();
-          toast("Poll closed with a final visible-vote snapshot.");
+          toast(l10n("poll_closed"));
         } catch (error) { toast(String(error), true); }
       });
       card.append(close);
@@ -2758,9 +3078,11 @@ function renderPolls(polls, authority) {
       const moderate = document.createElement("button");
       moderate.type = "button";
       moderate.className = "ghost";
-      moderate.textContent = authority.my_role === "owner" ? "Moderate close…" : "Request moderation close…";
+      moderate.textContent = authority.my_role === "owner"
+        ? l10n("poll_moderate_action")
+        : l10n("poll_moderate_request_action");
       moderate.addEventListener("click", async () => {
-        if (!confirm(`Close “${poll.question}” through signed group authority? The owner sequences the exact final snapshot.`)) return;
+        if (!confirm(l10n("poll_moderate_confirm", poll.question))) return;
         try {
           await call("moderate_group_poll_close", {
             group: poll.group,
@@ -2768,7 +3090,7 @@ function renderPolls(polls, authority) {
             pollId: poll.id,
           });
           await renderMessages();
-          toast(authority.my_role === "owner" ? "Poll closed by signed owner authority." : "Moderation request sent to the owner.");
+          toast(l10n("poll_moderate_sent"));
         } catch (error) { toast(String(error), true); }
       });
       card.append(moderate);
@@ -2856,18 +3178,24 @@ function renderGroupSecurity(security) {
   $("#btn-schedule").disabled = blocked;
   if (security.level === "upgrade_required") {
     panel.hidden = false;
-    $("#group-security-title").textContent = "Group security upgrade required. ";
-    $("#group-security-detail").textContent = "New messages and author-sensitive actions stay blocked until every current device receives a fresh recipient-specific origin capability.";
+    $("#group-security-title").textContent = `${l10n("group_origin_upgrade_required")}. `;
+    $("#group-security-detail").textContent = l10n("group_security_upgrade_required");
     upgrade.hidden = false;
   } else if (security.level === "upgrading") {
     panel.hidden = false;
-    $("#group-security-title").textContent = "Upgrading group security. ";
-    $("#group-security-detail").textContent = `${security.pending_devices.length} device${security.pending_devices.length === 1 ? "" : "s"} still waiting. Komms will continue automatically.`;
+    $("#group-security-title").textContent = `${l10n("group_origin_upgrade_in_progress")}. `;
+    $("#group-security-detail").textContent = l10n(
+      "group_security_upgrading",
+      security.pending_devices.length,
+    );
     upgrade.hidden = true;
   } else if (security.legacy_history_rows > 0) {
     panel.hidden = false;
-    $("#group-security-title").textContent = "New messages are recipient-authenticated. ";
-    $("#group-security-detail").textContent = `${security.legacy_history_rows} older message${security.legacy_history_rows === 1 ? "" : "s"} remain accurately labelled as legacy membership-authenticated history.`;
+    $("#group-security-title").textContent = `${l10n("group_origin_authenticated")}. `;
+    $("#group-security-detail").textContent = l10n(
+      "group_security_authenticated_with_legacy",
+      security.legacy_history_rows,
+    );
     upgrade.hidden = true;
   } else {
     panel.hidden = true;
@@ -2902,7 +3230,7 @@ $("#composer").addEventListener("submit", async (e) => {
     }
   } else if (state.currentKind === "group" && state.mentionDraft.spans.length > 0) {
     if (hasUnpairedSurrogate(visibleText)) {
-      toast("The draft contains invalid Unicode and cannot be sent.", true);
+      toast(l10n("mention_invalid_unicode"), true);
       return;
     }
     const fresh = await call("group_mention_capability", { group: state.currentId });
@@ -2913,14 +3241,14 @@ $("#composer").addEventListener("submit", async (e) => {
     ) {
       state.mentionDraft.capability = fresh;
       state.mentionDraft.group = state.currentId;
-      $("#mention-status").textContent = "The roster, identity mapping, or capability support changed. Review the exact text and selected mention tokens, then press Send again.";
+      $("#mention-status").textContent = l10n("mention_review_again");
       $("#composer-input").focus();
       return;
     }
     if (!fresh.supported) {
       const blockers = fresh.issues.map((issue) => `${memberLabel(issue.peer)} (${issue.reason})`).join(", ");
       const plain = window.confirm(
-        `Semantic mentions are unavailable for ${blockers}. Send the exact visible text as ordinary plain text? It will carry no semantic mention and trigger no mention notification.`
+        `${l10n("mention_unavailable", blockers)}\n\n${l10n("mention_plain_message")}`,
       );
       if (!plain) return;
       await call("send_group", { group: state.currentId, body: visibleText });
@@ -2945,7 +3273,9 @@ $("#composer").addEventListener("submit", async (e) => {
     await call("send", { peer: state.currentId, body: visibleText.trim() });
   }
   input.value = "";
-  resetMentionDraft(state.currentKind === "group" ? "Use Mention member to choose an exact current roster identity." : "");
+  resetMentionDraft(
+    state.currentKind === "group" ? l10n("mention_member_description") : "",
+  );
   await renderMessages();
 });
 
@@ -2955,28 +3285,33 @@ $("#composer-expiry").addEventListener("change", (event) => {
   if (active && state.mentionDraft.spans.length > 0) {
     state.mentionDraft.spans = [];
     renderMentionTokens();
-    $("#mention-status").textContent = "Semantic mentions were removed from this draft because disappearing text is a distinct authenticated content type.";
+    $("#mention-status").textContent = l10n("mention_disappearing_removed");
   }
 });
 
 function openScheduleModal(message = null) {
   if (!state.currentId || state.currentKind === "note") return;
   const editing = message !== null;
-  const root = openModal(editing ? "Edit scheduled message" : "Schedule message", "tpl-schedule");
+  const root = openModal(
+    l10n(editing ? "scheduled_dialog_edit" : "scheduled_dialog_new"),
+    "tpl-schedule",
+  );
   const body = root.querySelector('[data-f="body"]');
   const notBefore = root.querySelector('[data-f="not-before"]');
   body.value = message?.body ?? $("#composer-input").value.trim();
   const earliest = Math.floor(Date.now() / 1000) + 60;
   notBefore.min = dateTimeLocalValue(Math.min(message?.not_before ?? earliest, earliest));
   notBefore.value = dateTimeLocalValue(message?.not_before ?? earliest + 29 * 60);
-  root.querySelector('[data-act="save"]').textContent = editing ? "Save changes" : "Schedule message";
+  root.querySelector('[data-act="save"]').textContent = l10n(
+    editing ? "save_changes" : "scheduled_dialog_new",
+  );
   root.addEventListener("click", async (event) => {
     if (!event.target.matches('[data-act="save"]')) return;
     const text = body.value.trim();
     const instant = Math.floor(new Date(notBefore.value).getTime() / 1000);
     try {
-      if (!text) throw "write a message first";
-      if (!Number.isFinite(instant)) throw "choose a send time";
+      if (!text) throw l10n("scheduled_need_body");
+      if (!Number.isFinite(instant)) throw l10n("scheduled_need_future");
       if (editing) {
         await invoke("edit_scheduled", {
           message: message.id,
@@ -3074,19 +3409,37 @@ function cropFromControls(root) {
 function renderImageReview(root) {
   const draft = state.imageDraft;
   root.querySelector('[data-f="image-review"]').src = draft.review.data_url;
-  root.querySelector('[data-f="image-info"]').textContent =
-    `${draft.review.width} × ${draft.review.height} pixels · ${Number(draft.review.encoded_bytes).toLocaleString()} bytes · PNG re-encoded without source metadata`;
+  root.querySelector('[data-f="image-info"]').textContent = l10n(
+    "attachment_image_summary",
+    Number(draft.review.width),
+    Number(draft.review.height),
+    Number(draft.review.encoded_bytes),
+  );
   const regions = root.querySelector('[data-f="regions"]');
   regions.replaceChildren();
   draft.recipe.regions.forEach((region, index) => {
     const item = document.createElement("li");
-    item.textContent = `${region.kind}, x ${region.x}, y ${region.y}, ${region.width} × ${region.height}, strength ${region.strength} `;
+    const kind = l10n(
+      region.kind === "blur" ? "privacy_region_blur" : "privacy_region_pixelate",
+    );
+    item.textContent = `${l10n(
+      "attachment_privacy_region_summary",
+      kind,
+      Number(region.x),
+      Number(region.y),
+      Number(region.width),
+      Number(region.height),
+      Number(region.strength),
+    )} `;
     const remove = document.createElement("button");
     remove.type = "button";
     remove.className = "ghost";
     remove.dataset.removeRegion = index;
-    remove.textContent = "Remove";
-    remove.setAttribute("aria-label", `Remove privacy region ${index + 1}`);
+    remove.textContent = l10n("remove_action");
+    remove.setAttribute(
+      "aria-label",
+      l10n("attachment_remove_privacy_region", kind),
+    );
     item.append(remove);
     regions.append(item);
   });
@@ -3112,7 +3465,7 @@ async function openImageEditor(selectedName, initial) {
     await invoke("discard_image_edit", { token: initial.token }).catch(() => {});
     throw error;
   }
-  const root = openModal("Edit and review image", "tpl-image-edit");
+  const root = openModal(l10n("attachment_review_image_title"), "tpl-image-edit");
   $("#modal").classList.add("image-editing");
   state.imageDraft = {
     token: initial.token,
@@ -3222,7 +3575,7 @@ async function openImageEditor(selectedName, initial) {
         if (changed !== null) {
           carrierText.textContent = changed;
           carrierText.dataset.snapshot = changed;
-          showError(root, "Carrier state changed. Review the updated explanation, then choose Send exact final image again.");
+          showError(root, l10n("attachment_carrier_changed_confirm"));
         } else {
           showError(root, error);
         }
@@ -3239,7 +3592,7 @@ async function openGenericAttachment(path, selectedName) {
   const conversation = attachmentConversation();
   const destination = state.currentId;
   const carrier = await freshAttachmentCarrier(conversation, destination);
-  const root = openModal("Send attachment", "tpl-attachment-send");
+  const root = openModal(l10n("attachment_review_title"), "tpl-attachment-send");
   root.querySelector('[data-f="selected-name"]').textContent = selectedName;
   root.querySelector('[data-f="filename"]').value = selectedName;
   root.querySelector('[data-f="media-type"]').value = guessedMime(selectedName);
@@ -3264,14 +3617,14 @@ async function openGenericAttachment(path, selectedName) {
     const filename = root.querySelector('[data-f="filename"]').value.trim();
     const mediaType = root.querySelector('[data-f="media-type"]').value.trim();
     try {
-      if (!mediaType) throw "enter a MIME type";
+      if (!mediaType) throw l10n("attachment_mime_required");
       button.disabled = true;
       const latest = await freshAttachmentCarrier(conversation, destination);
       if (latest !== carrierText.dataset.snapshot) {
         carrierText.textContent = latest;
         carrierText.dataset.snapshot = latest;
         button.disabled = false;
-        showError(root, "Carrier state changed. Review the updated explanation, then choose Send attachment again.");
+        showError(root, l10n("attachment_carrier_changed_confirm"));
         return;
       }
       try {
@@ -3301,7 +3654,7 @@ async function openGenericAttachment(path, selectedName) {
         carrierText.textContent = changed;
         carrierText.dataset.snapshot = changed;
         button.disabled = false;
-        showError(root, "Carrier state changed. Review the updated explanation, then choose Send attachment again.");
+        showError(root, l10n("attachment_carrier_changed_confirm"));
         return;
       }
       closeModal();
@@ -3316,7 +3669,11 @@ async function openGenericAttachment(path, selectedName) {
 $("#btn-attach").addEventListener("click", async () => {
   if (!state.currentId || state.currentKind === "note") return;
   const path = await openPath({
-    title: state.currentKind === "group" ? "Choose a group attachment" : "Choose an attachment",
+    title: l10n(
+      state.currentKind === "group"
+        ? "attachment_choose_group"
+        : "attachment_choose",
+    ),
     multiple: false,
     directory: false,
   });
@@ -3328,7 +3685,7 @@ $("#btn-attach").addEventListener("click", async () => {
     await openImageEditor(selectedName, initial);
   } catch (error) {
     if (claimedImage || !String(error).includes("only content-verified JPEG and PNG")) {
-      toast(String(error), true);
+      toast(localizedError(error), true);
       return;
     }
     await openGenericAttachment(path, selectedName);
@@ -3348,10 +3705,26 @@ async function resynchronizePresentation() {
   const theme = await invoke("theme");
   applyTheme(theme.preference);
   if (state.currentKind) await renderMessages();
-  if (!$("#modal-backdrop").hidden && $("#modal-title").textContent === "Linked devices") {
+  if (
+    !$("#modal-backdrop").hidden
+    && $("#modal-title").textContent === l10n("settings_devices_title")
+  ) {
     await renderLinkedDevices($("#modal-body"));
   }
 }
+
+document.addEventListener("kommslocalechange", () => {
+  $("#gate-locale").value = KommsLocalization.localePreference();
+  const modalLocale = $('#modal-body [data-f="locale"]');
+  if (modalLocale) {
+    modalLocale.value = KommsLocalization.localePreference();
+    $("#modal-title").textContent = l10n("appearance_title");
+  }
+  const refresh = $("#app").hidden
+    ? probeGate($("#gate-dir").value)
+    : resynchronizePresentation();
+  refresh.catch((error) => toast(localizedError(error), true));
+});
 
 listen("node-event", async ({ payload: ev }) => {
   switch (ev.type) {
@@ -3360,7 +3733,10 @@ listen("node-event", async ({ payload: ev }) => {
       break;
     }
     case "devices_changed": {
-      if (!$("#modal-backdrop").hidden && $("#modal-title").textContent === "Linked devices") {
+      if (
+        !$("#modal-backdrop").hidden
+        && $("#modal-title").textContent === l10n("settings_devices_title")
+      ) {
         await renderLinkedDevices($("#modal-body"));
       }
       break;
@@ -3369,11 +3745,14 @@ listen("node-event", async ({ payload: ev }) => {
     case "device_recovery_conflict": {
       toast(
         ev.type === "device_recovery_conflict"
-          ? "Conflicting account recoveries detected. Device authority is fail-closed; review Linked devices."
-          : "A device-authority fork was detected. Authority is fail-closed; review Linked devices.",
+          ? l10n("device_recovery_conflict_event")
+          : l10n("device_authority_fork_event"),
         true
       );
-      if (!$("#modal-backdrop").hidden && $("#modal-title").textContent === "Linked devices") {
+      if (
+        !$("#modal-backdrop").hidden
+        && $("#modal-title").textContent === l10n("settings_devices_title")
+      ) {
         await renderLinkedDevices($("#modal-body"));
       }
       break;
@@ -3383,17 +3762,11 @@ listen("node-event", async ({ payload: ev }) => {
       break;
     }
     case "rendezvous_conflict": {
-      toast(
-        "Conflicting authenticated route records were detected. No route was selected; retry later or verify this contact through another channel.",
-        true
-      );
+      toast(l10n("rendezvous_conflict"), true);
       break;
     }
     case "wake_conflict": {
-      toast(
-        "Conflicting authenticated wake state was detected. Native wake was disabled for this device; ordinary delivery remains available.",
-        true
-      );
+      toast(l10n("wake_conflict"), true);
       break;
     }
     case "theme_changed": {
@@ -3440,7 +3813,7 @@ listen("node-event", async ({ payload: ev }) => {
       if (el) {
         const st = el.querySelector(".state");
         if (st) {
-          st.textContent = " · " + (STATE_GLYPH[ev.state] ?? ev.state);
+          st.textContent = ` · ${deliveryState(ev.state)}`;
           st.className = "state"
             + (ev.state === "delivered" ? " state-delivered" : "")
             + (ev.state === "failed" ? " state-failed" : "");
@@ -3457,7 +3830,7 @@ listen("node-event", async ({ payload: ev }) => {
         await renderMessages();
       } else {
         state.unread.set(ev.peer, (state.unread.get(ev.peer) ?? 0) + 1);
-        toast(`${contactName(ev.peer)}: ${ev.body.slice(0, 80)}`);
+        toast(l10n("message_received_preview", contactName(ev.peer), ev.body.slice(0, 80)));
         refreshContacts();
       }
       break;
@@ -3468,7 +3841,7 @@ listen("node-event", async ({ payload: ev }) => {
     }
     case "message_request_received": {
       await refreshRequestInboxBadge();
-      toast("New message request");
+      toast(l10n("message_request_received"));
       break;
     }
     case "message_request_accepted":
@@ -3489,7 +3862,10 @@ listen("node-event", async ({ payload: ev }) => {
       ) {
         state.attachmentNotified.add(attachment.transfer_id);
         const primary = attachment.objects.find((object) => !object.preview) ?? attachment.objects[0];
-        toast(`Attachment offered: ${primary?.filename ?? "attachment"}`);
+        toast(l10n(
+          "attachment_offered",
+          primary?.filename ?? l10n("attachment_default_name"),
+        ));
       }
       break;
     }
@@ -3498,7 +3874,7 @@ listen("node-event", async ({ payload: ev }) => {
       if (state.currentKind === "group" && ev.group === state.currentId) {
         if (currentGroup()) {
           updateChatHead();
-          await refreshMentionReview("The current group roster or identity mapping changed.");
+          await refreshMentionReview(l10n("mention_group_changed"));
           await renderMessages();
         } else {
           state.currentKind = null;
@@ -3511,7 +3887,7 @@ listen("node-event", async ({ payload: ev }) => {
     }
     case "group_invitation_received": {
       await refreshRequestInboxBadge();
-      toast("New group invitation");
+      toast(l10n("group_invitation_received"));
       break;
     }
     case "group_invitation_accepted":
@@ -3522,7 +3898,7 @@ listen("node-event", async ({ payload: ev }) => {
       break;
     }
     case "mention_received": {
-      toast("You were mentioned in a group.");
+      toast(l10n("mention_notification_private"));
       break;
     }
     case "group_message_received": {
@@ -3535,7 +3911,12 @@ listen("node-event", async ({ payload: ev }) => {
       } else {
         state.groupUnread.set(ev.group, (state.groupUnread.get(ev.group) ?? 0) + 1);
         const group = state.groups.find((item) => item.id === ev.group);
-        toast(`${group?.name ?? "Group"} · ${memberName(ev.sender)}: ${ev.body.slice(0, 80)}`);
+        toast(l10n(
+          "group_message_received_preview",
+          group?.name ?? l10n("group_default_name"),
+          memberName(ev.sender),
+          ev.body.slice(0, 80),
+        ));
         await refreshGroups();
       }
       break;
@@ -3549,7 +3930,10 @@ listen("node-event", async ({ payload: ev }) => {
         await renderMessages();
       } else {
         const group = state.groups.find((item) => item.id === ev.group);
-        toast(`${group?.name ?? "Group"} poll updated. Votes are visible to members.`);
+        toast(l10n(
+          "poll_updated",
+          group?.name ?? l10n("group_default_name"),
+        ));
       }
       break;
     }
@@ -3563,21 +3947,34 @@ listen("node-event", async ({ payload: ev }) => {
     }
     case "group_admin_request_resolved": {
       if (state.currentKind === "group" && ev.group === state.currentId) await renderMessages();
-      toast(ev.accepted ? "The owner accepted your group administration request." : `The owner rejected your group administration request (reason ${ev.reason}).`, !ev.accepted);
+      toast(
+        ev.accepted
+          ? l10n("group_admin_request_accepted")
+          : l10n("group_admin_request_rejected", ev.reason),
+        !ev.accepted,
+      );
       break;
     }
     case "ephemeral_removed": {
       const matches = (ev.conversation_kind === "pairwise" && state.currentKind === "contact" && ev.conversation_id === state.currentId)
         || (ev.conversation_kind === "group" && state.currentKind === "group" && ev.conversation_id === state.currentId);
       if (matches) await renderMessages();
-      toast(ev.reason === "consumed" ? "View-once item removed from this device." : "Expired item removed from this device.");
+      toast(l10n(
+        ev.reason === "consumed"
+          ? "ephemeral_consumed"
+          : "ephemeral_expired",
+      ));
       break;
     }
     case "group_delivery_updated": {
       const el = state.msgEls.get(ev.id);
       const delivery = el?.querySelector(`.delivery[data-peer="${ev.peer}"]`);
       if (delivery) {
-        delivery.textContent = `${memberName(ev.peer)} · ${STATE_GLYPH[ev.state] ?? ev.state}`;
+        delivery.textContent = l10n(
+          "group_delivery_row",
+          memberName(ev.peer),
+          deliveryState(ev.state),
+        );
         delivery.className = "delivery"
           + (ev.state === "delivered" ? " state-delivered" : "")
           + (ev.state === "failed" ? " state-failed" : "");
@@ -3585,7 +3982,7 @@ listen("node-event", async ({ payload: ev }) => {
       break;
     }
     case "contact_added":
-      toast("New contact from an incoming handshake — unverified");
+      toast(l10n("contact_added_unverified"));
       await refreshContacts();
       break;
     case "contact_renamed":
@@ -3596,11 +3993,11 @@ listen("node-event", async ({ payload: ev }) => {
       const known = state.contacts.some((c) => c.peer === ev.peer);
       toast(
         known
-          ? `Encrypted session renewed with ${contactName(ev.peer)} — their key or device changed; re-verify if unexpected`
-          : "Encrypted session established"
+          ? l10n("session_renewed", contactName(ev.peer))
+          : l10n("session_established"),
       );
       if (currentGroup()?.members.includes(ev.peer)) {
-        await refreshMentionReview("A member session changed, so mention support was revalidated.");
+        await refreshMentionReview(l10n("mention_session_changed"));
       }
       await refreshContacts();
       break;
@@ -3609,7 +4006,7 @@ listen("node-event", async ({ payload: ev }) => {
       const el = state.msgEls.get(ev.id);
       const st = el?.querySelector(".state");
       if (st) {
-        st.textContent = " · held — will send when a faster link exists";
+        st.textContent = ` · ${l10n("state_held")}`;
         st.className = "state state-held";
       }
       break;
@@ -3634,6 +4031,7 @@ function openModal(title, tplId) {
   body.textContent = "";
   $("#modal-title").textContent = title;
   body.append($("#" + tplId).content.cloneNode(true));
+  KommsLocalization.localizeRoot(body, true);
   applyIncognitoInputPrivacy(body);
   $("#modal-backdrop").hidden = false;
   requestAnimationFrame(() => (modalFocusable()[0] ?? $("#modal-close")).focus());
@@ -3678,7 +4076,7 @@ document.addEventListener("keydown", (e) => {
 function showError(root, err) {
   const el = root.querySelector('[data-f="error"]');
   if (el) {
-    el.textContent = String(err);
+    el.textContent = localizedError(err);
     el.hidden = false;
   }
 }
@@ -3695,11 +4093,13 @@ async function refreshRequestInboxBadge() {
   badge.hidden = count === 0;
   badge.textContent = String(count);
   $("#request-summary").textContent = count === 0
-    ? "No pending requests"
-    : `${count} awaiting your decision`;
+    ? l10n("message_requests_empty")
+    : l10nPlural("request_summary_pending", count, count);
   $("#btn-message-requests").setAttribute(
     "aria-label",
-    count === 0 ? "Message requests, none pending" : `Message requests, ${count} pending`,
+    count === 0
+      ? l10n("message_requests_none_accessibility")
+      : l10nPlural("message_requests_pending_accessibility", count, count),
   );
   return count;
 }
@@ -3737,50 +4137,57 @@ async function renderMessageRequests(root, announcement = "") {
   status.textContent = announcement;
 
   for (const request of state.messageRequests) {
-    const card = requestCard("Message from someone new", `Expires ${fmtExpiry(request.expires_at)}`);
+    const card = requestCard(
+      l10n("message_request_from_new"),
+      l10n("message_request_expires", fmtExpiry(request.expires_at)),
+    );
     const preview = document.createElement("blockquote");
     preview.className = "request-preview";
     preview.dir = "auto";
-    preview.textContent = request.preview || "No text preview";
+    preview.textContent = request.preview || l10n("message_request_no_preview");
     const safety = document.createElement("p");
     safety.className = "request-safety";
-    safety.textContent = `Safety number: ${request.safety_number}`;
+    safety.textContent = l10n("message_request_safety", request.safety_number);
     const name = document.createElement("input");
     name.type = "text";
-    name.value = "New contact";
+    name.value = l10n("message_request_default_name");
     name.maxLength = 256;
     name.dataset.incognitoInput = "name";
-    name.setAttribute("aria-label", "Private contact name");
+    name.setAttribute("aria-label", l10n("message_request_name_hint"));
     const actions = document.createElement("div");
     actions.className = "row request-actions";
     const accept = document.createElement("button");
     accept.type = "button";
     accept.className = "primary";
-    accept.textContent = "Accept";
-    accept.setAttribute("aria-label", "Accept message request");
+    accept.textContent = l10n("message_request_accept");
+    accept.setAttribute("aria-label", l10n("message_request_accept"));
     const discard = document.createElement("button");
     discard.type = "button";
     discard.className = "ghost";
-    discard.textContent = "Delete";
-    discard.setAttribute("aria-label", "Delete message request");
+    discard.textContent = l10n("message_request_delete");
+    discard.setAttribute("aria-label", l10n("message_request_delete"));
     const block = document.createElement("button");
     block.type = "button";
     block.className = "danger";
-    block.textContent = "Block";
-    block.setAttribute("aria-label", "Block message request");
+    block.textContent = l10n("message_request_block");
+    block.setAttribute("aria-label", l10n("message_request_block"));
     actions.append(accept, discard, block);
     card.append(preview, safety, name, actions);
     direct.append(card);
     const act = async (operation) => {
       if (
         operation === "block"
-        && !confirm("Block this verified sender on this device? This removes local capabilities and queues, but cannot delete remote copies.")
+        && !confirm(
+          `${l10n("message_request_block_title")}\n\n${
+            l10n("message_request_block_explanation")
+          }`,
+        )
       ) return;
       actions.querySelectorAll("button").forEach((button) => { button.disabled = true; });
       try {
         if (operation === "accept") {
           const localName = name.value.trim();
-          if (!localName) throw new Error("Choose a private contact name.");
+          if (!localName) throw new Error(l10n("message_request_name_required"));
           const peer = await call("accept_message_request", {
             request: request.id,
             name: localName,
@@ -3791,15 +4198,15 @@ async function renderMessageRequests(root, announcement = "") {
           await openChat(peer);
         } else if (operation === "delete") {
           await call("delete_message_request", { request: request.id });
-          await renderMessageRequests(root, "Request deleted locally.");
+          await renderMessageRequests(root, l10n("request_deleted_status"));
           focusFirstRequestControl(root);
         } else {
           await call("block_message_request", { request: request.id });
-          await renderMessageRequests(root, "Sender blocked locally.");
+          await renderMessageRequests(root, l10n("request_blocked_status"));
           focusFirstRequestControl(root);
         }
       } catch (error) {
-        status.textContent = `Request could not be changed: ${String(error)}`;
+        status.textContent = l10n("request_change_failed");
         actions.querySelectorAll("button").forEach((button) => { button.disabled = false; });
       }
     };
@@ -3810,28 +4217,33 @@ async function renderMessageRequests(root, announcement = "") {
 
   for (const invitation of state.groupInvitations) {
     const card = requestCard(
-      "Group invitation",
-      `${invitation.member_count} members · expires ${fmtExpiry(invitation.expires_at)}`,
+      l10n("group_invitation_title"),
+      l10nPlural(
+        "group_invitation_members_expiry",
+        invitation.member_count,
+        invitation.member_count,
+        fmtExpiry(invitation.expires_at),
+      ),
     );
     const name = document.createElement("p");
     name.className = "request-group-name";
     name.dir = "auto";
-    name.textContent = invitation.name || "Unnamed group";
+    name.textContent = invitation.name || l10n("group_default_name");
     const note = document.createElement("p");
     note.className = "modal-note";
-    note.textContent = "Joining creates group state only after you accept. Earlier group history is not imported.";
+    note.textContent = l10n("group_invitation_explanation");
     const actions = document.createElement("div");
     actions.className = "row request-actions";
     const accept = document.createElement("button");
     accept.type = "button";
     accept.className = "primary";
-    accept.textContent = "Join group";
-    accept.setAttribute("aria-label", "Accept group invitation");
+    accept.textContent = l10n("group_invitation_accept");
+    accept.setAttribute("aria-label", l10n("group_invitation_accept"));
     const discard = document.createElement("button");
     discard.type = "button";
     discard.className = "ghost";
-    discard.textContent = "Delete";
-    discard.setAttribute("aria-label", "Delete group invitation");
+    discard.textContent = l10n("message_request_delete");
+    discard.setAttribute("aria-label", l10n("group_invitation_delete"));
     actions.append(accept, discard);
     card.append(name, note, actions);
     groups.append(card);
@@ -3844,7 +4256,7 @@ async function renderMessageRequests(root, announcement = "") {
         closeModal();
         await openGroup(group);
       } catch (error) {
-        status.textContent = `Group invitation could not be accepted: ${String(error)}`;
+        status.textContent = l10n("group_invitation_accept_failed");
         actions.querySelectorAll("button").forEach((button) => { button.disabled = false; });
       }
     });
@@ -3852,10 +4264,10 @@ async function renderMessageRequests(root, announcement = "") {
       actions.querySelectorAll("button").forEach((button) => { button.disabled = true; });
       try {
         await call("delete_group_invitation", { invitation: invitation.id });
-        await renderMessageRequests(root, "Group invitation deleted locally.");
+        await renderMessageRequests(root, l10n("group_invitation_deleted_status"));
         focusFirstRequestControl(root);
       } catch (error) {
-        status.textContent = `Group invitation could not be deleted: ${String(error)}`;
+        status.textContent = l10n("group_invitation_delete_failed");
         actions.querySelectorAll("button").forEach((button) => { button.disabled = false; });
       }
     });
@@ -3866,12 +4278,12 @@ async function renderMessageRequests(root, announcement = "") {
 }
 
 async function openMessageRequests() {
-  const body = openModal("Message requests", "tpl-message-requests");
+  const body = openModal(l10n("message_requests_title"), "tpl-message-requests");
   try {
     await renderMessageRequests(body);
   } catch (error) {
     body.querySelector('[data-f="request-status"]').textContent =
-      `Requests are unavailable: ${String(error)}`;
+      l10n("message_requests_unavailable");
   }
 }
 
@@ -3879,18 +4291,24 @@ $("#btn-message-requests").addEventListener("click", openMessageRequests);
 
 function customIconChoices() {
   return [
-    { target: { kind: "note_to_self", id: null }, label: "Note to self" },
+    { target: { kind: "note_to_self", id: null }, label: l10n("note_to_self_title") },
     ...state.contacts.map((contact) => ({
       target: { kind: "contact", id: contact.peer },
-      label: `Contact · ${contact.name || contact.peer.slice(0, 12) + "…"}`,
+      label: l10n(
+        "icons_contact_target",
+        contact.name || `${contact.peer.slice(0, 12)}…`,
+      ),
     })),
     ...state.groups.map((group) => ({
       target: { kind: "group", id: group.id },
-      label: `Group · ${group.name || "Unnamed group"}`,
+      label: l10n(
+        "icons_group_target",
+        group.name || l10n("group_default_name"),
+      ),
     })),
     ...state.folders.map((folder) => ({
       target: { kind: "folder", id: folder.id },
-      label: `Folder ${folder.order + 1} · ${folder.name}`,
+      label: l10n("folder_accessible_summary", folder.name, folder.order + 1),
     })),
   ];
 }
@@ -3904,21 +4322,25 @@ async function refreshIconManager(root, clearCache = false) {
   if (clearCache) state.icons.clear();
   const select = root.querySelector('[data-f="icon-target"]');
   const target = selectedCustomIconChoice(root);
-  const label = select.selectedOptions[0]?.textContent ?? "selected target";
+  const label = select.selectedOptions[0]?.textContent ?? l10n("icons_selected_target");
   const fallback = generatedInitials(label.replace(/^[^·]+·\s*/u, ""));
   const preview = root.querySelector('[data-f="preview"]');
   await applyCustomIcon(preview, target, fallback, label);
   const icon = await loadCustomIcon(target);
   root.querySelector('[data-f="preview-description"]').textContent = icon
-    ? `Private local icon · ${Number(icon.encoded_bytes).toLocaleString()} bytes`
-    : `Generated initials fallback · ${fallback}`;
+    ? l10n("icons_private_summary", Number(icon.encoded_bytes))
+    : l10n("icons_initials_fallback", fallback);
   root.querySelector('[data-act="clear-icon"]').disabled = !icon;
   const usage = await invoke("custom_icon_usage");
-  root.querySelector('[data-f="usage"]').textContent = `${usage.records.toLocaleString()} / 1,024 sealed icons · ${usage.bytes.toLocaleString()} / 67,108,864 encoded bytes`;
+  root.querySelector('[data-f="usage"]').textContent = l10n(
+    "icons_usage",
+    Number(usage.records),
+    Number(usage.bytes),
+  );
 }
 
 async function openIconManager() {
-  const root = openModal("Private custom icons", "tpl-icon-manager");
+  const root = openModal(l10n("icons_title"), "tpl-icon-manager");
   const select = root.querySelector('[data-f="icon-target"]');
   for (const choice of customIconChoices()) {
     const option = document.createElement("option");
@@ -3932,13 +4354,13 @@ async function openIconManager() {
     button.type = "button";
     button.className = "ghost";
     button.textContent = glyph;
-    button.setAttribute("aria-label", `Use bundled ${glyph} glyph`);
+    button.setAttribute("aria-label", l10n("icons_use_bundled", glyph));
     button.addEventListener("click", async () => {
       try {
         const target = selectedCustomIconChoice(root);
         const icon = await invoke("set_bundled_custom_icon", { target, glyph });
         state.icons.set(customIconKey(target), icon);
-        root.querySelector('[data-f="result"]').textContent = `Bundled ${glyph} icon saved locally.`;
+        root.querySelector('[data-f="result"]').textContent = l10n("icons_saved");
         root.querySelector('[data-f="error"]').hidden = true;
         await Promise.all([refreshIconManager(root), refreshVisibleCustomIcons()]);
       } catch (error) { showError(root, error); }
@@ -3951,7 +4373,7 @@ async function openIconManager() {
   });
   root.querySelector('[data-act="choose-icon-image"]').addEventListener("click", async () => {
     const path = await openPath({
-      title: "Choose a private local icon",
+      title: l10n("icons_choose_image"),
       multiple: false,
       directory: false,
       filters: [{ name: "JPEG or PNG", extensions: ["jpg", "jpeg", "png"] }],
@@ -3961,7 +4383,7 @@ async function openIconManager() {
       const target = selectedCustomIconChoice(root);
       const icon = await invoke("set_custom_icon_from_path", { target, path, crop: null });
       state.icons.set(customIconKey(target), icon);
-      root.querySelector('[data-f="result"]').textContent = "Selected image cropped, sanitized, and sealed locally.";
+      root.querySelector('[data-f="result"]').textContent = l10n("icons_saved");
       root.querySelector('[data-f="error"]').hidden = true;
       await Promise.all([refreshIconManager(root), refreshVisibleCustomIcons()]);
     } catch (error) { showError(root, error); }
@@ -3971,7 +4393,7 @@ async function openIconManager() {
       const target = selectedCustomIconChoice(root);
       await invoke("clear_custom_icon", { target });
       state.icons.set(customIconKey(target), null);
-      root.querySelector('[data-f="result"]').textContent = "Generated initials restored.";
+      root.querySelector('[data-f="result"]').textContent = l10n("icons_cleared");
       root.querySelector('[data-f="error"]').hidden = true;
       await Promise.all([refreshIconManager(root), refreshVisibleCustomIcons()]);
     } catch (error) { showError(root, error); }
@@ -3982,7 +4404,7 @@ async function openIconManager() {
 function resetFolderEditor(root) {
   root.querySelector('[data-f="folder-id"]').value = "";
   root.querySelector('[data-f="folder-name"]').value = "";
-  root.querySelector('[data-act="save-folder"]').textContent = "Create folder";
+  root.querySelector('[data-act="save-folder"]').textContent = l10n("folder_create");
   root.querySelector('[data-act="cancel-edit"]').hidden = true;
   root.querySelector('[data-f="error"]').hidden = true;
 }
@@ -3994,7 +4416,7 @@ async function renderFolderManager(root) {
   if (state.folders.length === 0) {
     const empty = document.createElement("p");
     empty.className = "modal-note";
-    empty.textContent = "No folders. Create one above.";
+    empty.textContent = l10n("folders_empty");
     list.append(empty);
   }
   for (const [index, folder] of state.folders.entries()) {
@@ -4004,28 +4426,46 @@ async function renderFolderManager(root) {
     avatar.className = "avatar icon-manager-row-avatar";
     const fallback = generatedInitials(folder.name);
     avatar.textContent = fallback;
-    applyCustomIcon(avatar, { kind: "folder", id: folder.id }, fallback, `folder ${folder.name}`);
+    applyCustomIcon(
+      avatar,
+      { kind: "folder", id: folder.id },
+      fallback,
+      folderAccessibleName(folder),
+    );
     const description = document.createElement("span");
     description.className = "folder-description";
     const name = document.createElement("bdi");
     name.dir = "auto";
     name.textContent = folder.name;
-    description.append(name, document.createTextNode(` · folder ${index + 1}`));
+    description.append(
+      name,
+      document.createTextNode(` · ${l10n("folder_position", index + 1)}`),
+    );
     const actions = document.createElement("span");
     actions.className = "folder-actions";
-    for (const [label, delta] of [["Move up", -1], ["Move down", 1]]) {
+    for (const delta of [-1, 1]) {
       const reorder = document.createElement("button");
       reorder.type = "button";
       reorder.className = "ghost";
       reorder.textContent = delta < 0 ? "↑" : "↓";
       reorder.disabled = index + delta < 0 || index + delta >= state.folders.length;
-      reorder.setAttribute("aria-label", `${label} ${folderAccessibleName(folder)}`);
+      reorder.setAttribute(
+        "aria-label",
+        l10n(
+          delta < 0 ? "folder_move_up" : "folder_move_down",
+          folderAccessibleName(folder),
+        ),
+      );
       reorder.addEventListener("click", async () => {
         try {
           const ids = state.folders.map((item) => item.id);
           [ids[index], ids[index + delta]] = [ids[index + delta], ids[index]];
           await invoke("reorder_folders", { folders: ids });
-          root.querySelector('[data-f="result"]').textContent = `${folderAccessibleName(folder)} ${delta < 0 ? "moved up" : "moved down"}.`;
+          root.querySelector('[data-f="result"]').textContent = l10n(
+            "folder_reordered",
+            folder.name,
+            index + delta + 1,
+          );
           await renderFolderManager(root);
           await refreshFolders(true);
           root.querySelector(`[data-folder-action="${delta < 0 ? "up" : "down"}"][data-folder-position="${Math.max(0, index + delta)}"]`)?.focus();
@@ -4038,31 +4478,42 @@ async function renderFolderManager(root) {
     const edit = document.createElement("button");
     edit.type = "button";
     edit.className = "ghost";
-    edit.textContent = "Edit";
-    edit.setAttribute("aria-label", `Rename ${folderAccessibleName(folder)}`);
+    edit.textContent = l10n("folder_edit");
+    edit.setAttribute(
+      "aria-label",
+      l10n("folder_edit_description", folderAccessibleName(folder)),
+    );
     edit.addEventListener("click", () => {
       root.querySelector('[data-f="folder-id"]').value = folder.id;
       root.querySelector('[data-f="folder-name"]').value = folder.name;
-      root.querySelector('[data-act="save-folder"]').textContent = "Save folder";
+      root.querySelector('[data-act="save-folder"]').textContent = l10n("folder_save");
       root.querySelector('[data-act="cancel-edit"]').hidden = false;
       root.querySelector('[data-f="folder-name"]').focus();
     });
     const remove = document.createElement("button");
     remove.type = "button";
     remove.className = "danger";
-    remove.textContent = "Delete";
-    remove.setAttribute("aria-label", `Delete ${folderAccessibleName(folder)}`);
+    remove.textContent = l10n("folder_delete");
+    remove.setAttribute(
+      "aria-label",
+      l10n("folder_delete_description", folderAccessibleName(folder)),
+    );
     remove.addEventListener("click", async () => {
       try {
         const count = await invoke("folder_delete_assignment_count", { folder: folder.id });
-        const reviewed = window.confirm(`Delete “${folder.name}” (folder ${index + 1})? ${count} conversation${count === 1 ? "" : "s"} will become Unfiled; messages and conversations are unchanged.`);
+        const reviewed = window.confirm(
+          l10n("folder_delete_review", folderAccessibleName(folder), count),
+        );
         if (!reviewed) {
-          root.querySelector('[data-f="result"]').textContent = "Folder deletion cancelled.";
+          root.querySelector('[data-f="result"]').textContent = l10n("folder_delete_cancelled");
           remove.focus();
           return;
         }
         const deleted = await invoke("delete_folder", { folder: folder.id, confirm: true });
-        root.querySelector('[data-f="result"]').textContent = `Folder deleted; ${deleted} conversation${deleted === 1 ? " is" : "s are"} now Unfiled.`;
+        root.querySelector('[data-f="result"]').textContent = l10n(
+          "folder_deleted",
+          deleted,
+        );
         resetFolderEditor(root);
         await renderFolderManager(root);
         await refreshFolders(true);
@@ -4083,17 +4534,27 @@ async function renderFolderManager(root) {
     const row = document.createElement("div");
     row.className = "stale-folder-row";
     const reason = document.createElement("span");
-    const targetName = record.target.kind === "note_to_self" ? "note-to-self" : `${record.target.kind} conversation`;
-    reason.textContent = `${record.reason.replaceAll("_", " ")} · ${targetName}`;
+    const targetName = conversationKindName(record.target.kind);
+    reason.textContent = l10n(
+      "stale_assignment_summary",
+      staleReasonName(record.reason),
+      targetName,
+    );
     const cleanup = document.createElement("button");
     cleanup.type = "button";
     cleanup.className = "danger";
-    cleanup.textContent = "Clean up";
-    cleanup.setAttribute("aria-label", `Clean up selected stale ${targetName} folder assignment`);
+    cleanup.textContent = l10n("cleanup_action");
+    cleanup.setAttribute(
+      "aria-label",
+      l10n("folder_stale_cleanup_description", targetName),
+    );
     cleanup.addEventListener("click", async () => {
       try {
         await invoke("cleanup_stale_folder", { folder: record.folder, target: record.target });
-        root.querySelector('[data-f="result"]').textContent = `Selected stale ${targetName} assignment removed.`;
+        root.querySelector('[data-f="result"]').textContent = l10n(
+          "folder_stale_cleaned",
+          targetName,
+        );
         await renderFolderManager(root);
         await refreshFolders(true);
       } catch (error) { showError(root, error); }
@@ -4104,18 +4565,21 @@ async function renderFolderManager(root) {
 }
 
 async function openFolderManager() {
-  const root = openModal("Private conversation folders", "tpl-folder-manager");
+  const root = openModal(l10n("folders_title"), "tpl-folder-manager");
   const form = root.querySelector('[data-f="folder-form"]');
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     const name = root.querySelector('[data-f="folder-name"]').value;
     const id = root.querySelector('[data-f="folder-id"]').value;
     try {
-      if (!exactFolderNameValid(name)) throw new Error("Name must contain a non-Pattern-White-Space character and be at most 256 UTF-8 bytes.");
+      if (!exactFolderNameValid(name)) throw new Error(l10n("folder_invalid_name"));
       const saved = id
         ? await invoke("rename_folder", { folder: id, name })
         : await invoke("create_folder", { name });
-      root.querySelector('[data-f="result"]').textContent = `${id ? "Renamed" : "Created"} ${folderAccessibleName(saved)}.`;
+      root.querySelector('[data-f="result"]').textContent = l10n(
+        id ? "folder_updated" : "folder_created",
+        folderAccessibleName(saved),
+      );
       resetFolderEditor(root);
       await renderFolderManager(root);
       await refreshFolders(true);
@@ -4124,7 +4588,7 @@ async function openFolderManager() {
   });
   root.querySelector('[data-act="cancel-edit"]').addEventListener("click", () => {
     resetFolderEditor(root);
-    root.querySelector('[data-f="result"]').textContent = "Rename cancelled; the folder is unchanged.";
+    root.querySelector('[data-f="result"]').textContent = l10n("folder_edit_cancelled");
     root.querySelector('[data-f="folder-name"]').focus();
   });
   await renderFolderManager(root);
@@ -4136,11 +4600,20 @@ async function openConversationFolder() {
   const target = folderTarget();
   if (!target) return;
   const exactTarget = currentTargetName();
-  const root = openModal(`Move ${exactTarget}`, "tpl-conversation-folder");
-  root.querySelector('[data-f="target-summary"]').textContent = `Choose the exact final folder for ${exactTarget}. This changes local navigation only.`;
+  const root = openModal(
+    l10n("folder_assignment_title", exactTarget),
+    "tpl-conversation-folder",
+  );
+  root.querySelector('[data-f="target-summary"]').textContent = l10n(
+    "folder_assignment_explanation",
+    exactTarget,
+  );
   const current = await invoke("conversation_folder", { target });
   const list = root.querySelector('[data-f="folders"]');
-  const choices = [{ id: null, name: "Unfiled", order: -1 }, ...state.folders];
+  const choices = [
+    { id: null, name: l10n("folder_unfiled"), order: -1 },
+    ...state.folders,
+  ];
   for (const folder of choices) {
     const row = document.createElement("label");
     row.className = "folder-assignment-option";
@@ -4148,8 +4621,13 @@ async function openConversationFolder() {
     input.type = "radio";
     input.name = "conversation-folder";
     input.checked = folder.id === (current?.id ?? null);
-    const cue = folder.id ? folderAccessibleName(folder) : "Unfiled virtual view";
-    input.setAttribute("aria-label", `Move ${exactTarget} to ${cue}`);
+    const cue = folder.id
+      ? folderAccessibleName(folder)
+      : l10n("folder_unfiled_accessibility");
+    input.setAttribute(
+      "aria-label",
+      l10n("folder_move_target", exactTarget, cue),
+    );
     const name = document.createElement("bdi");
     name.dir = "auto";
     name.textContent = folder.name;
@@ -4160,12 +4638,24 @@ async function openConversationFolder() {
         if (folder.id) await invoke("move_to_folder", { folder: folder.id, target });
         else await invoke("unfile_conversation", { target });
         const finalFolder = await invoke("conversation_folder", { target });
-        root.querySelector('[data-f="result"]').textContent = `${exactTarget} is now in ${finalFolder ? folderAccessibleName(finalFolder) : "Unfiled"}.`;
+        root.querySelector('[data-f="result"]').textContent = l10n(
+          "folder_assignment_result",
+          exactTarget,
+          finalFolder
+            ? folderAccessibleName(finalFolder)
+            : l10n("folder_unfiled"),
+        );
         await refreshFolders(true);
       } catch (error) { showError(root, error); }
       finally { input.disabled = false; input.focus(); }
     });
-    row.append(input, name, document.createTextNode(folder.id ? ` · folder ${folder.order + 1}` : ""));
+    row.append(
+      input,
+      name,
+      document.createTextNode(
+        folder.id ? ` · ${l10n("folder_position", folder.order + 1)}` : "",
+      ),
+    );
     list.append(row);
   }
   root.querySelector('[data-act="done"]').addEventListener("click", closeModal);
@@ -4177,7 +4667,7 @@ function resetLabelEditor(root) {
   root.querySelector('[data-f="label-id"]').value = "";
   root.querySelector('[data-f="label-name"]').value = "";
   root.querySelector('[data-f="label-color"]').value = "neutral";
-  root.querySelector('[data-act="save-label"]').textContent = "Create label";
+  root.querySelector('[data-act="save-label"]').textContent = l10n("label_create");
   root.querySelector('[data-act="cancel-edit"]').hidden = true;
   root.querySelector('[data-f="error"]').hidden = true;
 }
@@ -4189,7 +4679,7 @@ async function renderLabelManager(root) {
   if (state.labels.length === 0) {
     const empty = document.createElement("p");
     empty.className = "modal-note";
-    empty.textContent = "No labels. Create one above.";
+    empty.textContent = l10n("labels_empty");
     list.append(empty);
   }
   for (const label of state.labels) {
@@ -4203,32 +4693,43 @@ async function renderLabelManager(root) {
     const edit = document.createElement("button");
     edit.type = "button";
     edit.className = "ghost";
-    edit.textContent = "Edit";
-    edit.setAttribute("aria-label", `Edit ${labelAccessibleName(label)}`);
+    edit.textContent = l10n("label_edit");
+    edit.setAttribute(
+      "aria-label",
+      l10n("label_edit_description", labelAccessibleName(label)),
+    );
     edit.addEventListener("click", () => {
       root.querySelector('[data-f="label-id"]').value = label.id;
       root.querySelector('[data-f="label-name"]').value = label.name;
       root.querySelector('[data-f="label-color"]').value = label.color;
-      root.querySelector('[data-act="save-label"]').textContent = "Save label";
+      root.querySelector('[data-act="save-label"]').textContent = l10n("label_save");
       root.querySelector('[data-act="cancel-edit"]').hidden = false;
       root.querySelector('[data-f="label-name"]').focus();
     });
     const remove = document.createElement("button");
     remove.type = "button";
     remove.className = "danger";
-    remove.textContent = "Delete";
-    remove.setAttribute("aria-label", `Delete ${labelAccessibleName(label)}`);
+    remove.textContent = l10n("label_delete");
+    remove.setAttribute(
+      "aria-label",
+      l10n("label_delete_description", labelAccessibleName(label)),
+    );
     remove.addEventListener("click", async () => {
       try {
         const count = await invoke("label_delete_assignment_count", { label: label.id });
-        const reviewed = window.confirm(`Delete “${label.name}” (${labelCue(label)})? This atomically removes ${count} conversation assignment${count === 1 ? "" : "s"}.`);
+        const reviewed = window.confirm(
+          l10n("label_delete_review", labelAccessibleName(label), count),
+        );
         if (!reviewed) {
-          root.querySelector('[data-f="result"]').textContent = "Label deletion cancelled.";
+          root.querySelector('[data-f="result"]').textContent = l10n("label_delete_cancelled");
           remove.focus();
           return;
         }
         const deleted = await invoke("delete_label", { label: label.id, confirm: true });
-        root.querySelector('[data-f="result"]').textContent = `Label deleted with ${deleted} assignment${deleted === 1 ? "" : "s"}.`;
+        root.querySelector('[data-f="result"]').textContent = l10n(
+          "label_deleted",
+          deleted,
+        );
         resetLabelEditor(root);
         await renderLabelManager(root);
         await refreshLabels(true);
@@ -4249,17 +4750,27 @@ async function renderLabelManager(root) {
     const row = document.createElement("div");
     row.className = "stale-label-row";
     const reason = document.createElement("span");
-    const targetName = record.target.kind === "note_to_self" ? "note-to-self" : `${record.target.kind} conversation`;
-    reason.textContent = `${record.reason.replaceAll("_", " ")} · ${targetName}`;
+    const targetName = conversationKindName(record.target.kind);
+    reason.textContent = l10n(
+      "stale_assignment_summary",
+      staleReasonName(record.reason),
+      targetName,
+    );
     const cleanup = document.createElement("button");
     cleanup.type = "button";
     cleanup.className = "danger";
-    cleanup.textContent = "Clean up";
-    cleanup.setAttribute("aria-label", `Clean up stale ${targetName} membership`);
+    cleanup.textContent = l10n("cleanup_action");
+    cleanup.setAttribute(
+      "aria-label",
+      l10n("label_stale_cleanup_description", targetName),
+    );
     cleanup.addEventListener("click", async () => {
       try {
         await invoke("cleanup_stale_label", { label: record.label, target: record.target });
-        root.querySelector('[data-f="result"]').textContent = `Stale ${targetName} membership removed.`;
+        root.querySelector('[data-f="result"]').textContent = l10n(
+          "label_stale_cleaned",
+          targetName,
+        );
         await renderLabelManager(root);
       } catch (error) { showError(root, error); }
     });
@@ -4269,7 +4780,7 @@ async function renderLabelManager(root) {
 }
 
 async function openLabelManager() {
-  const root = openModal("Private labels", "tpl-label-manager");
+  const root = openModal(l10n("labels_title"), "tpl-label-manager");
   const form = root.querySelector('[data-f="label-form"]');
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
@@ -4277,12 +4788,15 @@ async function openLabelManager() {
     const color = root.querySelector('[data-f="label-color"]').value;
     const id = root.querySelector('[data-f="label-id"]').value;
     try {
-      if (!exactLabelNameValid(name)) throw new Error("Name must contain a non-Pattern-White-Space character and be at most 256 UTF-8 bytes.");
-      if (!LABEL_COLORS.includes(color)) throw new Error("Choose a supported label color.");
+      if (!exactLabelNameValid(name)) throw new Error(l10n("label_invalid_name"));
+      if (!LABEL_COLORS.includes(color)) throw new Error(l10n("label_invalid_color"));
       const saved = id
         ? await invoke("update_label", { label: id, name, color })
         : await invoke("create_label", { name, color });
-      root.querySelector('[data-f="result"]').textContent = `${id ? "Updated" : "Created"} ${labelAccessibleName(saved)}.`;
+      root.querySelector('[data-f="result"]').textContent = l10n(
+        id ? "label_updated" : "label_created",
+        labelAccessibleName(saved),
+      );
       resetLabelEditor(root);
       await renderLabelManager(root);
       await refreshLabels(true);
@@ -4291,7 +4805,7 @@ async function openLabelManager() {
   });
   root.querySelector('[data-act="cancel-edit"]').addEventListener("click", () => {
     resetLabelEditor(root);
-    root.querySelector('[data-f="result"]').textContent = "Edit cancelled; the label is unchanged.";
+    root.querySelector('[data-f="result"]').textContent = l10n("label_edit_cancelled");
     root.querySelector('[data-f="label-name"]').focus();
   });
   await renderLabelManager(root);
@@ -4303,15 +4817,21 @@ async function openConversationLabels() {
   const target = labelTarget();
   if (!target) return;
   const exactTarget = currentTargetName();
-  const root = openModal(`Labels for ${exactTarget}`, "tpl-conversation-labels");
-  root.querySelector('[data-f="target-summary"]').textContent = `Apply or remove sealed local labels for exactly ${exactTarget}.`;
+  const root = openModal(
+    l10n("label_assignment_title", exactTarget),
+    "tpl-conversation-labels",
+  );
+  root.querySelector('[data-f="target-summary"]').textContent = l10n(
+    "label_assignment_list_description",
+    exactTarget,
+  );
   const assigned = new Set((await invoke("labels_for_conversation", { target })).map((label) => label.id));
   const list = root.querySelector('[data-f="labels"]');
   list.replaceChildren();
   if (state.labels.length === 0) {
     const empty = document.createElement("p");
     empty.className = "modal-note";
-    empty.textContent = "No labels exist. Use Manage labels to create one.";
+    empty.textContent = l10n("labels_assignment_empty");
     list.append(empty);
   }
   for (const label of state.labels) {
@@ -4320,7 +4840,14 @@ async function openConversationLabels() {
     const input = document.createElement("input");
     input.type = "checkbox";
     input.checked = assigned.has(label.id);
-    input.setAttribute("aria-label", `${input.checked ? "Remove" : "Apply"} ${labelAccessibleName(label)} for ${exactTarget}`);
+    input.setAttribute(
+      "aria-label",
+      l10n(
+        input.checked ? "label_remove_for" : "label_apply_for",
+        labelAccessibleName(label),
+        exactTarget,
+      ),
+    );
     input.addEventListener("change", async () => {
       input.disabled = true;
       try {
@@ -4329,8 +4856,21 @@ async function openConversationLabels() {
         const finalLabels = await invoke("labels_for_conversation", { target });
         const final = finalLabels.some((item) => item.id === label.id);
         input.checked = final;
-        input.setAttribute("aria-label", `${final ? "Remove" : "Apply"} ${labelAccessibleName(label)} for ${exactTarget}`);
-        root.querySelector('[data-f="result"]').textContent = `${labelAccessibleName(label)} is now ${final ? "applied to" : "removed from"} ${exactTarget}. Final membership: ${finalLabels.length} label${finalLabels.length === 1 ? "" : "s"}.`;
+        input.setAttribute(
+          "aria-label",
+          l10n(
+            final ? "label_remove_for" : "label_apply_for",
+            labelAccessibleName(label),
+            exactTarget,
+          ),
+        );
+        root.querySelector('[data-f="result"]').textContent = l10n(
+          "label_assignment_result",
+          labelAccessibleName(label),
+          exactTarget,
+          l10n(final ? "label_applied" : "label_removed"),
+          finalLabels.length,
+        );
         await refreshLabels(false);
       } catch (error) {
         input.checked = !input.checked;
@@ -4379,7 +4919,7 @@ function wireHints(root) {
 
 // share (pairing) modal
 $("#btn-share").addEventListener("click", async () => {
-  const root = openModal("Share your identity", "tpl-share");
+  const root = openModal(l10n("share_title"), "tpl-share");
   const view = root.querySelector('[data-f="share-dialog"]');
   const status = view.querySelector('[data-f="share-status"]');
   const content = view.querySelector('[data-f="share-content"]');
@@ -4395,8 +4935,8 @@ $("#btn-share").addEventListener("click", async () => {
   } catch (err) {
     if (!view.isConnected) return;
     status.className = "error";
-    status.textContent = `Could not prepare sharing details: ${String(err)}`;
-    toast(String(err), true);
+    status.textContent = l10n("share_unavailable");
+    toast(localizedError(err), true);
     return;
   }
   if (!view.isConnected) return;
@@ -4407,8 +4947,12 @@ $("#btn-share").addEventListener("click", async () => {
   const renderBundleFrame = () => {
     bundlePane.innerHTML = bundleFrames[frameIndex];
     frameProgress.textContent = bundleFrames.length === 1
-      ? "Scan this pairing code"
-      : `Scanning frame ${frameIndex + 1} of ${bundleFrames.length} · hold the camera steady`;
+      ? l10n("pairing_scan_code")
+      : l10n(
+        "pairing_frame_progress",
+        frameIndex + 1,
+        bundleFrames.length,
+      );
   };
   renderBundleFrame();
   if (bundleFrames.length > 1) {
@@ -4439,7 +4983,9 @@ $("#btn-share").addEventListener("click", async () => {
       copyText(view.querySelector(".share-connect-code").value);
     }
     if (e.target.matches('[data-act="rotate-connect"]')) {
-      if (!window.confirm("Rotate this Connect code? Old codes stop finding you after their bounded records expire. Identity, contacts, history, and safety numbers do not change.")) return;
+      if (!window.confirm(
+        `${l10n("rotate_connect_code")}\n\n${l10n("rotate_connect_code_warning")}`,
+      )) return;
       const code = await invoke("rotate_connect_code");
       const svg = await invoke("address_qr");
       view.querySelector(".share-connect-code").value = code;
@@ -4447,25 +4993,25 @@ $("#btn-share").addEventListener("click", async () => {
       view.querySelector('[data-act="retire-legacy"]').hidden = true;
       state.address = code;
       $("#my-address").textContent = code;
-      toast("Connect code rotated; identity and safety numbers are unchanged");
+      toast(l10n("rotate_connect_code_done"));
     }
     if (e.target.matches('[data-act="retire-legacy"]')) {
-      if (!window.confirm("Permanently retire mailbox-only lookup under the stable Alpha address? This does not change identity or delete remote copies.")) return;
+      if (!window.confirm(l10n("legacy_discovery_retire_warning"))) return;
       const code = await invoke("retire_legacy_discovery");
       view.querySelector(".share-connect-code").value = code;
       e.target.hidden = true;
-      toast("Legacy stable-address lookup retired");
+      toast(l10n("legacy_discovery_retired"));
     }
     if (e.target.matches('[data-act="publish"]')) {
       await call("publish");
-      toast("Current Connect reachability republished");
+      toast(l10n("reachability_republished"));
     }
   });
 });
 
 // add-contact modal
 $("#btn-add-contact").addEventListener("click", () => {
-  const root = openModal("Add contact", "tpl-add");
+  const root = openModal(l10n("add_title"), "tpl-add");
   let mode = "bundle";
   const getHints = wireHints(root);
   root.addEventListener("click", async (e) => {
@@ -4479,7 +5025,7 @@ $("#btn-add-contact").addEventListener("click", () => {
     if (!e.target.matches('[data-act="save"]')) return;
     const name = root.querySelector('[data-f="name"]').value.trim();
     try {
-      if (!name) throw "give this contact a name";
+      if (!name) throw l10n("add_need_name");
       let peer;
       if (mode === "bundle") {
         peer = await invoke("add_contact", {
@@ -4504,12 +5050,12 @@ $("#btn-add-contact").addEventListener("click", () => {
 
 // create-group modal
 $("#btn-create-group").addEventListener("click", () => {
-  const root = openModal("Create group", "tpl-create-group");
+  const root = openModal(l10n("group_create_title"), "tpl-create-group");
   const members = root.querySelector('[data-f="members"]');
   if (state.contacts.length === 0) {
     const empty = document.createElement("p");
     empty.className = "modal-note";
-    empty.textContent = "Add at least one contact before creating a group.";
+    empty.textContent = l10n("group_no_contacts");
     members.append(empty);
   }
   for (const contact of state.contacts) {
@@ -4529,8 +5075,8 @@ $("#btn-create-group").addEventListener("click", () => {
     const name = root.querySelector('[data-f="name"]').value.trim();
     const selected = $$('input[type="checkbox"]:checked', members).map((input) => input.value);
     try {
-      if (!name) throw "give this group a name";
-      if (selected.length === 0) throw "choose at least one member";
+      if (!name) throw l10n("group_need_name");
+      if (selected.length === 0) throw l10n("group_need_member");
       const group = await invoke("create_group", { name, members: selected });
       closeModal();
       await refreshGroups();
@@ -4548,18 +5094,27 @@ async function openGroupDetails() {
   const authority = await call("group_authority", { group: group.id });
   const isOwner = authority.my_role === "owner";
   const isAdmin = authority.my_role === "admin";
-  const root = openModal(`Members of ${group.name}`, "tpl-group-details");
-  const originSecurity = group.security === "recipient_authenticated"
-    ? "recipient-authenticated origins"
-    : group.security === "upgrading"
-      ? "origin upgrade in progress"
-      : "security upgrade required";
-  root.querySelector(".group-summary").textContent = `${group.members.length} members · ${memberName(authority.owner)} owns this group · generation ${authority.generation}${authority.signed ? " · signed authority" : " · legacy authority"} · ${originSecurity}.`;
+  const root = openModal(
+    l10n("group_members_title", group.name),
+    "tpl-group-details",
+  );
+  root.querySelector(".group-summary").textContent = l10n(
+    "group_authority_security_summary",
+    l10nPlural("group_member_count", group.members.length, group.members.length),
+    memberName(authority.owner),
+    Number(authority.generation),
+    l10n(
+      authority.signed ? "group_authority_signed" : "group_authority_legacy",
+    ),
+    groupOriginName(group.security),
+  );
   const manage = root.querySelector('[data-f="manage"]');
   if (isOwner || isAdmin) {
     manage.hidden = false;
     root.querySelector('[data-f="rename"]').value = group.name;
-    root.querySelector('[data-act="rename"]').textContent = isOwner ? "Rename" : "Request rename";
+    root.querySelector('[data-act="rename"]').textContent = l10n(
+      isOwner ? "group_rename_action" : "group_rename_request_action",
+    );
   }
   const roster = root.querySelector('[data-f="roster"]');
   for (const member of authority.members) {
@@ -4572,7 +5127,7 @@ async function openGroupDetails() {
     name.textContent = memberName(peer);
     const role = document.createElement("span");
     role.className = "member-role";
-    role.textContent = member.role;
+    role.textContent = groupRoleName(member.role);
     row.append(name, role);
     if (isOwner && member.role !== "owner") {
       const roleButton = document.createElement("button");
@@ -4580,13 +5135,15 @@ async function openGroupDetails() {
       roleButton.dataset.act = "set-role";
       roleButton.dataset.peer = peer;
       roleButton.dataset.role = member.role === "admin" ? "member" : "admin";
-      roleButton.textContent = member.role === "admin" ? "Make member" : "Make admin";
+      roleButton.textContent = l10n(
+        member.role === "admin" ? "group_make_member" : "group_make_admin",
+      );
       row.append(roleButton);
       const transfer = document.createElement("button");
       transfer.className = "ghost";
       transfer.dataset.act = "transfer-owner";
       transfer.dataset.peer = peer;
-      transfer.textContent = "Make owner";
+      transfer.textContent = l10n("group_make_owner");
       row.append(transfer);
     }
     if ((isOwner && member.role !== "owner") || (isAdmin && member.role === "member")) {
@@ -4594,7 +5151,7 @@ async function openGroupDetails() {
       remove.className = "danger";
       remove.dataset.act = "remove-member";
       remove.dataset.peer = peer;
-      remove.textContent = "Remove";
+      remove.textContent = l10n("group_remove_action");
       row.append(remove);
     }
     roster.append(row);
@@ -4619,11 +5176,11 @@ async function openGroupDetails() {
     if (action === "rename") {
       try {
         const name = root.querySelector('[data-f="rename"]').value.trim();
-        if (!name) throw "give this group a name";
+        if (!name) throw l10n("group_need_name");
         await invoke("rename_group", { group: group.id, name });
         closeModal();
         await refreshGroups();
-        toast(isOwner ? "Group renamed." : "Rename request sent to the owner.");
+        toast(l10n(isOwner ? "group_renamed" : "group_rename_requested"));
       } catch (err) { showError(root, err); }
     }
     if (action === "set-role") {
@@ -4640,7 +5197,7 @@ async function openGroupDetails() {
     }
     if (action === "transfer-owner") {
       const peer = event.target.dataset.peer;
-      if (!confirm(`Transfer sole ownership to ${memberName(peer)}? You will become an admin.`)) return;
+      if (!confirm(l10n("group_transfer_owner_warning", memberName(peer)))) return;
       try {
         await invoke("transfer_group_owner", { group: group.id, peer });
         closeModal();
@@ -4663,7 +5220,7 @@ async function openGroupDetails() {
     }
     if (action === "remove-member") {
       const peer = event.target.dataset.peer;
-      if (!window.confirm(`Remove ${memberName(peer)}? Group keys rotate immediately.`)) return;
+      if (!window.confirm(l10n("group_remove_warning", memberName(peer)))) return;
       try {
         await invoke("remove_group_member", { group: group.id, peer });
         closeModal();
@@ -4674,8 +5231,8 @@ async function openGroupDetails() {
       }
     }
     if (action === "leave") {
-      if (isOwner) { showError(root, "Transfer ownership before leaving this group."); return; }
-      if (!window.confirm(`Leave ${group.name}? Its history stays on this device.`)) return;
+      if (isOwner) { showError(root, l10n("group_owner_must_transfer")); return; }
+      if (!window.confirm(l10n("group_leave_warning", group.name))) return;
       try {
         await invoke("leave_group", { group: group.id });
         closeModal();
@@ -4696,7 +5253,7 @@ $("#btn-group-details").addEventListener("click", openGroupDetails);
 function openCreatePoll() {
   const group = currentGroup();
   if (!group) return;
-  const root = openModal(`Create poll in ${group.name}`, "tpl-create-poll");
+  const root = openModal(l10n("poll_create_title", group.name), "tpl-create-poll");
   const options = root.querySelector('[data-f="poll-options"]');
   const add = root.querySelector('[data-act="add-option"]');
 
@@ -4714,25 +5271,34 @@ function openCreatePoll() {
     row.className = "poll-option-edit-row";
     const label = document.createElement("label");
     const number = $$(".poll-option-edit-row", options).length + 1;
-    label.textContent = `Choice ${number}`;
+    label.textContent = l10n("poll_choice_hint", number);
     const input = document.createElement("input");
     input.type = "text";
     input.value = value;
     input.autocomplete = "off";
     input.dataset.incognitoInput = "message";
-    input.setAttribute("aria-label", `Poll choice ${number}`);
+    input.setAttribute("aria-label", l10n("poll_choice_accessibility", number));
     const remove = document.createElement("button");
     remove.type = "button";
     remove.className = "ghost";
     remove.dataset.act = "remove-option";
-    remove.textContent = "Remove";
-    remove.setAttribute("aria-label", `Remove choice ${number}`);
+    remove.textContent = l10n("remove_action");
+    remove.setAttribute("aria-label", l10n("poll_remove_choice", number));
     remove.addEventListener("click", () => {
       row.remove();
       $$(".poll-option-edit-row", options).forEach((item, index) => {
-        item.querySelector("label").firstChild.textContent = `Choice ${index + 1}`;
-        item.querySelector("input").setAttribute("aria-label", `Poll choice ${index + 1}`);
-        item.querySelector("button").setAttribute("aria-label", `Remove choice ${index + 1}`);
+        item.querySelector("label").firstChild.textContent = l10n(
+          "poll_choice_hint",
+          index + 1,
+        );
+        item.querySelector("input").setAttribute(
+          "aria-label",
+          l10n("poll_choice_accessibility", index + 1),
+        );
+        item.querySelector("button").setAttribute(
+          "aria-label",
+          l10n("poll_remove_choice", index + 1),
+        );
       });
       refreshOptionControls();
     });
@@ -4753,15 +5319,18 @@ function openCreatePoll() {
     const choices = $$("input", options).map((input) => input.value);
     const bytes = (value) => new TextEncoder().encode(value).length;
     try {
-      if (!question.trim()) throw "enter a poll question";
-      if (bytes(question) > 1024) throw "the poll question is longer than 1,024 UTF-8 bytes";
-      if (choices.length < 2) throw "add at least two choices";
-      if (choices.some((choice) => !choice.trim())) throw "every poll choice needs text";
-      if (choices.some((choice) => bytes(choice) > 256)) throw "each poll choice must be at most 256 UTF-8 bytes";
+      if (!question.trim()) throw l10n("poll_need_question");
+      if (bytes(question) > 1024) throw l10n("poll_question_too_long");
+      if (choices.length < 2 || choices.some((choice) => !choice.trim())) {
+        throw l10n("poll_need_choices");
+      }
+      if (choices.some((choice) => bytes(choice) > 256)) {
+        throw l10n("poll_choice_too_long");
+      }
       await call("create_group_poll", { group: group.id, question, options: choices });
       closeModal();
       await renderMessages();
-      toast("Visible-vote poll created for the current roster.");
+      toast(l10n("poll_created"));
     } catch (err) {
       error.textContent = String(err);
       error.hidden = false;
@@ -4775,11 +5344,11 @@ $("#btn-poll").addEventListener("click", openCreatePoll);
 // verify (safety number) modal
 $("#btn-verify").addEventListener("click", async () => {
   const peer = state.currentId;
-  const root = openModal(`Verify ${contactName(peer)}`, "tpl-verify");
+  const root = openModal(l10n("verify_title", contactName(peer)), "tpl-verify");
   const digits = root.querySelector(".safety-digits");
   const qr = root.querySelector(".safety-qr");
   const mark = root.querySelector('[data-act="verified"]');
-  digits.textContent = "Calculating verification code…";
+  digits.textContent = l10n("verify_calculating");
   mark.disabled = true;
   try {
     const sn = await call("safety_number", { peer });
@@ -4787,7 +5356,7 @@ $("#btn-verify").addEventListener("click", async () => {
     qr.innerHTML = sn.qr_svg;
     mark.disabled = false;
   } catch (error) {
-    digits.textContent = `Could not load the verification code: ${error}`;
+    digits.textContent = l10n("verify_unavailable");
     qr.replaceChildren();
     return;
   }
@@ -4795,7 +5364,7 @@ $("#btn-verify").addEventListener("click", async () => {
     if (!e.target.matches('[data-act="verified"]')) return;
     await call("mark_verified", { peer });
     closeModal();
-    toast("Marked verified");
+    toast(l10n("verify_done"));
     await Promise.all([refreshContacts(), refreshAuthorityResetHistory()]);
   });
 });
@@ -4803,14 +5372,17 @@ $("#btn-verify").addEventListener("click", async () => {
 // delivery-hints modal
 $("#btn-hints").addEventListener("click", () => {
   const peer = state.currentId;
-  const root = openModal(`Delivery hints for ${contactName(peer)}`, "tpl-hints");
+  const root = openModal(
+    l10n("hints_for", contactName(peer)),
+    "tpl-hints",
+  );
   const getHints = wireHints(root);
   root.addEventListener("click", async (e) => {
     if (!e.target.matches('[data-act="save"]')) return;
     try {
       await invoke("set_hints", { peer, hints: getHints() });
       closeModal();
-      toast("Delivery hints replaced");
+      toast(l10n("hints_saved"));
     } catch (err) {
       showError(root, err);
     }
@@ -4819,11 +5391,17 @@ $("#btn-hints").addEventListener("click", () => {
 
 // appearance is applied immediately and sealed through the shared F5 record
 async function openAppearanceSettings() {
-  const root = openModal("Appearance", "tpl-theme");
+  const root = openModal(l10n("appearance_title"), "tpl-theme");
   const info = await call("theme");
   const checked = root.querySelector('input[value="' + info.preference + '"]');
   if (checked) checked.checked = true;
+  root.querySelector('[data-f="locale"]').value =
+    KommsLocalization.localePreference();
   root.addEventListener("change", async (event) => {
+    if (event.target.matches('[data-f="locale"]')) {
+      KommsLocalization.setLocale(event.target.value);
+      return;
+    }
     if (!event.target.matches('input[name="theme-preference"]')) return;
     applyTheme(event.target.value);
     try {
@@ -4849,14 +5427,25 @@ async function renderLinkedDevices(root) {
     conflictView.hidden = false;
     const ownWarnings = conflicts.map((conflict) =>
       conflict.kind === "recovery"
-        ? `Conflicting recoveries claim epoch ${conflict.recovery_epoch}. Authority is fail-closed; re-verify contacts after resolving with offline recovery.`
-        : `Concurrent device-authority branches were detected in epoch ${conflict.recovery_epoch}. Authority is fail-closed and requires offline recovery.`
+        ? l10n(
+          "device_authority_recovery_conflict",
+          Number(conflict.recovery_epoch),
+        )
+        : l10n("device_authority_fork", Number(conflict.recovery_epoch))
     );
     const contactWarnings = contactConflicts.map((conflict) => {
       const name = contactName(conflict.account);
       return conflict.kind === "recovery"
-        ? `${name} presented conflicting recoveries for epoch ${conflict.recovery_epoch}. Their accepted branch was retained and verification was cleared.`
-        : `${name} presented concurrent device-authority branches in epoch ${conflict.recovery_epoch}. Their accepted branch was retained; offline recovery is required.`;
+        ? l10n(
+          "device_authority_contact_recovery_conflict",
+          name,
+          Number(conflict.recovery_epoch),
+        )
+        : l10n(
+          "device_authority_contact_fork",
+          name,
+          Number(conflict.recovery_epoch),
+        );
     });
     conflictView.textContent = ownWarnings.concat(contactWarnings).join(" ");
   } else {
@@ -4872,18 +5461,21 @@ async function renderLinkedDevices(root) {
     name.textContent = device.name;
     const detail = document.createElement("small");
     const stateText = device.revoked_at
-      ? "revoked " + fmtTime(device.revoked_at)
-      : device.current ? "this device" : "active · seen " + fmtTime(device.last_seen);
-    detail.textContent = stateText + " · " + device.id;
+      ? l10n("device_revoked_at", fmtTime(device.revoked_at))
+      : device.current
+        ? l10n("device_row_current")
+        : l10n("device_active_seen", fmtTime(device.last_seen));
+    detail.textContent = l10n("device_detail", stateText, device.id);
     summary.append(name, document.createElement("br"), detail);
     const actions = document.createElement("div");
     if (!device.revoked_at) {
       const rename = document.createElement("button");
       rename.className = "ghost";
       rename.type = "button";
-      rename.textContent = "Rename";
+      rename.textContent = l10n("device_rename_action", device.name);
+      rename.setAttribute("aria-label", l10n("device_rename_action", device.name));
       rename.addEventListener("click", async () => {
-        const next = window.prompt("Signed device name", device.name);
+        const next = window.prompt(l10n("device_signed_name"), device.name);
         if (next === null) return;
         try {
           await invoke("rename_linked_device", { device: device.id, name: next });
@@ -4895,20 +5487,30 @@ async function renderLinkedDevices(root) {
         const sync = document.createElement("button");
         sync.className = "ghost";
         sync.type = "button";
-        sync.textContent = "Export sync";
+        sync.textContent = l10n("device_export_sync_action", device.name);
+        sync.setAttribute(
+          "aria-label",
+          l10n("device_export_sync_action", device.name),
+        );
         sync.addEventListener("click", async () => {
           try {
             const bundle = await invoke("export_device_sync", { device: device.id });
             await copyText(bundle);
-            toast("Encrypted sync for " + device.name + " copied");
+            toast(l10n("device_sync_copied", device.name));
           } catch (error) { showError(root, error); }
         });
         const revoke = document.createElement("button");
         revoke.className = "danger";
         revoke.type = "button";
-        revoke.textContent = "Revoke";
+        revoke.textContent = l10n("device_revoke_action", device.name);
+        revoke.setAttribute(
+          "aria-label",
+          l10n("device_revoke_action", device.name),
+        );
         revoke.addEventListener("click", async () => {
-          const confirmed = window.confirm("Permanently revoke “" + device.name + "”? This cannot be undone.");
+          const confirmed = window.confirm(
+            l10n("device_revoke_confirmation", device.name),
+          );
           if (!confirmed) return;
           try {
             await invoke("revoke_linked_device", { device: device.id, confirmed: true });
@@ -4924,7 +5526,7 @@ async function renderLinkedDevices(root) {
 }
 
 async function openDeviceLinkSource() {
-  const root = openModal("Link another device", "tpl-device-link-source");
+  const root = openModal(l10n("device_link_source_title"), "tpl-device-link-source");
   try {
     const offer = await invoke("begin_device_link");
     const pane = root.querySelector('[data-f="offer-qr"]');
@@ -4941,7 +5543,7 @@ async function openDeviceLinkSource() {
         pane.innerHTML = frames[frame];
         pane.setAttribute(
           "aria-label",
-          `Device link offer frame ${frame + 1} of ${frames.length}`
+          l10n("device_link_frame_accessibility", frame + 1, frames.length),
         );
       }, 1100);
     }
@@ -4960,7 +5562,7 @@ async function openDeviceLinkSource() {
       }
       if (event.target.matches('[data-act="approve"]')) {
         const confirmed = root.querySelector('[data-f="confirmed"]').checked;
-        if (!confirmed) throw "compare the six digits on both devices first";
+        if (!confirmed) throw l10n("device_compare_required");
         const responseHex = root.querySelector('[data-f="response"]').value.trim();
         const selection = {
           contacts: root.querySelector('[data-f="contacts"]').checked,
@@ -4988,7 +5590,7 @@ async function openDeviceLinkSource() {
           approvalHex: root.querySelector('[data-f="additional-approval"]').value.trim(),
         });
         if (!packageHex) {
-          toast("Approval accepted; another active device is still required");
+          toast(l10n("device_approval_more_required"));
           return;
         }
         root.querySelector('[data-f="package"]').value = packageHex;
@@ -5005,12 +5607,12 @@ async function openDeviceLinkSource() {
 function openDeviceApproval(kind) {
   const isLink = kind === "link";
   const root = openModal(
-    isLink ? "Approve another device’s link" : "Approve a device change",
+    l10n(isLink ? "device_approval_link_title" : "device_approval_change_title"),
     "tpl-device-approval"
   );
   root.querySelector('[data-f="explanation"]').textContent = isLink
-    ? "Verify an exact pending add-device proposal from another active installation. Your detached signature alone cannot alter the proposal."
-    : "Verify an exact pending rename or revocation proposal from another active installation.";
+    ? l10n("device_approval_link_body")
+    : l10n("device_approval_change_body");
   root.addEventListener("click", async (event) => {
     try {
       if (event.target.matches('[data-act="approve-request"]')) {
@@ -5031,7 +5633,10 @@ function openDeviceApproval(kind) {
 }
 
 async function openPendingAuthorityApproval() {
-  const root = openModal("Continue pending device change", "tpl-pending-authority");
+  const root = openModal(
+    l10n("device_pending_change_title"),
+    "tpl-pending-authority",
+  );
   try {
     root.querySelector('[data-f="request"]').value =
       await invoke("device_authority_approval_request");
@@ -5049,9 +5654,9 @@ async function openPendingAuthorityApproval() {
         });
         if (committed) {
           closeModal();
-          toast("Device authority change committed");
+          toast(l10n("device_authority_committed"));
         } else {
-          toast("Approval accepted; another active device is still required");
+          toast(l10n("device_approval_more_required"));
         }
       }
     } catch (error) { showError(root, error); }
@@ -5059,7 +5664,7 @@ async function openPendingAuthorityApproval() {
 }
 
 function openDeviceLinkTarget() {
-  const root = openModal("Link this new device", "tpl-device-link-target");
+  const root = openModal(l10n("device_link_target_title"), "tpl-device-link-target");
   root.addEventListener("click", async (event) => {
     try {
       if (event.target.matches('[data-act="accept"]')) {
@@ -5076,7 +5681,7 @@ function openDeviceLinkTarget() {
       }
       if (event.target.matches('[data-act="complete"]')) {
         const confirmed = root.querySelector('[data-f="confirmed"]').checked;
-        if (!confirmed) throw "compare the six digits on both devices first";
+        if (!confirmed) throw l10n("device_compare_required");
         await invoke("complete_device_link", {
           packageHex: root.querySelector('[data-f="package"]').value.trim(),
           confirmed: true,
@@ -5084,14 +5689,14 @@ function openDeviceLinkTarget() {
         closeModal();
         await refreshStatus();
         await Promise.all([refreshContacts(), refreshGroups(), refreshFolders(), refreshLabels()]);
-        toast("Device linked with independent keys");
+        toast(l10n("device_linked_success"));
       }
     } catch (error) { showError(root, error); }
   });
 }
 
 function openDeviceSyncImport() {
-  const root = openModal("Import linked-device sync", "tpl-device-sync");
+  const root = openModal(l10n("device_sync_import_title"), "tpl-device-sync");
   root.addEventListener("click", async (event) => {
     if (!event.target.matches('[data-act="import"]')) return;
     try {
@@ -5100,13 +5705,17 @@ function openDeviceSyncImport() {
       });
       closeModal();
       await Promise.all([refreshContacts(), refreshGroups(), refreshFolders(), refreshLabels()]);
-      toast("Device sync imported · " + inserted + " new events");
+      toast(l10nPlural(
+        "device_imported_sync_events",
+        inserted,
+        inserted,
+      ));
     } catch (error) { showError(root, error); }
   });
 }
 
 async function openLinkedDevicesSettings() {
-  const root = openModal("Linked devices", "tpl-devices");
+  const root = openModal(l10n("settings_devices_title"), "tpl-devices");
   try { await renderLinkedDevices(root); } catch (error) { showError(root, error); }
   root.addEventListener("click", (event) => {
     if (event.target.matches('[data-act="begin-link"]')) openDeviceLinkSource();
@@ -5122,7 +5731,10 @@ async function openLinkedDevicesSettings() {
 // until the encrypted package is written and its separate phrase acknowledged.
 function openRecoveryAuthorityOnboarding() {
   recoveryOnboardingPending = true;
-  const root = openModal("Save your offline account authority", "tpl-recovery-authority");
+  const root = openModal(
+    l10n("recovery_authority_required_title"),
+    "tpl-recovery-authority",
+  );
   $("#modal-close").hidden = true;
   root.addEventListener("click", async (event) => {
     if (event.target.matches('[data-act="export-authority"]')) {
@@ -5141,7 +5753,7 @@ function openRecoveryAuthorityOnboarding() {
         root.querySelector('[data-f="export-stage"]').hidden = true;
         root.querySelector('[data-f="result-stage"]').hidden = false;
       } catch (failure) {
-        error.textContent = String(failure);
+        error.textContent = localizedError(failure);
         error.hidden = false;
       }
     }
@@ -5149,14 +5761,14 @@ function openRecoveryAuthorityOnboarding() {
       recoveryOnboardingPending = false;
       $("#modal-close").hidden = false;
       closeModal();
-      toast("Offline account authority saved");
+      toast(l10n("recovery_authority_done_title"));
     }
   });
 }
 
 // backup modal → one-time mnemonic
 function openBackupSettings() {
-  const root = openModal("Encrypted backup", "tpl-backup");
+  const root = openModal(l10n("settings_backup_title"), "tpl-backup");
   const stamp = new Date().toISOString().slice(0, 10);
   root.querySelector('[data-f="path"]').value = `${state.dataDir}/komms-${stamp}.kkr`;
   root.addEventListener("click", async (e) => {
@@ -5165,7 +5777,7 @@ function openBackupSettings() {
       const mnemonic = await invoke("export_backup", {
         path: root.querySelector('[data-f="path"]').value.trim(),
       });
-      const shown = openModal("Recovery mnemonic — shown once", "tpl-mnemonic");
+      const shown = openModal(l10n("backup_mnemonic_title"), "tpl-mnemonic");
       const ol = shown.querySelector(".mnemonic");
       for (const word of mnemonic.split(/\s+/)) {
         const li = document.createElement("li");
@@ -5182,7 +5794,7 @@ function openBackupSettings() {
 }
 
 $("#btn-settings").addEventListener("click", () => {
-  const root = openModal("Settings", "tpl-settings");
+  const root = openModal(l10n("settings_title"), "tpl-settings");
   root.addEventListener("click", (event) => {
     const action = event.target.closest("[data-settings-action]")?.dataset.settingsAction;
     if (action === "backup") openBackupSettings();
@@ -5197,6 +5809,6 @@ $("#btn-settings").addEventListener("click", () => {
 // ── boot ────────────────────────────────────────────────────────────────
 
 probeGate().catch((err) => {
-  $("#gate-error").textContent = String(err);
+  $("#gate-error").textContent = localizedError(err);
   $("#gate-error").hidden = false;
 });

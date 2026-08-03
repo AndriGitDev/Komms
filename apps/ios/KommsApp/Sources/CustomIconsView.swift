@@ -39,10 +39,27 @@ struct CustomIconsView: View {
     private let glyphs = ["person", "group", "folder", "note", "star", "heart", "shield", "compass"]
 
     private var choices: [IconChoice] {
-        [IconChoice(target: .init(kind: .noteToSelf, id: nil), label: "Note to self")] +
-        model.contacts.map { IconChoice(target: .init(kind: .contact, id: $0.peer), label: "Contact · \($0.name)") } +
-        model.groups.map { IconChoice(target: .init(kind: .group, id: $0.id), label: "Group · \($0.name)") } +
-        model.folders.map { IconChoice(target: .init(kind: .folder, id: $0.id), label: "Folder \($0.order + 1) · \($0.name)") }
+        [IconChoice(
+            target: .init(kind: .noteToSelf, id: nil),
+            label: L10n.text("note_to_self_title"))] +
+        model.contacts.map {
+            IconChoice(
+                target: .init(kind: .contact, id: $0.peer),
+                label: L10n.text("icons_contact_target", $0.name))
+        } +
+        model.groups.map {
+            IconChoice(
+                target: .init(kind: .group, id: $0.id),
+                label: L10n.text("icons_group_target", $0.name))
+        } +
+        model.folders.map {
+            IconChoice(
+                target: .init(kind: .folder, id: $0.id),
+                label: L10n.text(
+                    "icons_folder_target",
+                    Int(clamping: $0.order + 1),
+                    $0.name))
+        }
     }
 
     private var selected: IconChoice {
@@ -66,7 +83,10 @@ struct CustomIconsView: View {
                         Spacer()
                     }
                     if let icon = model.customIcon(for: selected.target) {
-                        Text("Private local icon · \(icon.bytes.count.formatted()) encoded bytes")
+                        Text(
+                            L10n.text(
+                                "icons_private_bytes",
+                                icon.bytes.count))
                             .font(.caption).foregroundStyle(.secondary)
                     } else {
                         Text("Generated initials fallback")
@@ -76,9 +96,12 @@ struct CustomIconsView: View {
                 Section("Bundled glyph") {
                     LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 4)) {
                         ForEach(glyphs, id: \.self) { glyph in
-                            Button(glyph.capitalized) { setGlyph(glyph) }
+                            Button(glyphLabel(glyph)) { setGlyph(glyph) }
                                 .disabled(working)
-                                .accessibilityLabel("Use bundled \(glyph) glyph")
+                                .accessibilityLabel(
+                                    L10n.text(
+                                        "icons_use_bundled_glyph",
+                                        glyphLabel(glyph)))
                         }
                     }
                 }
@@ -87,9 +110,16 @@ struct CustomIconsView: View {
                         .disabled(working)
                     Button("Use generated initials", role: .destructive) { clear() }
                         .disabled(working || model.customIcon(for: selected.target) == nil)
-                    Text("\(model.customIconUsage.records.formatted()) / 1,024 icons · \(model.customIconUsage.bytes.formatted()) / 67,108,864 bytes")
+                    Text(
+                        L10n.text(
+                            "icons_usage",
+                            Int(clamping: model.customIconUsage.records),
+                            Int(clamping: model.customIconUsage.bytes)))
                         .font(.caption).foregroundStyle(.secondary)
-                    if let error { Text(error).foregroundStyle(.red).accessibilityLabel("Error: \(error)") }
+                    if let error {
+                        Text(error).foregroundStyle(.red)
+                            .accessibilityLabel(L10n.text("accessibility_error", error))
+                    }
                     if result.isEmpty == false { Text(result).font(.footnote).accessibilityLabel(result) }
                 }
             }
@@ -114,10 +144,25 @@ struct CustomIconsView: View {
         Task {
             do {
                 try await model.setCustomIcon(target: target, glyph: glyph)
-                result = "Bundled \(glyph) icon saved locally."
+                result = L10n.text("icons_bundled_saved", glyph)
             } catch { self.error = errorText(error) }
             working = false
         }
+    }
+
+    private func glyphLabel(_ glyph: String) -> String {
+        let messageID = switch glyph {
+        case "person": "icon_glyph_person"
+        case "group": "icon_glyph_group"
+        case "folder": "icon_glyph_folder"
+        case "note": "icon_glyph_note"
+        case "star": "icon_glyph_star"
+        case "heart": "icon_glyph_heart"
+        case "shield": "icon_glyph_shield"
+        case "compass": "icon_glyph_compass"
+        default: "icon_glyph_unknown"
+        }
+        return L10n.text(messageID)
     }
 
     private func setImage(_ url: URL) {
@@ -128,7 +173,7 @@ struct CustomIconsView: View {
             defer { if accessed { url.stopAccessingSecurityScopedResource() } }
             do {
                 try await model.setCustomIcon(target: target, source: url)
-                result = "Selected image cropped, sanitized, and sealed locally."
+                result = L10n.text("icons_saved")
             } catch { self.error = errorText(error) }
             working = false
         }
@@ -140,7 +185,7 @@ struct CustomIconsView: View {
         Task {
             do {
                 try await model.clearCustomIcon(target: target)
-                result = "Generated initials restored."
+                result = L10n.text("icons_cleared")
             } catch { self.error = errorText(error) }
             working = false
         }

@@ -136,6 +136,44 @@
                 android:layout_height="wrap_content" />
 
             <TextView
+                android:text="@string/language_title"
+                android:textStyle="bold"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content" />
+
+            <RadioGroup
+                android:id="@+id/set_language"
+                android:contentDescription="@string/language_title"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content">
+
+                <RadioButton
+                    android:id="@+id/set_language_system"
+                    android:text="@string/language_system"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content" />
+
+                <RadioButton
+                    android:id="@+id/set_language_english"
+                    android:text="@string/language_english"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content" />
+
+                <RadioButton
+                    android:id="@+id/set_language_icelandic"
+                    android:text="@string/language_icelandic"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content" />
+            </RadioGroup>
+
+            <TextView
+                android:text="@string/language_note"
+                android:textSize="12sp"
+                android:layout_marginBottom="20dp"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content" />
+
+            <TextView
                 android:text="@string/native_wake_title"
                 android:textStyle="bold"
                 android:layout_width="wrap_content"

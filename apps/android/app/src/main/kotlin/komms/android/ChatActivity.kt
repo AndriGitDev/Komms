@@ -394,7 +394,8 @@ private class MessagesAdapter(
                 append(context.getString(R.string.message_edited_revision, message.editRevision.toString()))
             }
             if (message.contentKind == ContentKind.DISAPPEARING_TEXT && message.expiresAt != null) {
-                append(" · removes ")
+                append(" · ")
+                append(context.getString(R.string.removes_prefix))
                 append(
                     DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT)
                         .format(Date(message.expiresAt!!.toLong() * 1000)),

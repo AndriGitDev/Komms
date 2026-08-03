@@ -19,7 +19,7 @@ targets:
     platform: iOS
     sources:
       - Sources
-      - path: Resources/Assets.xcassets
+      - path: Resources
         buildPhase: resources
     dependencies:
       - package: KommsCore

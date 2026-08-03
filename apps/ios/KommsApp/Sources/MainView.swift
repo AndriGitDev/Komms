@@ -21,19 +21,20 @@ struct MainView: View {
         NavigationStack(path: $navigation) {
             List {
                 if let reset = model.authorityResetHistory {
-                    Section("Former-identity local archive") {
+                    Section {
                         Label(
-                            "\(reset.preservedPairwiseMessages) pairwise rows and \(reset.preservedNoteMessages) notes were copied locally. They are not newly authenticated history of this account.",
+                            L10n.text(
+                                "authority_reset_archive_summary",
+                                L10n.text("authority_reset_archive_title"),
+                                Int(clamping: reset.preservedPairwiseMessages),
+                                Int(clamping: reset.preservedNoteMessages),
+                                Int(clamping: reset.omittedGroups),
+                                Int(clamping: reset.omittedGroupMessages),
+                                reset.pendingReverification.count),
                             systemImage: "exclamationmark.shield"
                         )
                         .font(.footnote)
                         .foregroundStyle(ThemePalette.warning)
-                        Text(
-                            "\(reset.omittedGroups) active groups were not transferred. "
-                            + "\(reset.pendingReverification.count) contact(s) still require a new safety-number comparison."
-                        )
-                        .font(.footnote)
-                        .foregroundStyle(ThemePalette.textSecondary)
                     }
                 }
 
@@ -65,12 +66,19 @@ struct MainView: View {
                         HStack {
                             Label("Message requests", systemImage: "person.crop.circle.badge.questionmark")
                             Spacer()
-                            Text(pendingRequestCount == 0 ? "None" : "\(pendingRequestCount)")
+                            Text(
+                                pendingRequestCount == 0
+                                    ? L10n.text("message_requests_empty")
+                                    : L10n.plural(
+                                        "pending_requests_count",
+                                        count: pendingRequestCount))
                                 .foregroundStyle(.secondary)
                                 .accessibilityLabel(
                                     pendingRequestCount == 0
-                                        ? "No pending requests"
-                                        : "\(pendingRequestCount) pending requests"
+                                        ? L10n.text("message_requests_empty")
+                                        : L10n.plural(
+                                            "pending_requests_count",
+                                            count: pendingRequestCount)
                                 )
                         }
                     }
@@ -112,7 +120,9 @@ struct MainView: View {
                         !model.isPinned(PinTarget(kind: .noteToSelf, id: nil)) {
                       NavigationLink(value: NoteRoute(id: model.noteToSelfId())) {
                         HStack {
-                            CustomIconAvatar(target: .init(kind: .noteToSelf, id: nil), label: "Note to self")
+                            CustomIconAvatar(
+                                target: .init(kind: .noteToSelf, id: nil),
+                                label: L10n.text("note_to_self_title"))
                             VStack(alignment: .leading) {
                                 Text("Note to self")
                                 Text("Local only")
@@ -167,8 +177,10 @@ struct MainView: View {
                                 CustomIconAvatar(target: .init(kind: .group, id: group.id), label: group.name)
                                 VStack(alignment: .leading) {
                                     Text(group.name)
-                                    Text("\(group.members.count) "
-                                         + (group.members.count == 1 ? "member" : "members"))
+                                    Text(
+                                        L10n.plural(
+                                            "group_member_count",
+                                            count: group.members.count))
                                         .font(.caption)
                                         .foregroundStyle(.secondary)
                                     LabelBadgeRow(labels: model.labelsForTarget(LabelTarget(kind: .group, id: group.id)))
@@ -261,7 +273,7 @@ struct MainView: View {
             }
         case .group:
             if let id = row.target.id {
-                let name = row.displayName ?? "Group"
+                let name = row.displayName ?? L10n.text("group_default_name")
                 NavigationLink(value: GroupRoute(id: id)) {
                     HStack {
                         CustomIconAvatar(target: .init(kind: .group, id: id), label: name)
@@ -272,7 +284,9 @@ struct MainView: View {
         case .noteToSelf:
             NavigationLink(value: NoteRoute(id: model.noteToSelfId())) {
                 HStack {
-                    CustomIconAvatar(target: .init(kind: .noteToSelf, id: nil), label: "Note to self")
+                    CustomIconAvatar(
+                        target: .init(kind: .noteToSelf, id: nil),
+                        label: L10n.text("note_to_self_title"))
                     Text("Note to self")
                 }
             }
@@ -302,17 +316,17 @@ private struct NodeSummaryRow: View {
 
     private var mode: String {
         switch status.mode {
-        case .standard: return "Standard"
-        case .private: return "Private"
-        case .sovereign: return "Sovereign"
+        case .standard: return L10n.text("mode_standard")
+        case .private: return L10n.text("mode_private")
+        case .sovereign: return L10n.text("mode_sovereign")
         }
     }
 
     private var summary: String {
         switch status.connection {
-        case .connected: return "Connected"
-        case .fallbackReady: return "Fallback ready"
-        case .waitingForRoute: return "Waiting for a route"
+        case .connected: return L10n.text("connection_connected")
+        case .fallbackReady: return L10n.text("connection_fallback_ready")
+        case .waitingForRoute: return L10n.text("connection_waiting")
         }
     }
 
@@ -337,7 +351,10 @@ private struct NodeSummaryRow: View {
             }
             Spacer()
             if status.queued > 0 {
-                Text("\(status.queued) queued")
+                Text(
+                    L10n.plural(
+                        "queued_count",
+                        count: Int(clamping: status.queued)))
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(ThemePalette.warning)
             }
@@ -357,36 +374,36 @@ private struct NodeDetailsView: View {
 
     private var natText: String {
         switch status.nat {
-        case .public: return "Public — directly reachable"
-        case .private: return "Private — behind NAT"
-        case .unknown: return "Unknown — not probed yet"
+        case .public: return L10n.text("nat_public")
+        case .private: return L10n.text("nat_private")
+        case .unknown: return L10n.text("nat_unknown")
         }
     }
 
     private var modeText: String {
         switch status.mode {
-        case .standard: return "Standard"
-        case .private: return "Private"
-        case .sovereign: return "Sovereign"
+        case .standard: return L10n.text("mode_standard")
+        case .private: return L10n.text("mode_private")
+        case .sovereign: return L10n.text("mode_sovereign")
         }
     }
 
     private var connectionText: String {
         switch status.connection {
-        case .connected: return "Connected"
-        case .fallbackReady: return "Fallback ready"
-        case .waitingForRoute: return "Waiting for a route"
+        case .connected: return L10n.text("connection_connected")
+        case .fallbackReady: return L10n.text("connection_fallback_ready")
+        case .waitingForRoute: return L10n.text("connection_waiting")
         }
     }
 
     private var providerDirectoryText: String {
         switch status.providerDirectory {
-        case .notConfigured: return "Not configured"
-        case .current: return "Current"
-        case .retainedLastValid: return "Using retained last-valid copy"
-        case .stale: return "Stale grace active"
-        case .conflict: return "Conflict — defaults disabled"
-        case .unavailable: return "Unavailable"
+        case .notConfigured: return L10n.text("directory_not_configured")
+        case .current: return L10n.text("directory_current")
+        case .retainedLastValid: return L10n.text("directory_retained")
+        case .stale: return L10n.text("directory_stale")
+        case .conflict: return L10n.text("directory_conflict")
+        case .unavailable: return L10n.text("directory_unavailable")
         }
     }
 
@@ -412,7 +429,9 @@ private struct NodeDetailsView: View {
                     }
                     LabeledContent(
                         "Legacy lookup",
-                        value: status.legacyDiscovery ? "Mailbox-only compatibility" : "Retired")
+                        value: status.legacyDiscovery
+                            ? L10n.text("discovery_legacy_enabled")
+                            : L10n.text("discovery_legacy_retired"))
                 }
                 Section("Reachability") {
                     LabeledContent("NAT", value: natText)
@@ -540,7 +559,11 @@ private struct MyBundleView: View {
                                 } else {
                                     QrCodeView(text: frames[index], correctionLevel: "L")
                                         .frame(width: 320, height: 320)
-                                    Text("Pairing frame \(index + 1) of \(frames.count) · keep the scanner pointed here")
+                                    Text(
+                                        L10n.text(
+                                            "my_qr_frame",
+                                            index + 1,
+                                            frames.count))
                                         .font(.footnote.weight(.semibold))
                                         .foregroundStyle(.secondary)
                                         .multilineTextAlignment(.center)

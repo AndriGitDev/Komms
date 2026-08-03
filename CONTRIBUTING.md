@@ -96,5 +96,7 @@ python3 scripts/contributor-check.py PROFILE
 
 By submitting a contribution, you represent that you have the right to submit it
 and agree that it may be distributed under [AGPL-3.0-only](LICENSE), the
-project's software license. No contributor license agreement is currently
-required.
+applicable repository license. No contributor license agreement is currently
+required. Identify copied, generated, employer-owned, or third-party material
+and preserve its notices; the complete scope and asset rules are in
+[License, Trademark, and Asset Policy](docs/47-license-trademark-assets.md).

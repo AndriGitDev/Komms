@@ -2,6 +2,7 @@
 // contact list afterwards. All behavior lives in KommsCore's `Session`
 // (pinned by its e2e test); this app is UI only.
 
+import Foundation
 import KommsCore
 import SwiftUI
 
@@ -11,6 +12,7 @@ struct KommsApp: App {
     @Environment(\.scenePhase) private var scenePhase
     @StateObject private var model = AppModel()
     @StateObject private var screenSecurity = ScreenSecurityController()
+    @AppStorage("komms.locale") private var localePreference = "system"
 
     var body: some Scene {
         WindowGroup {
@@ -33,6 +35,14 @@ struct KommsApp: App {
                 }
             }
             .preferredColorScheme(model.themePreference.colorScheme)
+            .environment(
+                \.locale,
+                Locale(
+                    identifier: localePreference == "system"
+                        ? L10n.activeLocale
+                        : localePreference
+                )
+            )
             .tint(ThemePalette.accent)
             .background(ThemePalette.background.ignoresSafeArea())
             .onAppear { screenSecurity.update(scenePhase: scenePhase) }

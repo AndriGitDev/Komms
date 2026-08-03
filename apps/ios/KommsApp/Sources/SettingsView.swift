@@ -8,6 +8,7 @@ import SwiftUI
 struct SettingsView: View {
     @EnvironmentObject private var model: AppModel
     @Environment(\.dismiss) private var dismiss
+    @AppStorage("komms.locale") private var localePreference = "system"
 
     @State private var showBackup = false
     @State private var showDevices = false
@@ -21,13 +22,13 @@ struct SettingsView: View {
             Form {
                 Section("Account & devices") {
                     SettingsActionRow(
-                        title: "Root-free encrypted backup",
-                        detail: "Export identity, contacts, and history; recovery also needs the separate offline authority",
+                        title: L10n.text("settings_backup_title"),
+                        detail: L10n.text("settings_backup_summary"),
                         systemImage: "externaldrive.badge.timemachine"
                     ) { showBackup = true }
                     SettingsActionRow(
-                        title: "Linked devices",
-                        detail: "Link, sync, rename, or revoke installations",
+                        title: L10n.text("settings_devices_title"),
+                        detail: L10n.text("settings_devices_summary"),
                         systemImage: "laptopcomputer.and.iphone"
                     ) { showDevices = true }
                 }
@@ -46,19 +47,40 @@ struct SettingsView: View {
                         Text("Light").tag(ThemePreference.light)
                         Text("Dark").tag(ThemePreference.dark)
                     }
+                    Picker(
+                        L10n.text("language_title"),
+                        selection: $localePreference
+                    ) {
+                        Text(L10n.text("language_system")).tag("system")
+                        Text(L10n.text("language_english")).tag("en-US")
+                        Text(L10n.text("language_icelandic")).tag("is")
+                    }
+                    .accessibilityHint(L10n.text("language_note"))
                 }
 
                 Section("Conversation organization") {
-                    SettingsActionRow(title: "Folders", systemImage: "folder") {
+                    SettingsActionRow(
+                        title: L10n.text("folders_title"),
+                        systemImage: "folder"
+                    ) {
                         showFolders = true
                     }
-                    SettingsActionRow(title: "Labels", systemImage: "tag") {
+                    SettingsActionRow(
+                        title: L10n.text("labels_title"),
+                        systemImage: "tag"
+                    ) {
                         showLabels = true
                     }
-                    SettingsActionRow(title: "Pinned conversations", systemImage: "pin") {
+                    SettingsActionRow(
+                        title: L10n.source("Pinned conversations"),
+                        systemImage: "pin"
+                    ) {
                         showPins = true
                     }
-                    SettingsActionRow(title: "Private custom icons", systemImage: "person.crop.circle") {
+                    SettingsActionRow(
+                        title: L10n.text("icons_title"),
+                        systemImage: "person.crop.circle"
+                    ) {
                         showIcons = true
                     }
                 }
@@ -155,9 +177,9 @@ private struct PrivacySecurityView: View {
 
             let screenSecurity = screenSecurityPolicy(platform: .ios)
             Section {
-                Text(screenSecurity.mechanism)
+                Text(L10n.source(screenSecurity.mechanism))
                 ForEach(screenSecurity.limitations, id: \.self) { limitation in
-                    Text("• \(limitation)")
+                    Text(L10n.text("screen_limitation_bullet", L10n.source(limitation)))
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
@@ -169,9 +191,9 @@ private struct PrivacySecurityView: View {
 
             let inputPrivacy = incognitoKeyboardPolicy(platform: .ios)
             Section {
-                Text(inputPrivacy.mechanism)
+                Text(L10n.source(inputPrivacy.mechanism))
                 ForEach(inputPrivacy.limitations, id: \.self) { limitation in
-                    Text("• \(limitation)")
+                    Text(L10n.text("screen_limitation_bullet", L10n.source(limitation)))
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
@@ -222,7 +244,8 @@ struct AdvancedNetworkSettingsView: View {
                 Text(modeDisclosure)
                     .font(.footnote)
                     .foregroundStyle(.secondary)
-                    .accessibilityLabel("\(mode.capitalized) mode. \(modeDisclosure)")
+                    .accessibilityLabel(
+                        L10n.text("mode_accessibility", modeName, modeDisclosure))
 
                 if mode == "standard" {
                     Toggle(
@@ -315,8 +338,10 @@ struct AdvancedNetworkSettingsView: View {
                 Button("Save network settings") { save() }
             } footer: {
                 Text(model.session == nil
-                    ? "Saved next to the encrypted store. No secrets are included."
-                    : "Changes apply after the next lock and unlock.")
+                    ? L10n.source(
+                        "Saved next to the encrypted store. No secrets are included.")
+                    : L10n.source(
+                        "Changes apply after the next lock and unlock."))
             }
         }
         .navigationTitle("Network & transports")
@@ -421,11 +446,19 @@ struct AdvancedNetworkSettingsView: View {
     private var modeDisclosure: String {
         switch mode {
         case "private":
-            return "Optional rendezvous uses your local Tor proxy. Bootstrap and mailbox operators can still observe their own connections; this mode does not claim provider non-collusion."
+            return L10n.text("set_mode_private_disclosure")
         case "sovereign":
-            return "Directory defaults and optional rendezvous or wake are disabled. DHT, user-selected mailboxes, direct, LAN, mesh, QR/file, and sneakernet routes remain."
+            return L10n.text("set_mode_sovereign_disclosure")
         default:
-            return "Disclosed, replaceable providers can observe your network address, timing, and service requests, but not message contents or your contact list."
+            return L10n.text("set_mode_standard_disclosure")
+        }
+    }
+
+    private var modeName: String {
+        switch mode {
+        case "private": return L10n.text("mode_private")
+        case "sovereign": return L10n.text("mode_sovereign")
+        default: return L10n.text("mode_standard")
         }
     }
 

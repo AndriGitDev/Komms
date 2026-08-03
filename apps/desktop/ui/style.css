@@ -46,6 +46,8 @@ button {
   background: none;
   border: none;
   cursor: pointer;
+  min-block-size: 44px;
+  min-inline-size: 44px;
 }
 button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible {
   outline: 3px solid var(--focus);
@@ -87,6 +89,7 @@ input[type="text"], input[type="password"], input[type="datetime-local"], input[
   padding: 0.5em 0.7em;
   font: inherit;
   margin-top: 0.3em;
+  min-block-size: 44px;
 }
 textarea { resize: vertical; font-family: ui-monospace, monospace; font-size: 0.85em; }
 input:focus, textarea:focus, select:focus { outline: 1px solid var(--accent-dim); }

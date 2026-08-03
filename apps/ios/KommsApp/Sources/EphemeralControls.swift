@@ -11,11 +11,11 @@ enum EphemeralLifetime: UInt64, CaseIterable, Identifiable {
 
     var label: String {
         switch self {
-        case .minute: return "1 minute"
-        case .hour: return "1 hour"
-        case .day: return "1 day"
-        case .week: return "7 days"
-        case .month: return "30 days"
+        case .minute: return L10n.text("ephemeral_one_minute")
+        case .hour: return L10n.text("ephemeral_one_hour")
+        case .day: return L10n.text("ephemeral_one_day")
+        case .week: return L10n.text("ephemeral_seven_days")
+        case .month: return L10n.text("ephemeral_thirty_days")
         }
     }
 }

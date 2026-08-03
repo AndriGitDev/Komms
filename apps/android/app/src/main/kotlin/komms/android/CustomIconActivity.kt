@@ -61,8 +61,12 @@ class CustomIconActivity : SecureActivity() {
                     orientation = LinearLayout.HORIZONTAL
                     glyphs.forEach { glyph ->
                         addView(Button(this@CustomIconActivity).apply {
-                            text = glyph.replaceFirstChar { it.uppercase() }
-                            contentDescription = "Use bundled $glyph glyph"
+                            val label = glyphLabel(glyph)
+                            text = label
+                            contentDescription = getString(
+                                R.string.icons_use_bundled_glyph,
+                                label,
+                            )
                             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
                             setOnClickListener { setGlyph(glyph) }
                         })
@@ -85,9 +89,28 @@ class CustomIconActivity : SecureActivity() {
         val session = NodeHolder.session ?: return
         runNode(work = {
             listOf(Choice(CustomIconTarget(CustomIconTargetKind.NOTE_TO_SELF, null), getString(R.string.note_to_self_title))) +
-                session.contacts().map { Choice(CustomIconTarget(CustomIconTargetKind.CONTACT, it.peer), "Contact · ${it.name}") } +
-                session.groups().map { Choice(CustomIconTarget(CustomIconTargetKind.GROUP, it.id), "Group · ${it.name}") } +
-                session.folders().map { Choice(CustomIconTarget(CustomIconTargetKind.FOLDER, it.id), "Folder ${it.order + 1u} · ${it.name}") }
+                session.contacts().map {
+                    Choice(
+                        CustomIconTarget(CustomIconTargetKind.CONTACT, it.peer),
+                        getString(R.string.icons_contact_target, it.name),
+                    )
+                } +
+                session.groups().map {
+                    Choice(
+                        CustomIconTarget(CustomIconTargetKind.GROUP, it.id),
+                        getString(R.string.icons_group_target, it.name),
+                    )
+                } +
+                session.folders().map {
+                    Choice(
+                        CustomIconTarget(CustomIconTargetKind.FOLDER, it.id),
+                        getString(
+                            R.string.icons_folder_target,
+                            (it.order + 1u).toLong(),
+                            it.name,
+                        ),
+                    )
+                }
         }) { loaded ->
             choices = loaded
             findViewById<Spinner>(R.id.icons_target).apply {
@@ -139,6 +162,20 @@ class CustomIconActivity : SecureActivity() {
             toast(getString(R.string.icons_saved))
         }
     }
+
+    private fun glyphLabel(glyph: String): String = getString(
+        when (glyph) {
+            "person" -> R.string.icon_glyph_person
+            "group" -> R.string.icon_glyph_group
+            "folder" -> R.string.icon_glyph_folder
+            "note" -> R.string.icon_glyph_note
+            "star" -> R.string.icon_glyph_star
+            "heart" -> R.string.icon_glyph_heart
+            "shield" -> R.string.icon_glyph_shield
+            "compass" -> R.string.icon_glyph_compass
+            else -> R.string.icon_glyph_unknown
+        },
+    )
 
     private fun clearIcon() {
         val choice = selected() ?: return

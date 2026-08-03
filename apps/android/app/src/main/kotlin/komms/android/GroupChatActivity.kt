@@ -44,6 +44,7 @@ import uniffi.kult_ffi.GroupSecurity
 import uniffi.kult_ffi.GroupSecurityLevel
 import uniffi.kult_ffi.LabelTarget
 import uniffi.kult_ffi.LabelTargetKind
+import uniffi.kult_ffi.MentionCapabilityIssueReason
 import uniffi.kult_ffi.MentionSpan
 import uniffi.kult_ffi.ScheduledConversation
 import uniffi.kult_ffi.ScheduledMessage
@@ -162,7 +163,7 @@ class GroupChatActivity : SecureActivity() {
                 renderMentionTokens()
                 findViewById<TextView>(R.id.chat_mention_status).apply {
                     visibility = View.VISIBLE
-                    text = "Semantic mentions were removed because disappearing text is a distinct authenticated content type."
+                    text = getString(R.string.mention_disappearing_removed)
                     announceForAccessibility(text)
                 }
             }
@@ -388,7 +389,10 @@ class GroupChatActivity : SecureActivity() {
             val card = LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
                 setPadding(16, 12, 16, 20)
-                contentDescription = "Poll: ${poll.question}"
+                contentDescription = getString(
+                    R.string.poll_accessibility,
+                    poll.question,
+                )
             }
             card.addView(TextView(this).apply {
                 text = poll.question
@@ -405,14 +409,29 @@ class GroupChatActivity : SecureActivity() {
             })
             poll.options.forEach { option ->
                 card.addView(Button(this).apply {
-                    text = "${option.text} · ${option.votes}"
+                    text = resources.getQuantityString(
+                        if (option.selectedByMe) {
+                            R.plurals.poll_option_selected
+                        } else {
+                            R.plurals.poll_option
+                        },
+                        option.votes.toInt(),
+                        option.text,
+                        option.votes.toLong(),
+                    )
                     isEnabled = !poll.closed && poll.eligible
                     isSelected = option.selectedByMe
-                    contentDescription = buildString {
-                        append(option.text)
-                        append(", ${option.votes} votes")
-                        if (option.selectedByMe) append(", your choice")
-                    }
+                    contentDescription = resources.getQuantityString(
+                        R.plurals.poll_option_accessibility,
+                        option.votes.toInt(),
+                        option.text,
+                        option.votes.toLong(),
+                        if (option.selectedByMe) {
+                            getString(R.string.poll_your_choice_suffix)
+                        } else {
+                            ""
+                        },
+                    )
                     setOnClickListener {
                         AlertDialog.Builder(this@GroupChatActivity)
                             .setTitle(R.string.poll_vote_confirm_title)
@@ -439,8 +458,12 @@ class GroupChatActivity : SecureActivity() {
                         R.string.poll_visible_votes,
                         poll.votes.joinToString { vote ->
                             val choice = poll.options.firstOrNull { it.id == vote.optionId }?.text
-                                ?: "unavailable choice"
-                            "${memberLabel(vote.voter)} → $choice"
+                                ?: getString(R.string.poll_unavailable_choice)
+                            getString(
+                                R.string.poll_visible_vote_row,
+                                memberLabel(vote.voter),
+                                choice,
+                            )
                         },
                     )
                 }
@@ -520,6 +543,10 @@ class GroupChatActivity : SecureActivity() {
                 val remove = row.getChildAt(1) as Button
                 input.hint = getString(R.string.poll_choice_hint, index + 1)
                 input.contentDescription = input.hint
+                remove.contentDescription = getString(
+                    R.string.poll_remove_choice,
+                    index + 1,
+                )
                 remove.isEnabled = choices.childCount > 2
             }
             addChoice.isEnabled = choices.childCount < 12
@@ -531,7 +558,6 @@ class GroupChatActivity : SecureActivity() {
             val input = IncognitoEditText(this)
             val remove = Button(this).apply {
                 text = getString(android.R.string.cut)
-                contentDescription = "Remove poll choice"
                 setOnClickListener {
                     if (choices.childCount > 2) {
                         choices.removeView(row)
@@ -615,7 +641,11 @@ class GroupChatActivity : SecureActivity() {
         return if (duplicates < 2) {
             base
         } else {
-            "\u2068$base\u2069, group member ${members.indexOf(peer) + 1}"
+            getString(
+                R.string.group_member_disambiguated,
+                base,
+                members.indexOf(peer) + 1,
+            )
         }
     }
 
@@ -627,11 +657,27 @@ class GroupChatActivity : SecureActivity() {
         } else {
             getString(
                 R.string.mention_unavailable,
-                capability.issues.joinToString { "${memberLabel(it.peer, group)} (${it.reason.name.lowercase()})" },
+                capability.issues.joinToString {
+                    getString(
+                        R.string.mention_blocker,
+                        memberLabel(it.peer, group),
+                        mentionIssueName(it.reason),
+                    )
+                },
             )
         }
         status.announceForAccessibility(status.text)
     }
+
+    private fun mentionIssueName(reason: MentionCapabilityIssueReason): String =
+        getString(
+            when (reason) {
+                MentionCapabilityIssueReason.UNKNOWN ->
+                    R.string.mention_capability_unknown
+                MentionCapabilityIssueReason.UNSUPPORTED ->
+                    R.string.mention_capability_unsupported
+            },
+        )
 
     private fun insertMention(
         input: EditText,
@@ -724,7 +770,10 @@ class GroupChatActivity : SecureActivity() {
         scroll.visibility = if (draftMentions.isEmpty()) View.GONE else View.VISIBLE
         draftMentions.toList().forEach { mention ->
             val button = Button(this).apply {
-                text = "${memberLabel(mention.target)} ×"
+                text = getString(
+                    R.string.mention_remove_token,
+                    memberLabel(mention.target),
+                )
                 contentDescription = getString(R.string.mention_remove_action, memberLabel(mention.target))
                 isAllCaps = false
                 setOnClickListener { removeMentionWithText(mention) }
@@ -778,7 +827,7 @@ class GroupChatActivity : SecureActivity() {
             return
         }
         if (!wellFormedUnicode(body)) {
-            toast("The draft contains invalid Unicode and cannot be sent.")
+            toast(getString(R.string.mention_invalid_unicode))
             return
         }
         runNode(work = { session.groupMentionCapability(groupId) }) { fresh ->
@@ -940,10 +989,21 @@ class GroupChatActivity : SecureActivity() {
             peer == self -> getString(R.string.group_you)
             contact != null -> contact.name
             currentGroup?.members?.contains(peer) == true ->
-                "Group member ${(currentGroup?.members?.indexOf(peer) ?: 0) + 1}"
-            else -> "Unavailable group member"
+                getString(
+                    R.string.group_member_position,
+                    (currentGroup?.members?.indexOf(peer) ?: 0) + 1,
+                )
+            else -> getString(R.string.group_member_unavailable)
         }
     }
+
+    private fun groupRoleName(role: GroupRole): String = getString(
+        when (role) {
+            GroupRole.OWNER -> R.string.group_role_owner
+            GroupRole.ADMIN -> R.string.group_role_admin
+            GroupRole.MEMBER -> R.string.group_role_member
+        },
+    )
 
     private fun showMembers() {
         val session = NodeHolder.session ?: return
@@ -1009,7 +1069,8 @@ class GroupChatActivity : SecureActivity() {
             val peer = member.peer
             val row = LayoutInflater.from(this).inflate(R.layout.row_group_member, roster, false)
             row.findViewById<TextView>(R.id.group_member_name).text = memberName(peer)
-            row.findViewById<TextView>(R.id.group_member_role).text = member.role.name.lowercase()
+            row.findViewById<TextView>(R.id.group_member_role).text =
+                groupRoleName(member.role)
             row.findViewById<Button>(R.id.group_member_role_action).apply {
                 visibility = if (isOwner && member.role != GroupRole.OWNER) View.VISIBLE else View.GONE
                 text = getString(if (member.role == GroupRole.ADMIN) R.string.group_make_member else R.string.group_make_admin)
@@ -1158,7 +1219,12 @@ private class GroupMessagesAdapter(
             text = memberName(message.sender)
         }
         holder.itemView.findViewById<TextView>(R.id.group_message_body).apply {
-            val labels = message.mentionSpans.map { span -> "Mention of ${memberName(span.target)}" }
+            val labels = message.mentionSpans.map { span ->
+                context.getString(
+                    R.string.mention_of,
+                    memberName(span.target),
+                )
+            }
             showFormattedText(rendered.formatted, labels)
         }
         holder.itemView.findViewById<TextView>(R.id.group_message_time).text = buildString {
@@ -1181,7 +1247,8 @@ private class GroupMessagesAdapter(
                 append(context.getString(R.string.group_message_pending_origin))
             }
             if (message.contentKind == ContentKind.DISAPPEARING_TEXT && message.expiresAt != null) {
-                append(" · removes ")
+                append(" · ")
+                append(context.getString(R.string.removes_prefix))
                 append(
                     DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT)
                         .format(Date(message.expiresAt!!.toLong() * 1000)),

@@ -16,6 +16,8 @@
     })();
   </script>
   <link rel="stylesheet" href="style.css" />
+  <script src="locales.generated.js" defer></script>
+  <script src="localization.js" defer></script>
   <script src="main.js" defer></script>
 </head>
 <body>
@@ -74,6 +76,14 @@
                 <option value="system">System</option>
                 <option value="light">Light</option>
                 <option value="dark">Dark</option>
+              </select>
+            </label>
+
+            <label><span data-l10n="language_title">Language</span>
+              <select id="gate-locale" data-l10n-aria-label="language_title">
+                <option value="system" data-l10n="language_system">System language</option>
+                <option value="en-US" data-l10n="language_english">English</option>
+                <option value="is" data-l10n="language_icelandic">Icelandic</option>
               </select>
             </label>
 
@@ -803,6 +813,14 @@
       <label><input type="radio" name="theme-preference" value="dark" /> Dark</label>
     </fieldset>
     <p id="theme-status" class="hint" role="status" aria-live="polite">Color is never the only delivery or security cue.</p>
+    <label><span data-l10n="language_title">Language</span>
+      <select data-f="locale" data-l10n-aria-label="language_title">
+        <option value="system" data-l10n="language_system">System language</option>
+        <option value="en-US" data-l10n="language_english">English</option>
+        <option value="is" data-l10n="language_icelandic">Icelandic</option>
+      </select>
+    </label>
+    <p class="hint" data-l10n="language_note">Language changes apply immediately on this device.</p>
     <p class="error" data-f="error" hidden></p>
     <div class="row end"><button class="ghost" data-act="close">Done</button></div>
   </template>

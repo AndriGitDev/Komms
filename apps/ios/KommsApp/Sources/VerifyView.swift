@@ -13,7 +13,7 @@ struct VerifyView: View {
     @State private var sn: SafetyNumber?
     @State private var error: String?
     @State private var scanning = false
-    @State private var scanResult: String? // "match" / mismatch message
+    @State private var scanMatches: Bool?
 
     var body: some View {
         NavigationStack {
@@ -35,22 +35,19 @@ struct VerifyView: View {
                         if scanning {
                             QrScannerView { scanned in
                                 scanning = false
-                                scanResult =
-                                    scanned == safetyQrText(sn)
-                                    ? "match"
-                                    : "MISMATCH — do not trust this session. Their code differs."
+                                scanMatches = scanned == safetyQrText(sn)
                             }
                             .frame(height: 240)
                         } else {
                             Button("Scan their code instead") { scanning = true }
                         }
 
-                        if let scanResult {
-                            if scanResult == "match" {
+                        if let scanMatches {
+                            if scanMatches {
                                 Label("Codes match", systemImage: "checkmark.seal.fill")
                                     .foregroundStyle(.green)
                             } else {
-                                Text(scanResult)
+                                Text(L10n.text("verify_mismatch"))
                                     .foregroundStyle(.red)
                                     .font(.footnote)
                             }
@@ -60,7 +57,7 @@ struct VerifyView: View {
                             markVerified()
                         }
                         .buttonStyle(.borderedProminent)
-                        .disabled(scanResult != nil && scanResult != "match")
+                        .disabled(scanMatches == false)
                     } else if let error {
                         Text(error).foregroundStyle(.red)
                     } else {

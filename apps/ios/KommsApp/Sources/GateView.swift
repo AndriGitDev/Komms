@@ -15,10 +15,18 @@ private enum AuthorityUpgradeKind: String, Identifiable {
 
 struct GateView: View {
     @EnvironmentObject private var model: AppModel
+    @AppStorage("komms.locale") private var localePreference = "system"
 
-    private enum Mode: String, CaseIterable {
-        case unlock = "Unlock"
-        case restore = "Restore"
+    private enum Mode: CaseIterable {
+        case unlock
+        case restore
+
+        var title: String {
+            switch self {
+            case .unlock: return L10n.source("Unlock")
+            case .restore: return L10n.source("Restore")
+            }
+        }
     }
 
     @State private var mode: Mode = .unlock
@@ -48,11 +56,21 @@ struct GateView: View {
                             .font(.subheadline)
                             .foregroundStyle(ThemePalette.textSecondary)
                             .fixedSize(horizontal: false, vertical: true)
+                        Picker(
+                            L10n.text("language_title"),
+                            selection: $localePreference
+                        ) {
+                            Text(L10n.text("language_system")).tag("system")
+                            Text(L10n.text("language_english")).tag("en-US")
+                            Text(L10n.text("language_icelandic")).tag("is")
+                        }
+                        .pickerStyle(.menu)
+                        .accessibilityHint(L10n.text("language_note"))
                     }
 
                     VStack(spacing: 18) {
                         Picker("Mode", selection: $mode) {
-                            ForEach(Mode.allCases, id: \.self) { Text($0.rawValue) }
+                            ForEach(Mode.allCases, id: \.self) { Text($0.title) }
                         }
                         .pickerStyle(.segmented)
 
@@ -77,14 +95,15 @@ struct GateView: View {
                             Divider()
                             VStack(alignment: .leading, spacing: 12) {
                                 Text(legacyBackup
-                                     ? "Legacy copied-root backup"
-                                     : "Root-free encrypted backup")
+                                     ? L10n.source("Legacy copied-root backup")
+                                     : L10n.source("Root-free encrypted backup"))
                                     .font(.subheadline.weight(.semibold))
                                 Button {
                                     pickingBackup = true
                                 } label: {
                                     Label(
-                                        backupURL?.lastPathComponent ?? "Choose backup file (.kkr)",
+                                        backupURL?.lastPathComponent
+                                            ?? L10n.source("Choose backup file (.kkr)"),
                                         systemImage: "doc.badge.plus")
                                         .frame(maxWidth: .infinity, alignment: .leading)
                                 }
@@ -110,7 +129,8 @@ struct GateView: View {
                                     } label: {
                                         Label(
                                             recoveryAuthorityURL?.lastPathComponent
-                                                ?? "Choose offline authority file (.kra)",
+                                                ?? L10n.source(
+                                                    "Choose offline authority file (.kra)"),
                                             systemImage: "externaldrive.badge.checkmark")
                                             .frame(maxWidth: .infinity, alignment: .leading)
                                     }
@@ -131,8 +151,10 @@ struct GateView: View {
                                 }
 
                                 Text(legacyBackup
-                                     ? "The former address cannot safely resume. Komms will require a fresh identity, preserve only a clearly marked local archive and petnames, clear routes and trust, and require every contact to compare a new safety number."
-                                     : "The backup excludes live device, session, rendezvous, and offline-authority secrets. Stable-identity recovery requires both separately held files and their different phrases.")
+                                     ? L10n.source(
+                                        "The former address cannot safely resume. Komms will require a fresh identity, preserve only a clearly marked local archive and petnames, clear routes and trust, and require every contact to compare a new safety number.")
+                                     : L10n.source(
+                                        "The backup excludes live device, session, rendezvous, and offline-authority secrets. Stable-identity recovery requires both separately held files and their different phrases."))
                                     .font(.footnote)
                                     .foregroundStyle(
                                         legacyBackup
@@ -222,20 +244,28 @@ struct GateView: View {
     }
 
     private var passphraseLabel: String {
-        model.storeExists || mode == .restore ? "Passphrase" : "Create a passphrase"
+        model.storeExists || mode == .restore
+            ? L10n.source("Passphrase")
+            : L10n.source("Create a passphrase")
     }
 
     private var passphraseHelp: String {
         if mode == .restore {
-            return "Your restored store will be sealed with this passphrase."
+            return L10n.source(
+                "Your restored store will be sealed with this passphrase.")
         }
         return model.storeExists
-            ? "Unlock your encrypted store on this device."
-            : "This passphrase protects the new encrypted store on this device."
+            ? L10n.source("Unlock your encrypted store on this device.")
+            : L10n.source(
+                "This passphrase protects the new encrypted store on this device.")
     }
 
     private var primaryAction: String {
-        mode == .restore ? "Restore and start" : model.storeExists ? "Unlock Komms" : "Create Komms"
+        mode == .restore
+            ? L10n.source("Restore and start")
+            : model.storeExists
+                ? L10n.source("Unlock Komms")
+                : L10n.source("Create Komms")
     }
 
     private var startupOverlay: some View {
@@ -280,7 +310,7 @@ struct GateView: View {
             do {
                 if mode == .restore {
                     guard let backupURL else {
-                        error = "Choose a backup file first."
+                        error = L10n.source("Choose a backup file first.")
                         return
                     }
                     if legacyBackup {
@@ -288,7 +318,8 @@ struct GateView: View {
                         return
                     }
                     guard let recoveryAuthorityURL else {
-                        error = "Choose the separately held offline authority file."
+                        error = L10n.source(
+                            "Choose the separately held offline authority file.")
                         return
                     }
                     let backupScoped = backupURL.startAccessingSecurityScopedResource()
@@ -367,10 +398,10 @@ private struct AuthorityUpgradeView: View {
                 VStack(alignment: .leading, spacing: 18) {
                     Label(
                         isLegacyBackupReset
-                            ? "Recover legacy backup with a new identity"
+                            ? L10n.source("Recover legacy backup with a new identity")
                             : isReset
-                                ? "Required new-identity security reset"
-                                : "Required device-authority migration",
+                                ? L10n.source("Required new-identity security reset")
+                                : L10n.source("Required device-authority migration"),
                         systemImage: "exclamationmark.shield"
                     )
                     .font(.title2.weight(.semibold))
@@ -382,8 +413,8 @@ private struct AuthorityUpgradeView: View {
                     if working {
                         ProgressView(
                             mnemonic == nil
-                                ? "Preparing protected offline authority…"
-                                : "Publishing the upgraded profile…")
+                                ? L10n.source("Preparing protected offline authority…")
+                                : L10n.source("Publishing the upgraded profile…"))
                     }
 
                     if let newAddress {
@@ -401,8 +432,10 @@ private struct AuthorityUpgradeView: View {
 
                     if let mnemonic {
                         Text(isReset
-                             ? "These words open the new account authority. The old safety number and device revocations are not preserved."
-                             : "These words open the offline authority for the same account.")
+                             ? L10n.source(
+                                "These words open the new account authority. The old safety number and device revocations are not preserved.")
+                             : L10n.source(
+                                "These words open the offline authority for the same account."))
                             .font(.footnote)
                         Text(mnemonic)
                             .font(.body.monospaced())
@@ -417,7 +450,9 @@ private struct AuthorityUpgradeView: View {
                             exportingFile = true
                         } label: {
                             Label(
-                                saved ? "Save another offline copy…" : "Save offline authority…",
+                                saved
+                                    ? L10n.source("Save another offline copy…")
+                                    : L10n.source("Save offline authority…"),
                                 systemImage: "square.and.arrow.down")
                         }
                         .buttonStyle(.borderedProminent)
@@ -431,8 +466,8 @@ private struct AuthorityUpgradeView: View {
 
                         Button(
                             isLegacyBackupReset
-                                ? "Create new identity and import archive"
-                                : "Complete security upgrade"
+                                ? L10n.source("Create new identity and import archive")
+                                : L10n.source("Complete security upgrade")
                         ) {
                             complete()
                         }
@@ -457,8 +492,8 @@ private struct AuthorityUpgradeView: View {
                         }
                         Button(
                             isLegacyBackupReset
-                                ? "Prepare fresh recovery authority"
-                                : "Prepare without changing this profile",
+                                ? L10n.source("Prepare fresh recovery authority")
+                                : L10n.source("Prepare without changing this profile"),
                             action: prepare)
                             .buttonStyle(.borderedProminent)
                     }
@@ -499,12 +534,15 @@ private struct AuthorityUpgradeView: View {
 
     private var explanation: String {
         if isLegacyBackupReset {
-            return "This legacy backup contains an account root that may have been copied, so the former address cannot safely resume. Komms will decrypt it only into an unpublished migration projection, then publish a fresh account containing cleared petnames and accurately labelled local pairwise/note history. Groups, routes, sessions, devices, queues, and service capabilities will not transfer. Every retained contact must be re-verified."
+            return L10n.source(
+                "This legacy backup contains an account root that may have been copied, so the former address cannot safely resume. Komms will decrypt it only into an unpublished migration projection, then publish a fresh account containing cleared petnames and accurately labelled local pairwise/note history. Groups, routes, sessions, devices, queues, and service capabilities will not transfer. Every retained contact must be re-verified.")
         }
         if isReset {
-            return "This Alpha profile copied its account root to another device. Revoking that device cannot erase its copy. The safe upgrade creates a new account, clears live routes, sessions, device/group authority and delivery work, and keeps only clearly marked local pairwise/note history and petnames. Every retained contact must be re-verified."
+            return L10n.source(
+                "This Alpha profile copied its account root to another device. Revoking that device cannot erase its copy. The safe upgrade creates a new account, clears live routes, sessions, device/group authority and delivery work, and keeps only clearly marked local pairwise/note history and petnames. Every retained contact must be re-verified.")
         }
-        return "Komms found no linked-device root copy in this store. Keep this address only if you also never exported or copied a legacy KKR7 backup. If you did, choose the conservative new-identity reset below. In-place migration keeps this device, petnames, and history after you save the root as a separate offline authority."
+        return L10n.source(
+            "Komms found no linked-device root copy in this store. Keep this address only if you also never exported or copied a legacy KKR7 backup. If you did, choose the conservative new-identity reset below. In-place migration keeps this device, petnames, and history after you save the root as a separate offline authority.")
     }
 
     private func prepare() {
@@ -641,7 +679,9 @@ struct RecoveryAuthorityView: View {
                             exportingFile = true
                         } label: {
                             Label(
-                                saved ? "Save another offline copy…" : "Save offline authority…",
+                                saved
+                                    ? L10n.source("Save another offline copy…")
+                                    : L10n.source("Save offline authority…"),
                                 systemImage: "square.and.arrow.down")
                         }
                         .buttonStyle(.borderedProminent)
@@ -649,7 +689,8 @@ struct RecoveryAuthorityView: View {
 
                         Button("I stored both parts separately") {
                             guard saved else {
-                                error = "Save the .kra file before continuing."
+                                error = L10n.source(
+                                    "Save the .kra file before continuing.")
                                 return
                             }
                             cleanup()

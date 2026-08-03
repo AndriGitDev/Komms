@@ -8,10 +8,18 @@ struct AddContactView: View {
     @EnvironmentObject private var model: AppModel
     @Environment(\.dismiss) private var dismiss
 
-    private enum Source: String, CaseIterable {
-        case scan = "Scan QR"
-        case paste = "Paste hex"
-        case address = "Connect code"
+    private enum Source: CaseIterable {
+        case scan
+        case paste
+        case address
+
+        var title: String {
+            switch self {
+            case .scan: return L10n.text("add_scan")
+            case .paste: return L10n.text("add_paste_hex")
+            case .address: return L10n.source("Connect code")
+            }
+        }
     }
 
     @State private var source: Source = .scan
@@ -31,7 +39,7 @@ struct AddContactView: View {
                 }
 
                 Picker("Source", selection: $source) {
-                    ForEach(Source.allCases, id: \.self) { Text($0.rawValue) }
+                    ForEach(Source.allCases, id: \.self) { Text($0.title) }
                 }
                 .pickerStyle(.segmented)
 

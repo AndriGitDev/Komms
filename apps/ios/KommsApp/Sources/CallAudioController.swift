@@ -63,14 +63,14 @@ final class CallAudioController {
             guard let raw = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
                   raw == AVAudioSession.InterruptionType.began.rawValue,
                   let call = self?.currentCall() else { return }
-            self?.failure(call, "the system interrupted the live audio session")
+            self?.failure(call, L10n.text("call_audio_interrupted"))
         })
         observers.append(center.addObserver(
             forName: AVAudioSession.mediaServicesWereResetNotification,
             object: nil, queue: nil
         ) { [weak self] _ in
             guard let call = self?.currentCall() else { return }
-            self?.failure(call, "the system audio service restarted")
+            self?.failure(call, L10n.text("call_audio_service_restarted"))
         })
     }
 
@@ -103,7 +103,7 @@ final class CallAudioController {
         let audio = AVAudioSession.sharedInstance()
         try audio.setCategory(
             .playAndRecord, mode: .voiceChat,
-            options: [.allowBluetooth, .defaultToSpeaker])
+            options: [.allowBluetoothHFP, .defaultToSpeaker])
         try audio.setPreferredSampleRate(callSampleRate)
         try audio.setPreferredIOBufferDuration(0.02)
         try? audio.setPreferredInputNumberOfChannels(1)
@@ -328,7 +328,7 @@ final class CallAudioController {
                         }
                         frame = received
                     } catch {
-                        self?.failure(call, error.localizedDescription)
+                        self?.failure(call, L10n.error(error))
                         failed = true
                         return
                     }

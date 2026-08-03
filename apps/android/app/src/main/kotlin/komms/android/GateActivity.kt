@@ -5,6 +5,7 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
 import android.view.View
+import android.widget.RadioGroup
 import androidx.activity.result.contract.ActivityResultContracts
 import java.io.File
 import komms.core.NetworkSettings
@@ -76,6 +77,11 @@ class GateActivity : SecureActivity() {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_gate)
         applyEdgeToEdgeInsets()
+        val language = findViewById<RadioGroup>(R.id.set_language)
+        language.check(LocaleController.checkedId())
+        language.setOnCheckedChangeListener { _, checked ->
+            LocaleController.select(LocaleController.preferenceFor(checked))
+        }
         dataDir = KommsApp.dataDir(application)
         if (NodeHolder.session == null) {
             cacheDir.listFiles()
@@ -377,31 +383,45 @@ class GateActivity : SecureActivity() {
     ) {
         val reset = kind != AuthorityUpgradeKind.MIGRATION
         val message = if (kind == AuthorityUpgradeKind.LEGACY_BACKUP_RESET) {
-            "This legacy backup contains an account root that may have been copied, so the former address cannot safely resume. Komms will decrypt it only into an unpublished migration projection, then publish a fresh account containing cleared petnames and accurately labelled local pairwise/note history. Groups, routes, sessions, devices, queues, and service capabilities will not transfer. Every retained contact must be re-verified."
+            localizedSource(
+                "This legacy backup contains an account root that may have been copied, so the former address cannot safely resume. Komms will decrypt it only into an unpublished migration projection, then publish a fresh account containing cleared petnames and accurately labelled local pairwise/note history. Groups, routes, sessions, devices, queues, and service capabilities will not transfer. Every retained contact must be re-verified.",
+            )
         } else if (reset) {
-            "This Alpha profile copied its account root to another device. Revocation cannot erase that copy. The safe upgrade creates a new account, clears all live route, session, device, group, and delivery authority, and keeps only clearly marked local pairwise/note history and petnames. Every retained contact must be re-verified."
+            localizedSource(
+                "This Alpha profile copied its account root to another device. Revoking that device cannot erase its copy. The safe upgrade creates a new account, clears live routes, sessions, device/group authority and delivery work, and keeps only clearly marked local pairwise/note history and petnames. Every retained contact must be re-verified.",
+            )
         } else {
-            "Komms found no linked-device root copy in this store. Keep this address only if you also never exported or copied a legacy KKR7 backup. If you did, choose the conservative new-identity reset. In-place migration keeps this device, petnames, and history after the root is saved as a separate offline authority."
+            localizedSource(
+                "Komms found no linked-device root copy in this store. Keep this address only if you also never exported or copied a legacy KKR7 backup. If you did, choose the conservative new-identity reset below. In-place migration keeps this device, petnames, and history after you save the root as a separate offline authority.",
+            )
         }
         val dialog = AlertDialog.Builder(this)
             .setTitle(
                 if (reset) {
                     if (kind == AuthorityUpgradeKind.LEGACY_BACKUP_RESET) {
-                        "Recover legacy backup with a new identity"
+                        localizedSource("Recover legacy backup with a new identity")
                     } else {
-                        "Required new-identity security reset"
+                        localizedSource("Required new-identity security reset")
                     }
                 } else {
-                    "Required device-authority migration"
+                    localizedSource("Required device-authority migration")
                 },
             )
             .setMessage(message)
             .setNegativeButton(android.R.string.cancel, null)
-            .setPositiveButton("Prepare offline authority") { _, _ ->
+            .setPositiveButton(
+                if (reset) {
+                    localizedSource("Prepare fresh recovery authority")
+                } else {
+                    localizedSource("Prepare without changing this profile")
+                },
+            ) { _, _ ->
                 prepareAuthorityUpgrade(kind, passphrase, legacyBackup, backupMnemonic)
             }
         if (!reset) {
-            dialog.setNeutralButton("I copied a legacy backup") { _, _ ->
+            dialog.setNeutralButton(
+                localizedSource("I exported or copied a legacy KKR7 backup"),
+            ) { _, _ ->
                 showAuthorityUpgradePrompt(AuthorityUpgradeKind.RESET, passphrase)
             }
         }
@@ -512,33 +532,39 @@ class GateActivity : SecureActivity() {
         content.addView(android.widget.TextView(this).apply {
             text = buildString {
                 if (reset) {
-                    append("New address:\n")
+                    append(localizedSource("New address:"))
+                    append("\n")
                     append(prepared.newAddress)
                     append("\n\n")
                 }
-                append("Write these 24 words down separately. They open only the saved offline authority file:\n\n")
+                append(
+                    localizedSource(
+                        "Write these 24 words down separately. They are shown once and open only the offline authority file.",
+                    ),
+                )
+                append("\n\n")
                 append(prepared.mnemonic)
             }
             setTextIsSelectable(true)
         })
         val confirm = android.widget.CheckBox(this).apply {
             text = if (reset) {
-                "I stored both parts separately and understand my address and every safety number will change"
+                getString(R.string.authority_upgrade_reset_confirmation)
             } else {
-                "I stored the authority file and its words separately"
+                getString(R.string.authority_upgrade_migration_confirmation)
             }
         }
         content.addView(confirm)
         val dialog = AlertDialog.Builder(this)
-            .setTitle("Confirm security upgrade")
+            .setTitle(localizedSource("Security upgrade"))
             .setView(content)
             .setNegativeButton(android.R.string.cancel, null)
-            .setPositiveButton("Complete", null)
+            .setPositiveButton(localizedSource("Complete security upgrade"), null)
             .create()
         dialog.setOnShowListener {
             dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
                 if (!confirm.isChecked) {
-                    toast("Confirm the security statement before continuing.")
+                    toast(getString(R.string.authority_upgrade_confirmation_required))
                     return@setOnClickListener
                 }
                 dialog.dismiss()
