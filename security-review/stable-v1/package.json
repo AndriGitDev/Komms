@@ -39,10 +39,15 @@
     "crates/kult-conformance/",
     "crates/kult-crypto/",
     "crates/kult-ffi/",
+    "crates/kult-mailbox/",
     "crates/kult-node/",
+    "crates/kult-ohttp-relay/",
     "crates/kult-protocol/",
+    "crates/kult-reference-service/",
+    "crates/kult-rendezvous/",
     "crates/kult-store/",
     "crates/kult-transport/",
+    "crates/kult-wake/",
     "crates/kultd/",
     "docs/adr/"
   ]

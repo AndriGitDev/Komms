@@ -240,6 +240,8 @@ Primary source:
 - `crates/kult-crypto/src/{admission,discovery,rendezvous}.rs`
 - `crates/kult-protocol/src/{admission,discovery,rendezvous,wake}.rs`
 - `crates/kult-transport/src/{internet,mailbox_v2,rendezvous,wake}.rs`
+- `crates/kult-mailbox/`, `crates/kult-reference-service/`,
+  `crates/kult-rendezvous/`, `crates/kult-wake/`, and `crates/kult-ohttp-relay/`
 - `crates/kult-store/src/{admission,rendezvous,wake}.rs`
 - `crates/kult-node/src/lib.rs`
 - `docs/adr/0018-*.md`, `0019-*.md`, `0030-*.md`, `0031-*.md`, and
