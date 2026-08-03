@@ -19,8 +19,8 @@ Each item notes where it lands: which crate or milestone already covers it, or
 what it would take. Nothing here loosens a security or scope commitment in
 [01: Why](01-why.md) or the [roadmap](08-roadmap.md); where a feature touches the
 protocol, transports, or crypto, it lands only behind an ADR that shows it
-surviving the threat model and the mesh bandwidth floor (the implemented C7 audio
-alpha is the current example: direct internet/LAN QUIC only under accepted
+surviving the threat model and the mesh bandwidth floor (the implemented C7 Beta
+audio path is the current example: direct internet/LAN QUIC only under accepted
 ADR-0013, with physical-platform qualification still required).
 
 ## Build (fits the architecture as-is)
@@ -50,7 +50,7 @@ status and prerequisites are tracked in the delivery plan.
   work. An optional signed self-display name may later be advertised as a
   non-unique suggestion, but it is not implemented and could never silently
   override the recipient's petname.
-- **Connect-code discovery.** Implemented for Alpha: a `kc2` code binds the
+- **Connect-code discovery.** Implemented for Beta: a `kc2` code binds the
   stable account digest to a random rotatable discovery capability. Fixed-size
   encrypted weekly records carry bounded authority, ingress, admission, and
   mailbox-only public data. Standard/Private never publish direct routes;
@@ -231,7 +231,7 @@ and degrade honestly, exactly as the delivery ladder already does.
   legacy archive reset omits groups. See
   [21: Group Roles, Ownership, and Moderation](21-group-roles.md) and
   [ADR-0023](adr/0023-group-roles-and-owner-authority.md).
-- **Live voice and video calls.** The audio alpha is implemented across transport,
+- **Live voice and video calls.** The Beta audio is implemented across transport,
   node, RPC/CLI, UniFFI, desktop, Android, and iOS. It is strictly confined to a
   fresh direct QUIC path reached through internet libp2p or LAN discovery, never
   a relay-only, TCP, mailbox, sneakernet, or radio-mesh route. DCUtR may upgrade
@@ -254,7 +254,7 @@ and degrade honestly, exactly as the delivery ladder already does.
   metadata; Private mode reduces source/target linkage through Tor or a
   non-colluding OHTTP relay without promising global anonymity. The feature is
   governed by ADR-0017 through ADR-0019. All three are accepted and implemented
-  for the local Alpha profile across the common mode contract, pinned
+  for the local Beta profile across the common mode contract, pinned
   HTTPS/Tor clients, signed replaceable provider configuration, direct APNs,
   Play-only FCM, an inspected Google-free artifact, every shell, and dedicated
   service artifacts. A fixed-mapping OHTTP relay is also implemented as an

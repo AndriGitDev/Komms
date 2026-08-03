@@ -1,12 +1,12 @@
 # Contributing to Komms
 
-Komms 0.3 Alpha is a packaged public prerelease. Its core, transports, local
-RPC/CLI and UniFFI surfaces, and desktop/Android/iOS shells are implemented,
-with automated evidence in many areas. Clean-install internet use, abuse
-admission, mailbox durability, hardware/device qualification,
-production-signed distribution, independent review, and other P0 gates remain.
-Testers can start with the [Alpha testing guide](docs/27-alpha-testing.md);
-current priorities and evidence language are in the
+Komms 0.4 Beta is a version-aligned prerelease candidate. Its core, transports,
+local RPC/CLI and UniFFI surfaces, desktop/Android/iOS shells, bounded
+first-contact admission, and durable mailbox-v2 paths are implemented with
+automated evidence in many areas. Clean-install real-network use, operator and
+hardware/device qualification, production-signed distribution, independent
+review, and other P0 gates remain. Testers can start with the
+[Beta testing guide](docs/53-beta-testing.md); current priorities and evidence language are in the
 [stabilization program](docs/29-stabilization-program.md).
 
 Komms is currently founder-directed. Contributions provide ideas,

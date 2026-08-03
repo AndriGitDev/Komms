@@ -65,7 +65,7 @@ STABLE_BETA_METRIC_IDS = [
     "support-minutes",
 ]
 RESIDUAL_RISK_IDS = {
-    "consent-alpha-pilot",
+    "consent-beta-pilot",
     "distribution-credentials",
     "independent-conformance",
     "independent-reproduction",
@@ -95,8 +95,11 @@ def check_policy(errors: list[str]) -> tuple[set[str], set[str]]:
     if not isinstance(retention, int) or not 30 <= retention <= 400:
         errors.append("release policy retention must be between 30 and 400 days")
     channels = policy.get("channels")
-    if not isinstance(channels, dict) or set(channels) != {"validation", "alpha", "stable"}:
-        errors.append("release policy must define exactly validation, alpha, and stable")
+    expected_channels = {"validation", "alpha", "beta", "stable"}
+    if not isinstance(channels, dict) or set(channels) != expected_channels:
+        errors.append(
+            "release policy must define exactly validation, alpha, beta, and stable"
+        )
         channels = {}
     roles = policy.get("signing_roles")
     role_ids = {
@@ -107,7 +110,7 @@ def check_policy(errors: list[str]) -> tuple[set[str], set[str]]:
     if not isinstance(roles, list) or len(role_ids) != len(roles):
         errors.append("release policy signing roles must be unique objects")
     for channel, configuration in channels.items():
-        expected_publication = channel in {"alpha", "stable"}
+        expected_publication = channel in {"alpha", "beta", "stable"}
         expected_stable_claim = channel == "stable"
         if (
             not isinstance(configuration, dict)
@@ -129,7 +132,7 @@ def check_policy(errors: list[str]) -> tuple[set[str], set[str]]:
         )
         if (
             not isinstance(required_artifact_roles, bool)
-            or required_artifact_roles != (channel in {"alpha", "stable"})
+            or required_artifact_roles != (channel in {"alpha", "beta", "stable"})
         ):
             errors.append(
                 f"release policy channel {channel} has an invalid artifact-signing boundary"

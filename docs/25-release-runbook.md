@@ -5,7 +5,7 @@ then separate protected operations to create an empty private draft, upload an
 externally completed asset set, and publish it. A tag push never creates or
 edits a release.
 
-The current public `v0.3.0` Alpha predates this release-evidence design. Its
+The historical public `v0.3.0` Alpha predates this release-evidence design. Its
 unsigned desktop and debug-signed Android packages remain test artifacts, not
 evidence that the production-signing or stable gates are closed.
 
@@ -21,7 +21,7 @@ Update every version surface:
 Validate the intended tag:
 
 ```sh
-python3 scripts/check-release-version.py v0.3.0
+python3 scripts/check-release-version.py v0.4.0
 ```
 
 Run the complete local matrix. Require every platform SDK promised by this
@@ -196,8 +196,8 @@ qualification.
 
 ## 6. Publish deliberately
 
-Publication is a new manual run against the same tag. Select `alpha` or
-`stable`, enable `publish`, leave build/draft/signing inputs disabled, provide
+Publication is a new manual run against the same tag. Select `alpha`, `beta`,
+or `stable`, enable `publish`, leave build/draft/signing inputs disabled, provide
 the completed visual-review issue, and enter:
 
 ```text

@@ -1,22 +1,52 @@
-**Komms 0.3 Alpha** is an early test release. Back up important data before upgrading and do not rely on it for emergency communication.
+**Komms 0.4 Beta** is a prerelease for careful testing. Back up important data,
+keep the separately protected recovery authority available, and do not rely on
+this build for emergency or safety-critical communication.
 
-This release makes pairing, delivery, and cross-platform use meaningfully more dependable:
+This release replaces the 0.3 Alpha trust and delivery foundations rather than
+merely polishing them:
 
-- Android now carries the same branded, conversation-first visual system as iOS and desktop;
-- post-quantum pairing bundles use compact Base45 codes and bounded animated QR frames that real phone cameras can parse;
-- fresh user actions take priority while unreachable messages retry passively, then report `delivery failed after 30 days` if no encrypted receipt returns;
-- human-readable safety numbers are shortened to 30 digits while QR verification still compares the full 256-bit value;
-- desktop sharing, discovery status, contact rename, conversation rendering, lock layout, icons, and shutdown behavior are hardened; and
-- release qualification now requires human visual approval on Android, iOS, macOS, and Linux in addition to automated platform builds and tests.
+- linked devices now use revocable, strict-majority device authority with
+  visible fork/conflict handling and root-authorized recovery epochs; the
+  stable account private key is no longer copied into routine live state or
+  backups;
+- sender-key groups retain encrypt-once ciphertext while authenticating each
+  claimed origin separately for every recipient and security-sensitive event;
+- unknown senders and group invitations enter a bounded Message Request domain
+  with explicit Accept, Delete, and Block decisions;
+- Connect codes replace identity-indexed discovery with a rotatable random
+  capability, fixed-size encrypted records, bounded lookup, and explicit legacy
+  retirement;
+- durable mailbox v2 uses committed deposits, idempotent leases, exact
+  acknowledgement after endpoint staging, restart-safe quotas, and bounded
+  content-free operator health;
+- rotating pairwise rendezvous and content-free native wake are separated into
+  least-authority services, with Standard, Private, and Sovereign sharing one
+  replaceable-provider contract;
+- Android and iOS implement the common wake lifecycle while preserving a
+  Google-free Android flavor and ordinary delivery when optional providers
+  fail;
+- the stable-v1 protocol specification, language-neutral fixtures,
+  conformance runner, release evidence controls, operator runbooks,
+  localization, and accessibility checks are now part of the source tree; and
+- every application and internal crate reports version `0.4.0`, with Android
+  and iOS build number `4`.
 
-Artifacts are built from the tagged source by GitHub Actions:
+The candidate pipeline builds native desktop packages, both Android flavors,
+an unsigned iOS Simulator archive, the headless node, and dedicated reference,
+mailbox, wake, and OHTTP service images. A completed public release may contain
+only the exact packages bound into its revision-specific evidence archive.
+Container publication, store submission, and service deployment remain
+separate maintainer-authorized operations; the prepared moving aliases are
+`0.4-beta` and `beta`, never `latest`.
 
-- Windows: MSI and NSIS installers
-- macOS: universal Apple silicon/Intel application and DMG
-- Linux: AppImage, Debian package, and RPM
-- Android: an installable, debug-signed APK; a release APK and AAB are also included when maintainer signing secrets are configured
-- Self-hosting: `ghcr.io/andrigitdev/komms-kultd:0.3.0` for Linux amd64/arm64, with `0.3-alpha` and `alpha` aliases, published with the qualified prerelease
+This Beta does **not** claim an independent security audit, independent
+interoperability, production operator qualification, physical mobile/radio
+qualification, universal background delivery, anonymity, remote erasure, or
+stable support. No qualified default operator currently ships. `queued`,
+`sent`, and `delivered` retain their exact custody meanings, and optional wake
+or rendezvous acknowledgement never advances them.
 
-Desktop packages may be unsigned, and the always-present Android test APK uses a development certificate. Expect an operating-system warning and verify the file against `SHA256SUMS`. A debug-signed APK is for testing only, cannot be submitted to an app store, and may need to be uninstalled before installing a build signed by a different key.
-
-Known alpha gaps include hands-on device qualification, the physical two-radio bench, real-NAT/live-call matrices, and an independent security audit. See the repository's Alpha testing guide, release runbook, and security documentation before testing.
+Before installing, verify the package digest and completed evidence archive,
+then follow the Beta testing guide, release runbook, and security documentation.
+Production signing and publication require their explicit evidence and
+authorization boundaries; validation artifacts are not substitutes for them.

@@ -1,6 +1,6 @@
 # ADR-0029: Recipient-authenticated sender-key groups
 
-- **Status**: Accepted; implemented for Alpha
+- **Status**: Accepted; implemented for Beta
 - **Date**: 2026-07-26
 - **Accepted**: 2026-07-29
 - **Supersedes on acceptance**: the membership-level-authenticity tradeoff in
@@ -169,7 +169,7 @@ authentication.
 
 ## Implementation and assurance boundary
 
-The Alpha implementation uses one origin-authenticated shared ciphertext for
+The Beta implementation uses one origin-authenticated shared ciphertext for
 text, attachments, edits, polls and votes, expiry events, roles, moderation,
 ownership events, and accepted owned-device imports. Stored authors come from
 the verified pairwise sender device and its accepted device-authority chain.

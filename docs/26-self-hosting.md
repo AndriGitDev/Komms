@@ -1,30 +1,32 @@
 # 26: Self-hosting `kultd`
 
-Komms 0.3 Alpha publishes a Linux container for `kultd`, the runnable headless
+Komms 0.4 Beta prepares a Linux container for `kultd`, the runnable headless
 service built around the `kult-node` library. It is intended for people who want
 their own always-on peer, volunteer mailbox, relay-aware node, or
 internet-to-Meshtastic bridge. It is not a central Komms server and other users
 do not need it in order to communicate.
 
-The [public Alpha package](https://github.com/AndriGitDev/Komms/pkgs/container/komms-kultd)
+After separately authorized container publication, the
+[container package](https://github.com/AndriGitDev/Komms/pkgs/container/komms-kultd)
 supports `linux/amd64` and `linux/arm64`. Pull the immutable release tag with:
 
 ```sh
-docker pull ghcr.io/andrigitdev/komms-kultd:0.3.0
+docker pull ghcr.io/andrigitdev/komms-kultd:0.4.0
 ```
 
-> **Artifact boundary:** the historical `0.3.0` image shown below predates
+> **Artifact boundary:** the historical `0.3.0` image predates
 > mailbox v2 and must not be used to claim durable custody. Builds from a source
 > revision that includes accepted ADR-0032 use persistent leased
 > `/komms/mailbox/2`; verify the image revision and reported mailbox schema
-> rather than relying on an Alpha tag. No current public operator has been
+> rather than relying on a moving prerelease tag. No current public operator has been
 > qualified as stable infrastructure.
 
-The `0.3-alpha` and `alpha` tags are moving Alpha aliases; the committed Compose
-file tracks `0.3-alpha`, while automation should pin `0.3.0` or an image digest.
+The `0.4-beta` and `beta` tags are moving Beta aliases after publication; the
+committed Compose file tracks `0.4-beta`, while deployments should pin `0.4.0`
+or an image digest.
 The image runs the daemon as numeric user/group `10001`, stores its sealed
 database in `/var/lib/komms`, and listens on TCP and QUIC/UDP port `4404` by
-default. There is intentionally no `latest` tag during the Alpha series.
+default. There is intentionally no `latest` tag during the Beta series.
 
 ## Start with Docker Compose
 
@@ -316,10 +318,10 @@ is made.
   work. Multi-operator redundancy and sender retention improve recovery; they
   do not make an operator unable to observe or interfere.
 
-## Alpha limits and upgrades
+## Beta limits and upgrades
 
 The container is built from the same tagged AGPL source as the application
-artifacts and carries OCI provenance and an SBOM. It is still Alpha software:
+artifacts and carries OCI provenance and an SBOM. It is still Beta software:
 back up before upgrading, pin a versioned tag for automation, and verify the
 image digest shown by GHCR. Multi-host orchestration, remote administration,
 automatic backups, and a stable migration/support promise are not provided.

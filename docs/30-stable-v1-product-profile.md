@@ -22,7 +22,7 @@ adversary, or operation after every usable device, route, or power source is
 lost.
 
 This profile freezes what may be represented as stable. A feature can exist in
-the repository or an Alpha package without joining this profile. Every stable
+the repository or a Beta package without joining this profile. Every stable
 public statement must use one of the claim identifiers below and must satisfy
 the corresponding entry in the
 [release evidence ledger](31-release-evidence-ledger.md).
@@ -58,7 +58,7 @@ is unsupported, even if it builds or happens to run. The headless operator
 image is a separate Linux amd64/arm64 support profile and does not turn a client
 platform into a supported server platform.
 
-The current unsigned or debug-signed 0.3 packages remain Alpha artifacts and do
+The historical unsigned or debug-signed 0.3 packages remain Alpha artifacts and do
 not satisfy this section. The implemented validation, signing-role, evidence,
 reproduction-measurement, and qualification contracts are documented in
 [release security and recovery](39-release-security-and-recovery.md) and
@@ -94,7 +94,7 @@ The stable implementation must accept the authority, admission, and discovery
 decisions in [ADR-0026](adr/0026-revocable-device-authority.md),
 [ADR-0030](adr/0030-first-contact-admission.md), and
 [ADR-0031](adr/0031-capability-scoped-dht-discovery.md), or superseding ADRs
-that close the same threats. All three are implemented for Alpha.
+that close the same threats. All three are implemented for Beta.
 Revision-bound CI retention, hostile-network multi-bootstrap evidence,
 independent adversarial/protocol review, and named physical-platform
 qualification remain open, so the combined reachability/consent claim is not
@@ -143,7 +143,7 @@ uses the declared versioned content and atomic transition contract.
 - Joining a group is an explicit consent action. Receipt of an invitation does
   not expose membership, download media, or create mesh airtime.
 
-[ADR-0029](adr/0029-recipient-authenticated-groups.md) is the accepted Alpha
+[ADR-0029](adr/0029-recipient-authenticated-groups.md) is the accepted Beta
 implementation of this contract. Stable-v1 still requires revision-bound CI,
 independent protocol/security and interoperability evidence, and named
 physical-platform qualification. Groups larger than 64 accounts and any future
@@ -210,7 +210,7 @@ are not stable-v1 claims.
 
 Current root-free `KKR10` round trips, secret-exclusion checks, recovery epochs,
 fork/conflict cases, crash failpoints, cross-shell host tests, and Android/iOS
-simulator builds are Alpha implementation evidence for accepted
+simulator builds are Beta implementation evidence for accepted
 [ADR-0026](adr/0026-revocable-device-authority.md). They do not freeze
 wire/state semantics beyond the
 [published candidate kit](41-protocol-conformance.md), or close
@@ -319,5 +319,5 @@ part of the stable-v1 public contract unless this profile is formally revised:
 - independent-audit, independent-interoperability, production-readiness, or
   high-risk-user claims until the exact evidence gate closes.
 
-Excluded features must be visibly labelled Alpha or experimental, remain
+Excluded features must be visibly labelled Beta or experimental, remain
 isolated from the stable golden path, and fail without weakening this profile.

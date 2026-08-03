@@ -341,7 +341,11 @@ def parser() -> argparse.ArgumentParser:
     check.add_argument("--record", required=True)
     check.add_argument("--artifact-manifest", required=True)
     check.add_argument("--expected-revision")
-    check.add_argument("--channel", choices=("validation", "alpha", "stable"), required=True)
+    check.add_argument(
+        "--channel",
+        choices=("validation", "alpha", "beta", "stable"),
+        required=True,
+    )
     check.set_defaults(run=validate)
     return root
 

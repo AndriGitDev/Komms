@@ -56,7 +56,7 @@ OCI index. Publication is maintainer-only. Record the immutable result as:
 ghcr.io/andrigitdev/komms-reference-service@sha256:<index-digest>
 ```
 
-Do not deploy a moving Alpha tag. Verify the revision label, index digest, SBOM,
+Do not deploy a moving Beta tag. Verify the revision label, index digest, SBOM,
 and provenance before promotion.
 
 ## 2. Runtime service credentials

@@ -294,11 +294,11 @@ its separate service key is unavailable; possession of both files exposes the
 relay-visible tokens and envelopes, which remain end-to-end ciphertext.
 
 ADR-0018's client, sealed state, fixed codecs, persistence-free component, and
-dedicated network/TLS reference-service wrapper are implemented for Alpha but
+dedicated network/TLS reference-service wrapper are implemented for Beta but
 are not configured as a default or deployed service. ADR-0019's fixed codecs,
 sealed per-session state, durable identity-free revoke retries, bounded core
 collection, pinned direct/Tor client, dedicated APNs/FCM gateway, and hardened
-deployment artifacts are also implemented for Alpha. Direct APNs, Play-only
+deployment artifacts are also implemented for Beta. Direct APNs, Play-only
 FCM, a separately inspected Google-free artifact, and bounded mobile lifecycle
 handlers are present; real provider/deployed-gateway and named physical-device
 qualification remain open. No wake gateway is deployed. Their bounded but

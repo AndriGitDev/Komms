@@ -1,4 +1,4 @@
-# Stable-v1 consent-based Alpha pilot runbook
+# Stable-v1 consent-based Beta pilot runbook
 
 This runbook prepares the pilot required before a stable-beta candidate. It
 does not authorize recruitment, publication, release, spending, deployment,
@@ -10,7 +10,7 @@ Do not enroll participants until all of these are true:
 
 1. the intended P0 implementation changes are merged and current CI is green;
 2. a validation bundle exists for one immutable revision and artifact set;
-3. the production-like Alpha artifacts have the required release-manifest and
+3. the production-like Beta artifacts have the required release-manifest and
    platform signatures without exposing signing material to the pilot host;
 4. clean-install, update, rollback, backup/recovery, and support instructions
    match those exact artifact digests;

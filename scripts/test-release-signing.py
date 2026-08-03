@@ -46,7 +46,7 @@ class ReleaseSigningTests(unittest.TestCase):
                         {
                             "path": (
                                 "artifacts/"
-                                "Komms-0.3.0-linux-x86_64-test.AppImage"
+                                "Komms-0.4.0-linux-x86_64-test.AppImage"
                             ),
                             "sha256": DIGEST,
                         }
@@ -83,19 +83,20 @@ class ReleaseSigningTests(unittest.TestCase):
             )
             self.assertIn("verified=0", result.stdout)
 
-    def test_alpha_requires_manifest_signature(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            manifest, record = self.prepare(Path(temporary))
-            run(
-                "validate",
-                "--record",
-                str(record),
-                "--artifact-manifest",
-                str(manifest),
-                "--channel",
-                "alpha",
-                expected=2,
-            )
+    def test_prerelease_channels_require_manifest_signature(self) -> None:
+        for channel in ("alpha", "beta"):
+            with self.subTest(channel=channel), tempfile.TemporaryDirectory() as temporary:
+                manifest, record = self.prepare(Path(temporary))
+                run(
+                    "validate",
+                    "--record",
+                    str(record),
+                    "--artifact-manifest",
+                    str(manifest),
+                    "--channel",
+                    channel,
+                    expected=2,
+                )
 
     def test_alpha_manifest_role_must_cover_the_exact_artifact_set(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -156,7 +157,7 @@ class ReleaseSigningTests(unittest.TestCase):
                             {
                                 "path": (
                                     "artifacts/"
-                                    "Komms-0.3.0-windows-x86_64-test.msi"
+                                    "Komms-0.4.0-windows-x86_64-test.msi"
                                 ),
                                 "sha256": DIGEST,
                             }
@@ -225,7 +226,7 @@ class ReleaseSigningTests(unittest.TestCase):
                         "artifacts": [
                             {
                                 "path": (
-                                    f"artifacts/Komms-0.3.0-{artifact_class}-"
+                                    f"artifacts/Komms-0.4.0-{artifact_class}-"
                                     f"fixture.{suffix}"
                                 ),
                                 "sha256": artifact_digest,

@@ -15,7 +15,7 @@ independently reviewed, or stable. Build order details per crate:
 | M0–M2 | Implemented + automated evidence | Independent vectors/review and stabilization regressions |
 | M3 | Implemented + partial automated evidence | Clean-install distinct-NAT journey, adversarial/field first-contact qualification, durable mailbox qualification |
 | M4 | Implemented + partial automated evidence | Physical two-radio field qualification |
-| M5 | Implemented Alpha surfaces | Hands-on mobile, lifecycle, accessibility, localization, and install qualification |
+| M5 | Implemented Beta surfaces | Hands-on mobile, lifecycle, accessibility, localization, and install qualification |
 | M6 | Partial | Signed/reproducible updates, external review, operator readiness; expansion work deferred |
 
 ## M0: Design framework *(implemented; review remains)*
@@ -179,9 +179,9 @@ criteria below.
 - A node with both mesh and internet bridges queued traffic in both directions.
 - Duty-cycle accounting respects EU868 limits (logged and enforced).
 
-## M5: Applications (`kult-ffi`, desktop, mobile alpha) *(in progress)*
+## M5: Applications (`kult-ffi`, desktop, mobile Beta) *(in progress)*
 
-UniFFI bindings; Tauri desktop app; Android/iOS alpha shells. UX for verification
+UniFFI bindings; Tauri desktop app; Android/iOS Beta shells. UX for verification
 (QR safety numbers), contact requests, delivery states, transport indicators,
 QR pairing and verification; animated message-bundle QR remains planned.
 
@@ -245,7 +245,7 @@ the core's lockfile and cargo-deny surface (it carries its own, equally
 strict deny config and local release gates); all shell behavior lives in a
 webview-agnostic layer pinned by a two-node end-to-end test: pairing by
 compact scanned QR or legacy hex, events as the webview receives them, verification,
-and the backup → mnemonic → restore flow. The Android alpha is in
+and the backup → mnemonic → restore flow. The Android Beta is in
 (application A2, `apps/android`): a Kotlin shell over the same `kult-ffi`
 runtime, generated bindings compiled fresh from the crate at build time
 (never committed). Its structure mirrors the desktop split: every
@@ -269,7 +269,7 @@ APK in addition to the SDK-free host suite. Android
 sender-key group UX is also implemented: a distinct group list/create flow,
 dedicated history/chat/member surface, truthful per-recipient outbound
 delivery rows, and a JVM acceptance scenario with a real offline member.
-The iOS alpha is in (application A2, `apps/ios`): a Swift shell over the same
+The iOS Beta is in (application A2, `apps/ios`): a Swift shell over the same
 `kult-ffi` runtime, generated bindings compiled fresh from the crate at
 build time (never committed). Its structure mirrors the other shells'
 split: every behavior lives in the `KommsCore` Swift package (session
@@ -357,9 +357,11 @@ held in zeroizing memory. The locked workspaces declare and compile-test MSRV
 1.88. Per-push CI now includes that MSRV gate, a real Android debug APK, and the
 currently authorized iOS Simulator build; a weekly workflow rechecks advisories
 for both Cargo workspaces, the core on macOS, and an informational coverage
-snapshot. All build surfaces identify as `0.3.0`. The Komms 0.3 Alpha candidate
-adds a required human visual gate for Android, iOS, macOS, and Linux alongside
-native desktop packages, the debug-signed Android APK, and checksums.
+snapshot. All build surfaces identify as `0.4.0`, with Android and iOS build
+number `4`. The Komms 0.4 Beta candidate retains a required human visual gate
+for Android, iOS, macOS, Windows, and Linux alongside native desktop packages,
+both Android distribution flavors, the unsigned iOS Simulator archive, and the
+revision-bound evidence bundle.
 
 The next release-control slice is also implemented locally: immutable action,
 container, bootstrap, and packaging-tool pins; read-only tag builds; Android
@@ -497,7 +499,7 @@ and iOS uses security-scoped document-provider URLs; both mobile shells stage
 only bounded app-private copies. All three expose pairwise/group send,
 per-object verified-byte progress and state, lifecycle controls, and protected
 caller-selected export. F3 shell delivery is implemented across the three
-Alpha surfaces: generic files use explicit
+Beta surfaces: generic files use explicit
 local confirmation, older sealed previews remain renderable, and canonical
 edited PNG primaries are validated and rendered only through protected transient
 paths. Each shell exposes its actual interruption/resume policy.
@@ -698,9 +700,9 @@ boundary omits groups. See
 **Acceptance**: audit findings triaged with public report; reproducible-build attestation
 for all release artifacts.
 
-## Alpha implementation: real-time audio calls
+## Beta implementation: real-time audio calls
 
-The C7 audio path is implemented across the shared core and Alpha application
+The C7 audio path is implemented across the shared core and Beta application
 surfaces under the strict direct-QUIC and transient-state contract above.
 Video remains unimplemented until real-network and physical-device audio
 qualification passes. Details and constraints:

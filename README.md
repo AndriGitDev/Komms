@@ -27,7 +27,7 @@ human maintainer.
 **New here?** Read [Start Here](docs/00-start-here.md): the whole idea in plain
 words, with no cryptography knowledge required.
 
-## Komms 0.3 interface preview
+## Komms 0.4 Beta interface preview
 
 <p align="center">
   <img src="docs/assets/screenshots/ios-unlock-preview.png" alt="Komms unlock screen with the yellow K mark and private messaging introduction" width="300">
@@ -35,67 +35,76 @@ words, with no cryptography knowledge required.
   <img src="docs/assets/screenshots/ios-inbox-preview.png" alt="Komms conversation-first inbox showing node health, pairing, note to self, private conversations, and groups" width="300">
 </p>
 
-<p align="center"><em>The Komms 0.3 Alpha interface. Android, iOS, and desktop share the same brand and conversation-first information hierarchy.</em></p>
+<p align="center"><em>The Komms 0.4 Beta interface. Android, iOS, and desktop share the same brand and conversation-first information hierarchy.</em></p>
 
-## Install 0.3 Alpha for testing
+## Test the 0.4 Beta candidate
 
-Open the public
-[Komms 0.3 Alpha release](https://github.com/AndriGitDev/Komms/releases/tag/v0.3.0)
-and download one package:
+The source and application version is `0.4.0`; Beta is the release channel.
+After the explicit signing, qualification, and publication boundary is complete,
+the exact package set will appear on the
+[`v0.4.0` release page](https://github.com/AndriGitDev/Komms/releases/tag/v0.4.0).
+Until then, use a source build or an explicitly labelled validation artifact and
+do not represent it as the public Beta.
 
-| System | Choose |
+| System | Candidate package class |
 |---|---|
-| Windows 10/11 x64 | `.msi` or `-setup.exe` |
-| macOS Intel or Apple silicon | universal `.dmg` |
-| Linux x86-64 | `.AppImage`, `.deb`, or `.rpm` |
-| Android 8.0+ | `-android-debug.apk` |
+| Windows 10/11 x64 | `windows-x86_64` MSI or NSIS package |
+| macOS Intel or Apple silicon | `macos-universal` DMG |
+| Linux x86-64 | `linux-x86_64` AppImage, DEB, or RPM |
+| Android 8.0+ | separately signed Play or Google-free package |
 
-Download `SHA256SUMS` too. These are unsigned/debug-signed Alpha packages, so
-verify the download before accepting an operating-system warning. The
-[Alpha testing guide](docs/27-alpha-testing.md) has exact verification,
-installation, first-test, and issue-reporting steps. No source build is
-required. iOS currently remains source/Simulator-only.
+Download the completed release-evidence archive too and verify that its exact
+artifact digest, signing, qualification, and residual-risk records match the
+package. The [Beta testing guide](docs/53-beta-testing.md) has the migration,
+verification, installation, acceptance, and issue-reporting steps. iOS remains
+source/Simulator-only unless a separately qualified IPA is present.
 
-## What changed in 0.3 Alpha
+## What changed in 0.4 Beta
 
-- **Pairing that phone cameras can actually scan.** Post-quantum bundle sharing
-  now uses compact Base45 payloads and a bounded animated QR sequence on
-  desktop. Frames assemble in any order, and legacy bundle QRs and pasted hex
-  remain accepted.
-- **Fresh messages stay responsive.** New user actions bypass passive queue
-  maintenance. Unreachable sealed messages retry in the background and become
-  an honest `delivery failed after 30 days` entry if no encrypted receipt
-  arrives.
-- **A genuinely shared interface.** Android now carries the same branded,
-  conversation-first hierarchy already approved on iOS and desktop. Settings
-  keeps backup, linked-device, network, and diagnostic controls out of the
-  everyday path.
-- **Clearer identity and discovery.** Safety numbers are 30 readable digits
-  while QR verification retains the full 256-bit comparison. Desktop sharing,
-  contact rename, DHT/mDNS status, and conversation rendering are hardened.
-- **Four-platform preview evidence.** Android and iOS simulators plus local
-  macOS and Linux desktop previews now require explicit visual approval. Linux
-  desktop launch smoke also runs in CI and in the release workflow. This is not
-  physical-device or stable-platform qualification.
-- **A release-shaped self-hosted node.** The public `kultd` image is prepared
-  for Linux amd64 and arm64 with provenance, an SBOM, and immutable `0.3.0`
-  tagging.
+The complete compatibility-oriented record is in the
+[changelog](CHANGELOG.md).
+
+- **Revocable device authority.** Routine profiles and backups no longer carry
+  the stable account private key. Strict-majority manifests, visible conflicts,
+  root-authorized recovery epochs, and an honest copied-root reset replace the
+  former shared-root design.
+- **Authenticated group origins.** Sender-key groups still encrypt content once,
+  while each recipient verifies the claimed account/device origin before chain
+  advance or decryption. Security-sensitive group events use the same boundary.
+- **Consent before contact.** Unknown senders and group invitations enter a
+  bounded Message Request domain with explicit Accept, Delete, and Block actions
+  and admission work budgets.
+- **Capability-scoped discovery and delivery.** Rotatable Connect codes,
+  fixed-size encrypted DHT records, durable leased mailbox v2, and rotating
+  pairwise rendezvous replace stable identity lookup and delete-on-check-in
+  custody.
+- **Replaceable optional services.** Standard, Private, and Sovereign now share
+  one signed provider contract. Dedicated reference, mailbox, rendezvous, wake,
+  and OHTTP components keep their roles separate and preserve ordinary fallback
+  when unavailable.
+- **Mobile wake without delivery inflation.** Direct APNs and Play-only FCM use
+  content-free capabilities and bounded collection. The Google-free Android
+  flavor contains no FCM SDK, and wake never changes queued/sent/delivered state.
+- **Release and stewardship foundations.** A stand-alone stable-v1 conformance
+  kit, security-review package, field evidence matrix, reproducible-release
+  controls, English/Icelandic localization, accessibility gates, contributor
+  profiles, operator runbooks, and incident/legal policy are source-controlled.
 
 ## Current implementation status
 
-Komms 0.3 Alpha is a public prerelease for testing, not an independently
-audited or stable release. The repository contains a broad implemented core and
-three application shells, with substantial automated evidence. Simulator
-builds and self-round-trip tests are not physical-device qualification or
-independent interoperability.
+Komms 0.4 Beta is a prerelease candidate, not an independently audited or stable
+release. The repository contains a broad implemented core and three application
+shells, with substantial automated evidence. Simulator builds and
+self-round-trip tests are not physical-device qualification or independent
+interoperability.
 
 | Area | Current state |
 |---|---|
 | **Core security and storage** | Hybrid PQXDH, Double Ratchet sessions, sealed envelopes, opaque keyed SQLite indexes, row-bound local records, released-schema migration, backup/recovery, RPC/CLI, and UniFFI paths are implemented with repeatable tests. SQLite still reveals approximate row counts/sizes, order, within-domain equality, access patterns, and change timing. Storage has Linux/ext4 test evidence, but independent review and physical macOS, Windows, Android, iOS, power-loss, backup-exclusion, and forensic qualification remain open. |
 | **Internet, LAN, and delayed delivery** | libp2p QUIC/TCP, Kademlia discovery, NAT traversal, mDNS, and durable leased mailbox v2 are implemented. Mailbox deposits commit before acceptance; exact relay rows remain until endpoint staging and acknowledgement. A dedicated `/komms/mailbox/2`-only artifact, hardened image, restart tests, failpoints, overload/multi-operator tests, and aggregate-only health are implemented locally. Fresh installs still lack a qualified distinct-NAT golden path: bootstrap/mailbox defaults require deliberate configuration, and no public mailbox operator, observed upgrade/backup/cost record, or real-network matrix is qualified. |
 | **Off-grid delivery** | Sneakernet and the Meshtastic carrier, duty-cycle controls, retransmission, and internet↔mesh bridge paths are implemented with automated evidence. The physical two-radio bench is not yet field-qualified. |
-| **Applications and messaging** | Desktop, Android, and iOS shells expose pairwise/group text and a broad Alpha feature set, including attachments, local organization, linked devices, ephemeral content, polls, roles, and direct audio-call paths. CI and simulator evidence exist; hands-on device, background lifecycle, NAT, accessibility, and localization qualification remain. |
-| **Distribution** | Unsigned desktop packages and a debug-signed Android APK are published for Alpha testing; iOS is source/Simulator-only. A bounded, revision-bound release-evidence and controlled-reproduction path is implemented locally, but has no retained candidate run. Production credentials, signed platform artifacts, authenticated updates, external reproduction, store distribution, upgrade/rollback qualification, and stable support remain open. |
+| **Applications and messaging** | Desktop, Android, and iOS shells expose pairwise/group text and a broad Beta feature set, including attachments, local organization, linked devices, message requests, ephemeral content, polls, roles, and direct audio-call paths. CI and simulator evidence exist; hands-on device, background lifecycle, NAT, accessibility, and independent qualification remain. |
+| **Distribution** | Version-aligned desktop, Android, and iOS Simulator validation builds plus bounded revision-bound evidence are implemented. Public Beta publication still requires the exact signing/qualification records and explicit authorization. Production credentials, signed platform artifacts, authenticated updates, external reproduction, store distribution, upgrade/rollback qualification, and stable support remain open. |
 | **Optional mobile convenience** | ADR-0018 rotating post-pairing rendezvous and ADR-0019 content-free native wake are implemented locally across core, services, and clients. Standard, Private, and Sovereign share one mode contract; Private currently uses loopback Tor. A dedicated fixed-mapping RFC 9458 relay artifact is implemented, but no compatible gateway/client path, deployment, distinct administrative domains, or non-collusion evidence exists, so OHTTP is not selectable or qualified. The Play flavor contains FCM support, the Google-free flavor advertises none, and Apple uses APNs directly. No reference/wake/OHTTP service or production provider credential is deployed, and no physical background/force-quit/Doze row is qualified. None of these optional services is required by the Sovereign core. |
 | **Trust and governance** | The project is founder-directed by design during construction and stabilization under a nonprofit public-benefit mission. The founder retains product and release authority. Independent security and interoperability evidence is still missing. The [stabilization program](docs/29-stabilization-program.md) defines the evidence required before stable claims. |
 | **Stable-beta readiness** | A consent, aggregate-only pilot contract and fail-closed P0/candidate decision record are implemented. No pilot has run, all P0 gates remain open, production signing is unenrolled, and no stable-beta candidate, publication, or stable claim is authorized. |
@@ -191,8 +200,8 @@ status of any particular proposal.
 | [23: Live Audio Calls](docs/23-live-audio-calls.md) | C7 direct-QUIC gating, transient signaling, authenticated Opus media, platform behavior, privacy limits, and qualification |
 | [24: Local Release Gate](docs/24-local-release-gate.md) | Toolchains, complete local validation, CI/advisory evidence, SDK deferrals, signing boundary, and publication discipline |
 | [25: Release Runbook](docs/25-release-runbook.md) | Versioning, retained validation builds, protected signing/qualification, immutable completed assets, and explicit publication |
-| [26: Self-hosting](docs/26-self-hosting.md) | Hardened Docker Compose deployment, ports, secret initialization, node modes, and Alpha limits |
-| [27: Alpha Testing](docs/27-alpha-testing.md) | Download verification, installation, smoke testing, issue reporting, and self-hosted image quick start |
+| [26: Self-hosting](docs/26-self-hosting.md) | Hardened Docker Compose deployment, ports, secret initialization, node modes, and Beta limits |
+| [27: Alpha Testing](docs/27-alpha-testing.md) | Historical 0.3 Alpha package verification, installation, and smoke testing |
 | [28: Brand System](docs/28-brand-system.md) | Cross-shell product character, tokens, hierarchy, and pragmatic name-risk monitoring |
 | [29: Stabilization Program](docs/29-stabilization-program.md) | Canonical evidence vocabulary, trust gates, owners, and 90-day sequence |
 | [30: Stable-v1 Product Profile](docs/30-stable-v1-product-profile.md) | Frozen install, messaging, bounds, recovery, delivery, platform, service, and exclusion contract |
@@ -218,6 +227,7 @@ status of any particular proposal.
 | [50: Mailbox Service Operations](docs/50-mailbox-service-operations.md) | Dedicated mailbox-v2 artifact, custody, backup, upgrade, incident, and qualification rules |
 | [51: Stable-Beta Pilot and Release Decision](docs/51-stable-beta-pilot-and-release-decision.md) | Consent boundary, aggregate pilot metrics, final matrix, P0 audit, support, rollback, and founder decision |
 | [52: Oblivious HTTP Relay Operations](docs/52-ohttp-relay-operations.md) | Fixed-mapping RFC 9458 relay, metadata stripping, hardening, rotation, and non-collusion boundary |
+| [53: Beta Testing](docs/53-beta-testing.md) | 0.4 migration, package/evidence verification, acceptance walk-through, and honest test reporting |
 | [ADRs](docs/adr/README.md) | Decision index, status, and the alternatives each decision beat |
 
 ## Stack
@@ -248,8 +258,8 @@ lifecycle, mailbox check-ins, local JSON RPC over a Unix socket, `kult` CLI),
 and `kult-ffi` (UniFFI bindings: the node's command/event API as typed
 records/enums with an embedded in-process runtime, for the application shells),
 plus `apps/desktop` (Tauri shell), `apps/android`
-(Kotlin alpha shell over the generated bindings), and `apps/ios`
-(SwiftUI alpha shell over the same bindings). The daemon writes structured,
+(Kotlin Beta shell over the generated bindings), and `apps/ios`
+(SwiftUI Beta shell over the same bindings). The daemon writes structured,
 content-free diagnostics to stderr (`RUST_LOG`, default `info`) and supports
 owner-only passphrase/mnemonic files for service deployment; run `kultd --help`
 for the complete operator surface.
@@ -275,14 +285,13 @@ division between local checks, per-push CI, weekly advisory evidence, physical
 qualification, and signing is documented in the
 [local release gate](docs/24-local-release-gate.md).
 
-The **Komms 0.3 Alpha** prerelease is built from tag `v0.3.0` on native Windows,
-macOS, Linux, and Android runners. Install it using the
-[Alpha testing guide](docs/27-alpha-testing.md). Its public Linux amd64/arm64
-self-hosting image is available as the immutable
-`ghcr.io/andrigitdev/komms-kultd:0.3.0` tag and the `0.3-alpha`/`alpha` aliases. See the
-[release runbook](docs/25-release-runbook.md) for the version bump,
-APK/installer/container, signing, checksum, smoke-test, and publication process,
-or the [self-hosting guide](docs/26-self-hosting.md) to run `kultd`.
+The **Komms 0.4 Beta** candidate uses version `0.4.0` and the future `v0.4.0`
+source tag. Use the [Beta testing guide](docs/53-beta-testing.md) for the exact
+migration and evidence boundary. Container workflows prepare immutable `0.4.0`
+and moving `0.4-beta`/`beta` tags, but publication remains a separate authorized
+operation. See the [release runbook](docs/25-release-runbook.md) for package,
+signing, checksum, qualification, and publication controls, or the
+[self-hosting guide](docs/26-self-hosting.md) to run `kultd` from source.
 
 ## Contributing
 

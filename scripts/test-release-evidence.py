@@ -143,7 +143,7 @@ class ReleaseEvidenceTests(unittest.TestCase):
             root = Path(temporary)
             artifacts = root / "input"
             artifacts.mkdir()
-            (artifacts / "Komms-0.3.0.test").write_bytes(b"candidate")
+            (artifacts / "Komms-0.4.0.test").write_bytes(b"candidate")
             builder = root / "builder.json"
             write_builder(builder, "first")
             bundle = root / "bundle"
@@ -156,9 +156,9 @@ class ReleaseEvidenceTests(unittest.TestCase):
                 "--revision",
                 REVISION,
                 "--version",
-                "0.3.0",
+                "0.4.0",
                 "--tag",
-                "v0.3.0",
+                "v0.4.0",
                 "--source-date-epoch",
                 "1",
                 "--builder",
@@ -172,7 +172,7 @@ class ReleaseEvidenceTests(unittest.TestCase):
                 REVISION,
             )
             self.assertIn("verified 1 artifacts", verified.stdout)
-            (bundle / "artifacts/Komms-0.3.0.test").write_bytes(b"tampered")
+            (bundle / "artifacts/Komms-0.4.0.test").write_bytes(b"tampered")
             run("verify", "--bundle-dir", str(bundle), expected=2)
 
     def test_published_artifacts_must_exactly_match_evidence(self) -> None:
@@ -180,7 +180,7 @@ class ReleaseEvidenceTests(unittest.TestCase):
             root = Path(temporary)
             published = root / "published"
             published.mkdir()
-            candidate = published / "Komms-0.3.0-linux-x86_64.AppImage"
+            candidate = published / "Komms-0.4.0-linux-x86_64.AppImage"
             candidate.write_bytes(b"candidate")
             manifest = root / "artifacts.json"
             run(
@@ -266,12 +266,12 @@ class ReleaseEvidenceTests(unittest.TestCase):
                         "isDraft": True,
                         "assets": [
                             {
-                                "name": "Komms-0.3.0-linux-x86_64.AppImage",
+                                "name": "Komms-0.4.0-linux-x86_64.AppImage",
                                 "size": 9,
                                 "digest": "sha256:" + ("1" * 64),
                             },
                             {
-                                "name": "Komms-0.3.0-release-evidence.tar.gz",
+                                "name": "Komms-0.4.0-release-evidence.tar.gz",
                                 "size": 12,
                                 "digest": "sha256:" + ("2" * 64),
                             },
@@ -285,7 +285,7 @@ class ReleaseEvidenceTests(unittest.TestCase):
                 "--metadata",
                 str(metadata),
                 "--version",
-                "0.3.0",
+                "0.4.0",
             )
             parsed = json.loads(metadata.read_text(encoding="utf-8"))
             parsed["isDraft"] = False
@@ -295,7 +295,7 @@ class ReleaseEvidenceTests(unittest.TestCase):
                 "--metadata",
                 str(metadata),
                 "--version",
-                "0.3.0",
+                "0.4.0",
                 expected=2,
             )
 
@@ -311,7 +311,7 @@ class ReleaseEvidenceTests(unittest.TestCase):
                         "revision": REVISION,
                         "artifacts": [
                             {
-                                "path": "artifacts/Komms-0.3.0-linux-x86_64.AppImage",
+                                "path": "artifacts/Komms-0.4.0-linux-x86_64.AppImage",
                                 "bytes": 7,
                                 "mode": "0644",
                                 "sha256": artifact_digest,
@@ -345,7 +345,7 @@ class ReleaseEvidenceTests(unittest.TestCase):
                 },
                 "artifacts": [
                     {
-                        "path": "artifacts/Komms-0.3.0-linux-x86_64.AppImage",
+                        "path": "artifacts/Komms-0.4.0-linux-x86_64.AppImage",
                         "status": "exact",
                         "sha256": artifact_digest,
                     }
@@ -427,7 +427,7 @@ class ReleaseEvidenceTests(unittest.TestCase):
             for index, timestamp in enumerate(((2020, 1, 1, 0, 0, 0), (2022, 2, 2, 0, 0, 0))):
                 artifacts = root / f"input-{index}"
                 artifacts.mkdir()
-                archive = artifacts / "Komms-0.3.0.apk"
+                archive = artifacts / "Komms-0.4.0.apk"
                 with zipfile.ZipFile(archive, "w") as output:
                     info = zipfile.ZipInfo("classes.dex", date_time=timestamp)
                     output.writestr(info, b"same payload")
@@ -443,9 +443,9 @@ class ReleaseEvidenceTests(unittest.TestCase):
                     "--revision",
                     REVISION,
                     "--version",
-                    "0.3.0",
+                    "0.4.0",
                     "--tag",
-                    "v0.3.0",
+                    "v0.4.0",
                     "--source-date-epoch",
                     "1",
                     "--builder",
@@ -473,7 +473,7 @@ class ReleaseEvidenceTests(unittest.TestCase):
             root = Path(temporary)
             artifacts = root / "input"
             artifacts.mkdir()
-            archive = artifacts / "Komms-0.3.0-linux-x86_64-package.zip"
+            archive = artifacts / "Komms-0.4.0-linux-x86_64-package.zip"
             with zipfile.ZipFile(archive, "w") as output:
                 info = zipfile.ZipInfo("redirect")
                 info.create_system = 3
@@ -490,9 +490,9 @@ class ReleaseEvidenceTests(unittest.TestCase):
                 "--revision",
                 REVISION,
                 "--version",
-                "0.3.0",
+                "0.4.0",
                 "--tag",
-                "v0.3.0",
+                "v0.4.0",
                 "--source-date-epoch",
                 "1",
                 "--builder",
@@ -526,9 +526,9 @@ class ReleaseEvidenceTests(unittest.TestCase):
                 "--revision",
                 REVISION,
                 "--version",
-                "0.3.0",
+                "0.4.0",
                 "--tag",
-                "v0.3.0",
+                "v0.4.0",
                 "--source-date-epoch",
                 "1",
                 "--builder",
@@ -555,9 +555,9 @@ class ReleaseEvidenceTests(unittest.TestCase):
                 "--revision",
                 REVISION,
                 "--version",
-                "0.3.0",
+                "0.4.0",
                 "--tag",
-                "v0.3.0",
+                "v0.4.0",
                 "--source-date-epoch",
                 "1",
                 "--builder",
@@ -587,9 +587,9 @@ class ReleaseEvidenceTests(unittest.TestCase):
                 "--revision",
                 REVISION,
                 "--version",
-                "0.3.0",
+                "0.4.0",
                 "--tag",
-                "v0.3.0",
+                "v0.4.0",
                 "--source-date-epoch",
                 "123456789",
                 "--builder",
@@ -611,15 +611,15 @@ class ReleaseEvidenceTests(unittest.TestCase):
                 REVISION,
             )
 
-    def test_validation_bundle_promotes_to_verified_alpha_archive(self) -> None:
+    def test_validation_bundle_promotes_to_verified_beta_archive(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             artifacts = root / "input"
             artifacts.mkdir()
-            candidate = artifacts / "Komms-0.3.0-linux-x86_64-AppImage.AppImage"
-            candidate.write_bytes(b"alpha candidate")
+            candidate = artifacts / "Komms-0.4.0-linux-x86_64-AppImage.AppImage"
+            candidate.write_bytes(b"beta candidate")
             builder = root / "builder.json"
-            write_builder(builder, "alpha-builder")
+            write_builder(builder, "beta-builder")
             licenses = root / "android-licenses.json"
             subprocess.run(
                 [
@@ -664,14 +664,14 @@ class ReleaseEvidenceTests(unittest.TestCase):
                 "--revision",
                 REVISION,
                 "--version",
-                "0.3.0",
+                "0.4.0",
                 "--android-license-report",
                 str(licenses),
                 "--output",
                 str(sbom),
             )
             notes = root / "release-notes.md"
-            notes.write_text("Alpha fixture release notes.\n", encoding="utf-8")
+            notes.write_text("Beta fixture release notes.\n", encoding="utf-8")
             prepared_artifacts = root / "prepared-artifacts.json"
             run(
                 "inventory",
@@ -691,7 +691,7 @@ class ReleaseEvidenceTests(unittest.TestCase):
                     "--revision",
                     REVISION,
                     "--version",
-                    "0.3.0",
+                    "0.4.0",
                     "--artifact-manifest",
                     str(prepared_artifacts),
                     "--release-notes",
@@ -712,9 +712,9 @@ class ReleaseEvidenceTests(unittest.TestCase):
                 "--revision",
                 REVISION,
                 "--version",
-                "0.3.0",
+                "0.4.0",
                 "--tag",
-                "v0.3.0",
+                "v0.4.0",
                 "--source-date-epoch",
                 "123456789",
                 "--builder",
@@ -787,7 +787,7 @@ class ReleaseEvidenceTests(unittest.TestCase):
                     "--revision",
                     REVISION,
                     "--version",
-                    "0.3.0",
+                    "0.4.0",
                     "--artifact-manifest",
                     str(artifact_manifest),
                     "--output",
@@ -802,7 +802,7 @@ class ReleaseEvidenceTests(unittest.TestCase):
                     {
                         "schema": "komms-reproducibility-comparison/v1",
                         "revision": REVISION,
-                        "first_builder": {"builder_id": "alpha-builder"},
+                        "first_builder": {"builder_id": "beta-builder"},
                         "second_builder": {"builder_id": "controlled-rebuild"},
                         "summary": {
                             "compared": 1,
@@ -842,7 +842,7 @@ class ReleaseEvidenceTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            promoted = root / "alpha"
+            promoted = root / "beta"
             run(
                 "promote",
                 "--bundle-dir",
@@ -850,7 +850,7 @@ class ReleaseEvidenceTests(unittest.TestCase):
                 "--output-dir",
                 str(promoted),
                 "--channel",
-                "alpha",
+                "beta",
                 "--policy",
                 str(ROOT / "release/policy-v1.json"),
                 "--signing",
@@ -867,10 +867,10 @@ class ReleaseEvidenceTests(unittest.TestCase):
             promoted_record = json.loads(
                 (promoted / "release-evidence.json").read_text(encoding="utf-8")
             )
-            self.assertEqual(promoted_record["channel"], "alpha")
+            self.assertEqual(promoted_record["channel"], "beta")
             self.assertFalse(promoted_record["claims"]["production_signed"])
             self.assertFalse((promoted / "stable-beta.json").exists())
-            archive = root / "alpha-release-evidence.tar.gz"
+            archive = root / "beta-release-evidence.tar.gz"
             run(
                 "pack",
                 "--bundle-dir",
@@ -881,7 +881,7 @@ class ReleaseEvidenceTests(unittest.TestCase):
             )
             (promoted / "SHA256SUMS.sig").write_bytes(b"detached test signature")
             run("pack", "--bundle-dir", str(promoted), "--output", str(archive))
-            unpacked = root / "unpacked-alpha"
+            unpacked = root / "unpacked-beta"
             run("unpack", "--archive", str(archive), "--output-dir", str(unpacked))
             run(
                 "verify",

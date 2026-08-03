@@ -68,7 +68,7 @@ python3 scripts/release-evidence.py inventory \
 
 python3 scripts/release-qualification.py prepare \
   --revision "$revision" \
-  --version 0.3.0 \
+  --version 0.4.0 \
   --artifact-manifest target/artifacts.json \
   --output target/qualification.json
 
@@ -79,7 +79,7 @@ python3 scripts/release-signing.py prepare \
 
 python3 scripts/stable-beta-readiness.py prepare \
   --revision "$revision" \
-  --version 0.3.0 \
+  --version 0.4.0 \
   --artifact-manifest target/artifacts.json \
   --release-notes .github/release-body.md \
   --output target/stable-beta.json
@@ -111,7 +111,7 @@ them as passed. Generate the SBOM and dependency record:
 python3 scripts/release-evidence.py sbom \
   --repository . \
   --revision "$revision" \
-  --version 0.3.0 \
+  --version 0.4.0 \
   --android-license-report target/android-licenses.json \
   --output target/komms.cdx.json
 
@@ -133,8 +133,8 @@ python3 scripts/release-evidence.py bundle \
   --artifact-dir target/release-artifacts \
   --output-dir target/release-evidence \
   --revision "$revision" \
-  --version 0.3.0 \
-  --tag v0.3.0 \
+  --version 0.4.0 \
+  --tag v0.4.0 \
   --source-date-epoch "$epoch" \
   --builder target/builder.json \
   --channel validation \
@@ -230,7 +230,7 @@ and release notes are complete:
 python3 scripts/release-evidence.py promote \
   --bundle-dir target/release-evidence \
   --output-dir target/promoted-evidence \
-  --channel alpha \
+  --channel beta \
   --signing reviewed/signing.json \
   --qualification reviewed/qualification.json \
   --reproducibility reviewed/reproducibility.json \
@@ -238,7 +238,7 @@ python3 scripts/release-evidence.py promote \
   --release-notes reviewed/release-notes.md
 ```
 
-Alpha promotion requires a verified release-manifest role plus the native
+Alpha or Beta promotion requires a verified release-manifest role plus the native
 signing role for every platform artifact actually included. Stable promotion
 also requires every policy signing role and artifact class, a completely
 passed qualification matrix, no unexplained reproduction difference, genuine
@@ -285,7 +285,7 @@ Move only `SHA256SUMS` to the offline signing device, compare the bundle and
 key fingerprints, sign it as described in
 [release security and recovery](39-release-security-and-recovery.md), and
 return `SHA256SUMS.sig`. Verify the complete bundle locally before packaging
-it. Packaging an Alpha or Stable bundle fails when the detached signature is
+it. Packaging an Alpha, Beta, or Stable bundle fails when the detached signature is
 absent. The publication workflow separately performs the cryptographic
 signature check against the enrolled public key.
 
@@ -294,7 +294,7 @@ Package the completed directory with the exact top-level layout and name:
 ```sh
 python3 scripts/release-evidence.py pack \
   --bundle-dir target/promoted-evidence \
-  --output target/Komms-0.3.0-release-evidence.tar.gz
+  --output target/Komms-0.4.0-release-evidence.tar.gz
 ```
 
 The release draft must contain exactly the final top-level package files plus

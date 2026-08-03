@@ -268,7 +268,7 @@ designed separately.
 
 ## 3. Search (planned)
 
-The current Alpha does not ship a durable full-text index. A future design may
+The current Beta does not ship a durable full-text index. A future design may
 use a
 separately keyed, bounded local index in which tokenized terms are HMAC'd under
 a search-domain key before insertion. That design avoids plaintext vocabulary

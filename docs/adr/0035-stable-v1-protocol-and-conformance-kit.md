@@ -1,6 +1,6 @@
 # ADR-0035: Stable-v1 protocol and conformance kit
 
-- **Status**: Accepted
+- **Status**: Accepted; conformance kit implemented; independent execution gate open
 - **Date**: 2026-07-31
 - **Depends on**: all accepted stable-v1 protocol and state ADRs
 

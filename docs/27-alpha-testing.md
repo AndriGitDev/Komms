@@ -1,5 +1,10 @@
 # Install and Test Komms 0.3 Alpha
 
+> **Historical release guide:** this page documents the published `v0.3.0`
+> artifacts and their original limitations. It does not describe the 0.4 trust,
+> package, or evidence contract. For the current candidate, use
+> [Install and Test Komms 0.4 Beta](53-beta-testing.md).
+
 Komms 0.3 Alpha is a public prerelease for hands-on testing. Download it from
 the [v0.3.0 GitHub release](https://github.com/AndriGitDev/Komms/releases/tag/v0.3.0).
 It is not an audited stable release: back up important Komms data, expect rough

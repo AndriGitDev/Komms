@@ -3,14 +3,14 @@
   "plan_version": 1,
   "profile": "stable-v1",
   "pilot": {
-    "id": "stable-v1-consent-alpha",
-    "artifact_requirement": "production-like-signed-alpha",
+    "id": "stable-v1-consent-beta",
+    "artifact_requirement": "production-like-signed-beta",
     "minimum_consented_participants": 8,
     "maximum_consented_participants": 24,
     "minimum_completed_participants": 6,
     "maximum_duration_days": 21,
     "required_disclosures": [
-      "Alpha software may fail, lose availability, or require recovery.",
+      "Beta software may fail, lose availability, or require recovery.",
       "The pilot is not suitable for emergency or safety-critical communication.",
       "Message content, contact graphs, stable user identifiers, and per-user timelines are not collected.",
       "Participation is voluntary and withdrawal does not claim deletion from peers, platform providers, or already aggregated reports.",

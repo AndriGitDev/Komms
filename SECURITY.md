@@ -69,7 +69,7 @@ Those dry-runs are not a live incident, legal opinion, external tabletop, or
 - Coordinated disclosure: please allow the initial assessment window and agree
   on a disclosure date based on impact and fix complexity. Imminent user harm
   may require faster action by both parties.
-- The Alpha implementation and its specifications are both in scope; neither is
+- The Beta implementation and its specifications are both in scope; neither is
   represented as independently audited.
   Threat-model gaps, broken constructions, unstated assumptions, local data
   leakage, transport-policy bypasses, and platform lifecycle failures are
@@ -99,11 +99,14 @@ synchronization boundaries, linked-device authorization/revocation failures,
 and direct-QUIC call-policy or media-authentication bypasses. The intended
 contracts are [09: Implementation Guide §4b–4c](docs/09-implementation-guide.md),
 [22: Linked Devices](docs/22-linked-devices.md), and
-[23: Live Audio Calls](docs/23-live-audio-calls.md). Official 0.3 Alpha packages
-are published from tag `v0.3.0`, but desktop production signing/notarization,
-Android release signing, and an update channel remain scaffold-only. Verify
-`SHA256SUMS` from the [official prerelease](https://github.com/AndriGitDev/Komms/releases/tag/v0.3.0);
-a third-party binary must not be represented as an official Komms release.
+[23: Live Audio Calls](docs/23-live-audio-calls.md). The historical official
+0.3 Alpha packages were published from tag `v0.3.0` and predate the current
+release-evidence design. Komms 0.4 Beta is official only if the exact package is
+published under `v0.4.0` with its completed evidence archive; a branch build or
+retained validation artifact is not a release. Production signing,
+notarization, store distribution, and an update channel remain open until their
+recorded gates close. A third-party binary must not be represented as an
+official Komms release.
 
 Optional-service and operator reports are in scope: discovery-capability or
 rendezvous-slot leakage, DHT poisoning/eclipsing/suppression, signed-directory

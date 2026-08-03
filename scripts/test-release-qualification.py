@@ -46,7 +46,7 @@ class ReleaseQualificationTests(unittest.TestCase):
                         {
                             "path": (
                                 "artifacts/"
-                                "Komms-0.3.0-windows-x86_64-test.msi"
+                                "Komms-0.4.0-windows-x86_64-test.msi"
                             ),
                             "sha256": DIGEST,
                         }
@@ -61,7 +61,7 @@ class ReleaseQualificationTests(unittest.TestCase):
             "--revision",
             REVISION,
             "--version",
-            "0.3.0",
+            "0.4.0",
             "--artifact-manifest",
             str(manifest),
             "--output",

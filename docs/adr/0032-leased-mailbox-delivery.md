@@ -1,6 +1,6 @@
 # ADR-0032: Leased, crash-safe mailbox delivery
 
-- **Status**: Accepted; implemented for Alpha
+- **Status**: Accepted; implemented for Beta
 - **Date**: 2026-07-26
 
 ## Context
@@ -88,7 +88,7 @@ Historical 0.3.0 artifacts predate this implementation. Operators must verify
 the exact source revision and schema rather than infer v2 behavior from an
 Alpha image tag.
 
-### 6. The implemented Alpha profile is explicit
+### 6. The implemented Beta profile is explicit
 
 The default profile retains an envelope for at most 30 days, a registration
 for 60 days without refresh, and a live lease for 120 seconds. It caps one

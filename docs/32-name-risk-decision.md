@@ -14,13 +14,13 @@ opinion, or a finding of non-infringement**
 ## 1. Decision
 
 The project continues using the Komms name while monitoring the exact-name
-overlap described below. Engineering and Alpha testing continue. Long-lived
+overlap described below. Engineering and Beta testing continue. Long-lived
 stable brand identifiers are not treated as legally cleared, and this decision
 does not claim ownership over the word.
 
 The current response is proportionate because:
 
-- the project is still Alpha, founder-run, nonprofit in mission, and not
+- the project is still Beta, founder-run, nonprofit in mission, and not
   represented as stable;
 - a rename is still possible but already has meaningful package, domain,
   release, artwork, documentation, and wire-domain cost;
@@ -118,7 +118,7 @@ While the name remains:
 
 Andri owns the monitoring record until the role is delegated:
 
-1. **Monthly during Alpha and stable-v1 preparation:** exact-name web, GitHub,
+1. **Monthly during Beta and stable-v1 preparation:** exact-name web, GitHub,
    app-store, package-registry, domain, and observed-project activity check.
 2. **Before every public release:** verify project/release descriptions,
    package identifiers, security contacts, redirects, and new confusion

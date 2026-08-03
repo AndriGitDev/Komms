@@ -58,7 +58,7 @@ The empty niche Komms targets:
    contact + chosen durable mailbox operators + direct/local/mesh paths, with no
    optional project service required to communicate
    ([03: Architecture](03-architecture.md)).
-2. **Off-grid as an implemented Alpha transport**, not yet a field-qualified
+2. **Off-grid as an implemented Beta transport**, not yet a field-qualified
    claim: Komms supports Meshtastic LoRa adapters and bounded multi-hop
    store-and-forward. Actual range, background behavior, and two-radio operation
    remain environment- and hardware-dependent release evidence

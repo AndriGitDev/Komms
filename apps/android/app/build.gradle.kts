@@ -77,11 +77,10 @@ android {
         applicationId = "is.andri.komms"
         minSdk = 26
         targetSdk = 35
-        versionCode = 3
-        // Plain 0.3.0 to match the workspace, desktop, and iOS version
-        // family exactly (Apple version strings cannot carry a suffix);
-        // alpha status is conveyed by the 0.x major and release notes.
-        versionName = "0.3.0"
+        versionCode = 4
+        // Plain 0.4.0 matches the workspace, desktop, and iOS version family;
+        // the Beta channel is carried by release metadata, not this value.
+        versionName = "0.4.0"
     }
 
     compileOptions {
@@ -100,7 +99,7 @@ android {
 
     buildTypes {
         release {
-            // No minification: this is an alpha, and an auditable APK
+            // No minification: this is a Beta, and an auditable APK
             // (classes map 1:1 to this source tree) beats a smaller one.
             isMinifyEnabled = false
             if (releaseStore != null) {

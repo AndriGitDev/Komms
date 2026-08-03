@@ -10,7 +10,7 @@ The machine-readable contract is
 [`release/stable-beta-plan-v1.json`](../release/stable-beta-plan-v1.json).
 [`scripts/stable-beta-readiness.py`](../scripts/stable-beta-readiness.py)
 prepares and validates `stable-beta.json`. A stable release-evidence bundle
-must contain that record and pass `--require-ready`. Alpha and validation
+must contain that record and pass `--require-ready`. Alpha, Beta, and validation
 evidence may remain honestly open.
 
 ## 1. Present status
@@ -30,7 +30,7 @@ automated evidence.
 
 The pilot accepts 8–24 consenting participants for no more than 21 days and
 requires at least six completed journeys. Entry requires merged P0
-implementation changes, green CI, one immutable production-like signed Alpha
+implementation changes, green CI, one immutable production-like signed Beta
 artifact set, exact install/update/recovery instructions, a restricted consent
 store, and explicit authorization to begin.
 
@@ -154,5 +154,5 @@ python3 scripts/stable-beta-readiness.py validate \
   --require-ready
 ```
 
-Stable promotion requires this passing record. Validation and Alpha workflows
+Stable promotion requires this passing record. Validation, Alpha, and Beta workflows
 remain able to describe open work without weakening the stable boundary.

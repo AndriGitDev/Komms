@@ -1,6 +1,6 @@
 # ADR-0031: Capability-scoped DHT first-contact discovery
 
-- **Status**: Accepted; implemented for Alpha
+- **Status**: Accepted; implemented for Beta
 - **Date**: 2026-07-26
 
 ## Context
@@ -180,7 +180,7 @@ turning the public discovery record into a current-IP oracle.
 - The project-operated reference deployment is separately bounded by
   [ADR-0034](0034-operator-minimized-reference-discovery.md).
 
-## Implemented Alpha profile
+## Implemented Beta profile
 
 `kult-crypto` owns the strict `kc2` Connect-code parser, checksum, epoch and
 locator derivation, independently derived XChaCha20-Poly1305 record key,

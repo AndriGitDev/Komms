@@ -133,7 +133,7 @@ at most 64 locally authored edit events per target and reject further local
 sends. Every accepted edit received from a peer remains durable and participates
 in the same deterministic maximum; a local admission limit cannot change
 convergence based on arrival order. History derivation scans sealed local
-conversation records at alpha scale and can later gain a sealed rebuildable
+conversation records at Beta scale and can later gain a sealed rebuildable
 index without changing the wire rule.
 
 Acceptance requires golden/fuzz/proptest coverage; edit-before-original,

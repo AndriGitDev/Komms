@@ -103,7 +103,7 @@ final class CallAudioController {
         let audio = AVAudioSession.sharedInstance()
         try audio.setCategory(
             .playAndRecord, mode: .voiceChat,
-            options: [.allowBluetooth, .defaultToSpeaker])
+            options: [.allowBluetoothHFP, .defaultToSpeaker])
         try audio.setPreferredSampleRate(callSampleRate)
         try audio.setPreferredIOBufferDuration(0.02)
         try? audio.setPreferredInputNumberOfChannels(1)

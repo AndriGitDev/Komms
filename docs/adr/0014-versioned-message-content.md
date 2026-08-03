@@ -179,7 +179,7 @@ exactly like a delivery receipt. A decrypted body beginning with capability
 magic `00 00 ff 4b 43 43` (`empty receipt || 0xff || "KCC"`) is a capability
 control; every other body continues through the existing `ReceiptPayload`
 decoder. The first two bytes are the complete canonical Postcard encoding of an
-empty receipt. The current Alpha `postcard::from_bytes` receipt path ignores
+empty receipt. The current Beta `postcard::from_bytes` receipt path ignores
 the unused suffix, so an old endpoint accepts the control as a harmless empty
 receipt without allocating from an attacker-controlled count. A stricter old
 decoder would merely reject it, which is equally terminal and invisible to the
@@ -283,7 +283,7 @@ The implementation PR must include:
   existing encrypted receipt lane preserves relay and endpoint compatibility.
 - **Use an ASCII magic prefix.** Rejected: an existing valid text message could
   collide with it. The invalid-UTF-8 leading byte makes collision impossible
-  for all text emitted by the implemented Alpha public APIs.
+  for all text emitted by the implemented Beta public APIs.
 - **Send framed text to everyone immediately.** Rejected: pre-ADR clients would
   lossy-render binary framing as text. Conservative authenticated negotiation
   preserves useful messaging across versions.

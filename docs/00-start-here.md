@@ -23,7 +23,7 @@ Three things make it different from the messengers you know:
 2. **It is designed for more than one kind of network.** Messages can use
    [Meshtastic](https://meshtastic.org) radios, local links, or a `.kkb` courier
    file carried on removable media. The software paths have automated tests;
-   the physical two-radio and real-world mobile matrices remain Alpha
+   the physical two-radio and real-world mobile matrices remain open Beta
    qualification work. During a shutdown, communication still needs a
    supported route, working devices, power, configuration, and sometimes radio
    hardware.
@@ -61,17 +61,20 @@ Our full, frank list is in the [threat model](02-threat-model.md).
 
 ## Can I use it today?
 
-Yes, for Alpha testing. [Komms 0.3 Alpha](https://github.com/AndriGitDev/Komms/releases/tag/v0.3.0)
-has downloadable packages for Windows, macOS, Linux, and Android. Follow the
-[Alpha testing guide](27-alpha-testing.md) to choose a package, verify its
-checksum, install it, and report what you find. The desktop packages are not
-production-signed or notarized, the Android APK is debug-signed, and iOS remains
-source/Simulator-only. Hands-on device qualification, signed and store
-distribution, the physical radio bench, and an external audit remain before a
-stable release. Fresh internet installs also need deliberate bootstrap/mailbox
+Yes, as a careful Beta tester. Komms 0.4 is being prepared as a version-aligned
+Beta candidate for Windows, macOS, Linux, Android, and an unsigned iOS
+Simulator path. Follow the [Beta testing guide](53-beta-testing.md) to identify
+an eligible package, verify its exact evidence, migrate safely, and report what
+you find. A source build or retained validation artifact is not the public Beta,
+and a platform with no completed release asset is not supplied. Hands-on device
+qualification, production signing and store distribution, the physical radio
+bench, qualified operators, and an external audit remain before a stable
+release. Fresh internet installs also need deliberate bootstrap/mailbox
 configuration today. Deterministic local Standard-blackhole, replacement, and
-pure-core journeys now exist, but clean supported devices behind distinct real
-NATs and qualified operators remain P0 work, not a current plug-and-play claim.
+pure-core journeys exist, but clean supported devices behind distinct real NATs
+and qualified operators remain P0 work, not a current plug-and-play claim. The
+[0.3 Alpha](https://github.com/AndriGitDev/Komms/releases/tag/v0.3.0) remains a
+historical test release and predates the 0.4 trust and evidence design.
 
 Messages may use a small safe formatting subset for emphasis, strong text,
 quotes, lists, and code. The exact readable source stays encrypted in history
@@ -105,7 +108,7 @@ not the exact deadline or content. See
 Groups can also create encrypted single-choice polls. Votes and voter identities
 are visible to members—Komms does not call them anonymous—and the apparent
 creator closes the exact vote snapshot they have received. Offline, duplicate,
-and reordered events still converge locally. Current Alpha groups authenticate
+and reordered events still converge locally. Current Beta groups authenticate
 each claimed voter and creator separately to every recipient device while
 retaining one shared sender-key ciphertext and recipient deniability. Legacy
 group history remains labelled as membership-authenticated. See
@@ -130,7 +133,7 @@ creates fresh device credentials rather than reviving credentials from a
 backup. See
 [Linked Devices](22-linked-devices.md).
 
-Already paired contacts can also make alpha live-audio calls when both devices
+Already paired contacts can also make Beta live-audio calls when both devices
 have a fresh direct QUIC connection. Call setup stays inside the ordinary
 end-to-end encrypted ratchet and the audio uses fresh call-specific keys; there
 is no Komms call server. Calls do not work through volunteer relays, TCP
@@ -162,7 +165,7 @@ Platform build instructions:
 
 | If you want to know… | Read… |
 |---|---|
-| how to install and test the 0.3 Alpha | [Alpha Testing](27-alpha-testing.md) |
+| how to migrate, verify, install, and test the 0.4 Beta | [Beta Testing](53-beta-testing.md) |
 | what Komms promises and why | [Why Komms](01-why.md) |
 | what it protects—and what it cannot | [Threat Model](02-threat-model.md) |
 | how the system is layered | [Architecture](03-architecture.md) |
@@ -195,7 +198,7 @@ Platform build instructions:
 
 - **Not technical?** Read this document and tell us what confused you: that's a
   real contribution—file it as an issue. Hands-on testing of the published
-  Alpha packages and their setup instructions matters too.
+  Beta packages and their setup instructions matters too.
 - **Organizer / activist?** Read the [threat model](02-threat-model.md) and tell us
   where it doesn't match your reality on the ground.
 - **Developer?** Start with [CONTRIBUTING](../CONTRIBUTING.md) and the

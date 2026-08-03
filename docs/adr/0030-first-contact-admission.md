@@ -1,6 +1,6 @@
 # ADR-0030: Bounded first-contact admission and consent
 
-- **Status**: Accepted; implemented for Alpha
+- **Status**: Accepted; implemented for Beta
 - **Date**: 2026-07-26
 
 ## Context
@@ -171,9 +171,9 @@ bounded message-request inbox.
   flood, Sybil, battery, disk-full, replay, and delayed-carrier cases become
   release tests.
 
-## Alpha implementation and assurance boundary
+## Beta implementation and assurance boundary
 
-The Alpha implementation includes:
+The Beta implementation includes:
 
 - a signed descriptor with exact bundle binding, bounded clock window,
   first-message limit, public puzzle profile, and invitation commitment;
@@ -193,7 +193,7 @@ The Alpha implementation includes:
   requests, replay tombstones, invitation capabilities, one-time prekeys, and
   live session/delivery secrets remain excluded.
 
-The fixed Alpha bounds are 32 live provisional requests, 512 KiB of provisional
+The fixed Beta bounds are 32 live provisional requests, 512 KiB of provisional
 rows, a 4 KiB first content limit, a 2 KiB preview limit, 4,096 replay
 tombstones, and 4,096 local block rules. One lifecycle tick admits at most
 eight puzzle verifications, four KEM operations, four request notifications,

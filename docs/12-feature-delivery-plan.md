@@ -31,7 +31,7 @@ content, attachment, carrier-capability, replicated-conversation, and linked-
 device front doors. C7 direct-QUIC audio calls are implemented across the full
 stack under accepted ADR-0013. ADR-0017 modes, ADR-0018 rendezvous, and the
 ADR-0019 wake gateway/core and native Android/iOS clients are implemented for
-Alpha; external/deployment/physical-field gates remain open.
+Beta; external/deployment/physical-field gates remain open.
 
 | Feature from scope | Current status | Main gap |
 |---|---|---|
@@ -40,7 +40,7 @@ Alpha; external/deployment/physical-field gates remain open.
 | End-to-end encryption | Assurance | Continuous review, KAT, fuzz, regression, external-vector, and independent-audit gates. |
 | Post-quantum handshake | Assurance | Crypto-agility and downgrade-safe future upgrades. |
 | Contact names / usernames | Partial | B5 local petname rename is implemented end to end; optional signed self-display suggestions remain deferred. |
-| Message requests / first-contact consent | Implemented Alpha | Preserve signed bounded admission, provisional isolation, explicit Accept/Delete/Block, group-invite consent, and direct durable settlement; independent adversarial/usability, physical-device battery/background/accessibility, capability discovery, and mailbox-v2 operator qualification remain. |
+| Message requests / first-contact consent | Implemented Beta | Preserve signed bounded admission, provisional isolation, explicit Accept/Delete/Block, group-invite consent, and direct durable settlement; independent adversarial/usability, physical-device battery/background/accessibility, capability discovery, and mailbox-v2 operator qualification remain. |
 | Secure backups | Implemented | Future feature data must be added without leaking or silently omitting it. |
 | Note to self | Implemented (text) | Attachments follow F3 shell integration. |
 | Queued messages | Implemented | Already part of the honest delivery engine. |
@@ -56,13 +56,13 @@ Alpha; external/deployment/physical-field gates remain open.
 | Mentions | Implemented | ADR-0016 canonical peer targets, current-roster composers, conservative group capability gating, and local navigation/notification. |
 | Labels | Implemented (contact/conversation) | Private pairwise, group, and note-to-self labels with fixed limits, stale cleanup, and accessible any/all filtering; message labels remain deferred. |
 | File sharing | Implemented | Bounded F3/F4 delivery plus shared fail-closed file rows, explicit warned open/export, mismatch handling, lifecycle cleanup, and cross-language parity. |
-| Linked devices | Implemented Alpha with ADR-0026 authority | Preserve confirmed linking, independent per-device cryptography, strict-majority `KDA2`, visible forks/conflicts, recovery epochs, deterministic ordinary-data sync, honest legacy reset, and root-free `KKR10`; physical, independent-review, and interoperability gates remain. |
+| Linked devices | Implemented Beta with ADR-0026 authority | Preserve confirmed linking, independent per-device cryptography, strict-majority `KDA2`, visible forks/conflicts, recovery epochs, deterministic ordinary-data sync, honest legacy reset, and root-free `KKR10`; physical, independent-review, and interoperability gates remain. |
 | Message editing | Implemented | ADR-0020 immutable revisions, pairwise and recipient-authenticated group authorship, deterministic offline reconciliation, retained versions, legacy-history labels, and every front door/shell. |
 | Disappearing/view-once messages | Implemented | ADR-0021 exact local deadlines, envelope-v2 coarse relay deletion, tombstones, KKR6 exclusion, terminal reveal, and honest local-only promises. |
-| Group polls | Implemented Alpha | ADR-0022 fixed-electorate visible votes, deterministic heads/tallies, recipient-authenticated voter/creator origins, creator snapshot closure, and every front door/shell. Independent and physical qualification remain open. |
+| Group polls | Implemented Beta | ADR-0022 fixed-electorate visible votes, deterministic heads/tallies, recipient-authenticated voter/creator origins, creator snapshot closure, and every front door/shell. Independent and physical qualification remain open. |
 | Admin/role controls | Implemented | ADR-0023 owner-serialized signed roles, transfer, re-keying, and poll moderation through every shell. |
-| Live voice/video calls | Implemented (audio alpha) | Preserve direct-QUIC-only gating, transient ratcheted control, authenticated Opus media, and zero history/backup/mesh work; real-network/device qualification precedes stable enablement and video. |
-| Optional hybrid reachability/wake | Implemented Alpha; external gates open | ADR-0017 modes, signed replaceable providers, ADR-0018 rendezvous, and ADR-0019 gateway/core/mobile clients are implemented with fixed codecs, sealed non-backup state, durable identity-free revoke retries, pinned HTTPS/Tor clients, bounded orchestration/collection, direct APNs, Play-only FCM, an inspected Google-free flavor, dedicated least-authority service artifacts, and strict front doors. Qualified deployment/Private ingress, external review, and named physical field evidence remain open. |
+| Live voice/video calls | Implemented (Beta audio) | Preserve direct-QUIC-only gating, transient ratcheted control, authenticated Opus media, and zero history/backup/mesh work; real-network/device qualification precedes stable enablement and video. |
+| Optional hybrid reachability/wake | Implemented Beta; external gates open | ADR-0017 modes, signed replaceable providers, ADR-0018 rendezvous, and ADR-0019 gateway/core/mobile clients are implemented with fixed codecs, sealed non-backup state, durable identity-free revoke retries, pinned HTTPS/Tor clients, bounded orchestration/collection, direct APNs, Play-only FCM, an inspected Google-free flavor, dedicated least-authority service artifacts, and strict front doors. Qualified deployment/Private ingress, external review, and named physical field evidence remain open. |
 
 ## 3. Shared foundations
 
@@ -709,7 +709,7 @@ proof that an oversized transfer emits zero mesh frames.
 
 ### C2. Linked devices
 
-**State:** implemented Alpha with accepted offline-root authority. **Decisions:**
+**State:** implemented Beta with accepted offline-root authority. **Decisions:**
 [ADR-0024](adr/0024-account-authorized-linked-devices.md) for per-device
 delivery/sync and [ADR-0026](adr/0026-revocable-device-authority.md) for
 authority/recovery.
@@ -875,7 +875,7 @@ implementation parity.
 
 **Depends on:** F4 and accepted ADR-0013.
 
-**State:** audio alpha implemented. ADR-0013 is accepted. The pinned
+**State:** Beta audio implemented. ADR-0013 is accepted. The pinned
 localhost/loss spike selected one reliable ordered `/komms/call/1` substream on
 a fresh direct QUIC connection; the implemented libp2p QUIC transport disables
 datagrams. Relay-only and TCP paths do not qualify as realtime. Distinct-NAT,
@@ -906,7 +906,7 @@ See [23: Live Audio Calls](23-live-audio-calls.md).
 ### C8. Optional hybrid reachability and native wake
 
 **Depends on:** F4, capability-scoped DHT discovery, durable mailbox delivery,
-and ADR-0017 through ADR-0019. ADR-0018 is accepted and implemented for Alpha;
+and ADR-0017 through ADR-0019. ADR-0018 is accepted and implemented for Beta;
 the complete convenience plane remains major M6 adoption work.
 
 Deliver this as a feature-gated module over the unchanged core:
@@ -926,7 +926,7 @@ Deliver this as a feature-gated module over the unchanged core:
 8. publish service hardening, deployment, key-rotation, no-log, incident, and
    independent-operation runbooks before a production default is offered.
 
-Items 1–8 are implemented for the local Alpha profile. The
+Items 1–8 are implemented for the local Beta profile. The
 rendezvous and wake clients support pinned TLS 1.3 directly or through an
 explicit loopback Tor SOCKS5 endpoint. The dedicated reference and native-wake
 service binaries, images, hardened deployment profiles, signed/versioned
@@ -984,12 +984,12 @@ the gates that must close before broader feature expansion.
 | Wave | Progress | Outcome and features |
 |---|---|---|
 | **0: Shared foundations** | Implemented + automated evidence | F1–F5 have implementation paths; ADR-0015 remains formally Proposed despite the implemented attachment pipeline. |
-| **Parallel: mobile reachability** | Partial Alpha | ADR-0017 modes, ADR-0018 rendezvous, and ADR-0019 gateway/core are implemented behind reversible policy; native Android/iOS integration, deployment, external review, and physical qualification remain. |
-| **1: Local-first product polish** | Implemented + automated evidence | B5, B7–B15, and B18 have Alpha paths; optional signed self-display suggestions remain a separate format-gated extension to B5. Localization and external accessibility evidence remain open. |
+| **Parallel: mobile reachability** | Partial Beta | ADR-0017 modes, ADR-0018 rendezvous, and ADR-0019 gateway/core are implemented behind reversible policy; native Android/iOS integration, deployment, external review, and physical qualification remain. |
+| **1: Local-first product polish** | Implemented + automated evidence | B5, B7–B15, and B18 have Beta paths; optional signed self-display suggestions remain a separate format-gated extension to B5. Localization and external accessibility evidence remain open. |
 | **2: Typed content and asynchronous media** | Implemented + automated evidence | F2/F3, B2, B16, B17, and C1 have core and shell paths; hands-on device evidence remains an M5 release gate. |
 | **3: Replicated conversation features** | Implemented + automated evidence | C3, C4, C5, and C6 have paths through the documented surfaces; field and independent evidence remain separate. |
 | **4: Multi-device** | Implemented + automated evidence | ADR-0024 and C2 have implementation paths, including cross-device hardening of Wave 3; physical-device qualification remains open. |
-| **5: Real-time media** | Implemented Alpha path | ADR-0013 and C7 audio are implemented through the documented surfaces, restricted to observed direct QUIC; real-network/device qualification gates stable enablement and video. |
+| **5: Real-time media** | Implemented Beta path | ADR-0013 and C7 audio are implemented through the documented surfaces, restricted to observed direct QUIC; real-network/device qualification gates stable enablement and video. |
 
 Scheduled messages (B8) completed as the intended isolated core-plus-shell
 delivery. Its durable gate remains in the shared queue/storage schema rather
@@ -1004,8 +1004,8 @@ Do not combine these into one oversized design decision.
 | 1 (accepted) | ADR-0014: versioned typed message content and compatibility | Audio, files, edits, polls, structured mentions. |
 | 2 (proposed; implemented) | ADR-0015: encrypted attachment/chunk transfer and carrier policy | Audio, files, media editing; formal ADR acceptance remains. |
 | 3 (accepted) | ADR-0016: canonical group-mention content | B17 stable encrypted targets, range semantics, compatibility, and local notification. |
-| 4 (accepted; implemented Alpha) | ADR-0017: optional hybrid modes and threat boundary | C8 mode guarantees, signed replaceable provider configuration, and honest product claims; deployment and field qualification remain. |
-| 5 (accepted; implemented Alpha) | ADR-0018: rotating pairwise rendezvous | C8 private post-pairing route refresh; qualified network deployment and Private-ingress evidence remain. |
+| 4 (accepted; implemented Beta) | ADR-0017: optional hybrid modes and threat boundary | C8 mode guarantees, signed replaceable provider configuration, and honest product claims; deployment and field qualification remain. |
+| 5 (accepted; implemented Beta) | ADR-0018: rotating pairwise rendezvous | C8 private post-pairing route refresh; qualified network deployment and Private-ingress evidence remain. |
 | 6 (proposed) | ADR-0019: capability-gated native wake | C8 APNs/FCM acceleration and bounded collection. |
 | 7 (accepted) | ADR-0021: expiry/retention metadata and deletion semantics | C4 disappearing and view-once content. |
 | 8 (accepted) | ADR-0020: immutable edit events, authorization, ordering, and retained versions | Message editing and multi-device convergence. |
@@ -1013,7 +1013,7 @@ Do not combine these into one oversized design decision.
 | 10 (accepted) | ADR-0023: group roles/capabilities and authority transfer | Admin controls and moderated polls. |
 | 11 (partially superseded) | ADR-0024: multi-device identity, independent delivery/ratchets/sender chains and sync | Linked-device data plane; its copied-root authority survives only as an explicit legacy migration input. |
 | 12 (accepted) | ADR-0026: offline root, strict-majority device authority, recovery epochs, visible conflicts and root-free backup | Revocable linked-device authority and honest Alpha migration/reset. |
-| 13 (accepted) | ADR-0013: measured direct-QUIC call signaling/media contract | C7 audio alpha; physical qualification gates video and stable enablement. |
+| 13 (accepted) | ADR-0013: measured direct-QUIC call signaling/media contract | C7 Beta audio; physical qualification gates video and stable enablement. |
 | 14 (accepted) | ADR-0029: recipient-authenticated group origins | Individual sender/device authorship without abandoning one shared group ciphertext or recipient deniability. |
 | 15 (accepted) | ADR-0030: bounded first-contact admission and consent | Signed pre-KEM admission policy, fixed provisional requests, explicit Accept/Delete/Block and group-invite consent. |
 | As needed | Signed optional self-display name in bundle records | Non-global username suggestion. |

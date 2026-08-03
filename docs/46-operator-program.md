@@ -52,7 +52,7 @@ Every operator record identifies:
 - start, outage, upgrade, incident, and end-of-life dates; and
 - the exact evidence commands and retained results.
 
-Alpha operation is best effort, has no stable compatibility window, and targets
+Beta operation is best effort, has no stable compatibility window, and targets
 14 days' notice for a planned incompatible operator change where risk permits.
 A future stable-candidate operator profile activates only through the founder's
 release decision, requires a tested replacement overlap, targets at least 90

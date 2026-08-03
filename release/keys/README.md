@@ -16,4 +16,4 @@ log, an issue, or a release attachment.
 
 Until `allowed_signers` exists and the other platform roles in
 [`policy-v1.json`](../policy-v1.json) are enrolled and exercised, the release
-workflow cannot publish an Alpha or stable candidate.
+workflow cannot publish an Alpha, Beta, or stable candidate.

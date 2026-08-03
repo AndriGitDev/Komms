@@ -36,7 +36,7 @@ design.
   polls, group authority, and terminal expiry tombstones can converge through
   authenticated encrypted sync bundles.
 
-The Alpha proof profile permits at most eight active devices, 64 lifetime
+The Beta proof profile permits at most eight active devices, 64 lifetime
 certificate/tombstone entries, 64 carried transitions, and 1 MiB of encoded
 authority. Reaching a bound refuses the authority operation; it never truncates
 evidence or chooses a branch. A compact checkpoint would require a future
