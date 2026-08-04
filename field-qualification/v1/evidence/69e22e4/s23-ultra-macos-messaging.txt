@@ -1,0 +1,52 @@
+Komms 0.4.2 physical Android/macOS development messaging result
+
+Source revision: 69e22e48b24983fdc3a8dd3acece4e7704fcea2d
+Source tree: 80c36baa1a3b6f58c695d30a2ffdc4804ba8a285
+Observation date: 2026-08-04
+
+Android artifact: app-googleFree-debug.apk
+Android artifact bytes: 44391512
+Android artifact SHA-256: 15b737a7554b401f8e5206102478d55de01493c7ada085b16141e7b6292c6097
+Android version: 0.4.2 (versionCode 6), minSdk 26, targetSdk 35
+Android signature: Android Debug certificate; SHA-256
+ec07a2d6a873d4b921c03c63a4c38888db582ee8b9e00517c124b4e395083cb7
+Android device: Samsung Galaxy S23 Ultra (SM-S918B), arm64-v8a
+Android OS: Android 16 / BP4A.251205.006 / S918BXXSAFZF5
+Android security patch: 2026-06-05
+
+macOS artifact: komms-desktop local development executable
+macOS artifact bytes: 41022912
+macOS artifact SHA-256: bd588cad214f859eda8f612d7ce4a5eac55e3dba508ed9556ec1f3c7aac86153
+macOS signature: ad-hoc linker signature; no team identifier
+macOS host: MacBook Air (M1, 2020), arm64
+macOS OS: macOS 26.5.2 (25F84)
+
+Network exercised: both physical endpoints on one local Wi-Fi network.
+
+The Android application data was cleared before the run at the reviewer's
+explicit request, producing a clean application profile while retaining the
+installed debug package. The Mac used a new disposable profile. Both endpoints
+completed the required offline-authority ceremony without retaining its file
+location, contents, phrase, or passphrase in this record. On macOS the corrected
+first-run flow opened the native Save dialog, wrote the authority, displayed the
+one-time acknowledgement, and reached the ready state.
+
+The Mac displayed its pairing bundle and the S23 Ultra scanned the complete
+animated sequence. The Android profile sent a first message, the Mac presented
+it as a message request, and the reviewer compared the displayed trust
+information privately before accepting. The Mac replied. The reviewer confirmed
+that both directions reached Delivered.
+
+No device serial, IP address, authority material, passphrase, recovery phrase,
+pairing bundle, Connect code, account identifier, safety number, contact data,
+message content, local-file listing, or screenshot is retained.
+
+Qualification boundary: exact scenario timestamps and step durations were not
+retained, so this is a revision-bound development result rather than a canonical
+field-run row. The Android package is debug-signed and the Mac executable is an
+ad-hoc local development build rather than the universal DMG. The run did not
+exercise a clean package install on Android, production signing, authenticated
+upgrade, distinct NATs, cellular handoff, durable mailbox custody, wake delivery,
+provider failure, background lifecycle, accessibility, recovery, attachments,
+audio calls, or optional-service blackholes. It does not qualify either platform
+cell or authorize publication.

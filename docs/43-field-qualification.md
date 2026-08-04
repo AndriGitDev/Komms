@@ -227,10 +227,10 @@ alone is useful `observed` evidence, not that stronger pass.
 
 There is no retained complete physical Android, iOS, macOS, Windows, Linux,
 distinct-NAT, CGNAT, or Meshtastic run for the current source. A partial
-physical Android clean-install result and a physical macOS first-run failure
-are useful development evidence, but no target has every applicable row at
-`pass`. All platform support cells therefore remain unsupported and
-P0-04/P0-09 remain open.
+physical Android clean-install result, a physical macOS first-run failure, and
+a corrected same-Wi-Fi Android/macOS messaging result are useful development
+evidence, but no target has every applicable row at `pass`. All platform
+support cells therefore remain unsupported and P0-04/P0-09 remain open.
 The available simulators are intentionally useful for implementation checks,
 but they cannot exercise radio hardware, physical battery/thermal behavior,
 real APNs/FCM delivery, OEM scheduling, cellular handoff, audio routing,
@@ -263,8 +263,17 @@ Revision `996a3e4e961ae40589f303149855451430597874` additionally retains:
 - a physical MacBook Air M1
   [failure note](../field-qualification/v1/evidence/996a3e/macbook-air-first-run-failure.txt)
   for the ad-hoc-signed v0.4.1 DMG. The required offline-authority export did
-  not complete, so no macOS row passed and the corrected candidate must be
-  rerun from a clean isolated profile.
+  not complete, so no macOS row passed and v0.4.1 was superseded.
 
 Neither record qualifies a production-signed artifact, authenticated upgrade,
 store distribution, complete platform cell, or stable support claim.
+
+Revision `69e22e48b24983fdc3a8dd3acece4e7704fcea2d` retains a
+[physical Android/macOS development result](../field-qualification/v1/evidence/69e22e4/s23-ultra-macos-messaging.txt).
+The corrected native Save flow completed from a new Mac profile, the physical
+S23 Ultra scanned the Mac pairing bundle, the Mac kept the first message behind
+explicit request acceptance, and both directions reached Delivered. The note
+binds the exact debug APK and Mac development executable but is not a canonical
+field-run row because exact step timings were not retained. It used one local
+Wi-Fi network and neither artifact is production-signed, so it does not qualify
+a platform cell, a distinct-NAT path, or a publishable Beta package.
