@@ -128,6 +128,8 @@ pub enum NodeError {
     InvalidSchedule,
     /// Streaming import or export failed.
     MediaIo(std::io::Error),
+    /// A caller-selected export destination does not name a file.
+    InvalidExportDestination,
     /// A link ceremony payload, state transition, or confirmation is invalid.
     InvalidDeviceLink,
     /// Linking would replace non-empty state on the proposed target device.
@@ -259,6 +261,9 @@ impl std::fmt::Display for NodeError {
             }
             Self::InvalidSchedule => f.write_str("invalid scheduled message or send instant"),
             Self::MediaIo(e) => write!(f, "attachment stream error: {e}"),
+            Self::InvalidExportDestination => {
+                f.write_str("export destination must name a new file")
+            }
             Self::InvalidDeviceLink => f.write_str("invalid or unconfirmed device link"),
             Self::DeviceLinkTargetNotEmpty => {
                 f.write_str("device linking target contains existing account state")

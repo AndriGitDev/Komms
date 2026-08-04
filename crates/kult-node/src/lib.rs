@@ -788,6 +788,13 @@ fn open_account_recovery_authority_throttled(package: &[u8], mnemonic: &str) -> 
 fn write_new_private_file(path: &std::path::Path, bytes: &[u8]) -> Result<()> {
     use std::io::Write;
 
+    // Atomic replacement assumes the destination has a parent and final
+    // filename. Reject paths that violate that contract so a caller error
+    // remains recoverable and cannot unwind the runtime worker.
+    if path.as_os_str().is_empty() || path.file_name().is_none() {
+        return Err(NodeError::InvalidExportDestination);
+    }
+
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create(true).truncate(true);
     #[cfg(unix)]
@@ -10489,6 +10496,53 @@ mod scheduler_tests {
         assert_eq!(capacity_retry_delay(5), 16);
         assert_eq!(capacity_retry_delay(6), 30);
         assert_eq!(capacity_retry_delay(u32::MAX), 30);
+    }
+}
+
+#[cfg(test)]
+mod recovery_authority_export_tests {
+    use std::panic::{catch_unwind, AssertUnwindSafe};
+
+    use rand::{rngs::StdRng, SeedableRng};
+
+    use super::*;
+
+    #[test]
+    fn invalid_destination_does_not_panic_or_consume_recovery_authority() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut rng = StdRng::seed_from_u64(0x2600_6042);
+        let mut node = Node::create(
+            &directory.path().join("node.db"),
+            b"passphrase",
+            KdfProfile {
+                m_cost_kib: 8,
+                t_cost: 1,
+                p_cost: 1,
+            },
+            &mut rng,
+        )
+        .unwrap();
+
+        let invalid = catch_unwind(AssertUnwindSafe(|| {
+            node.export_account_recovery_authority(std::path::Path::new(""))
+        }));
+        assert!(invalid.is_ok(), "invalid destination must not panic");
+        assert!(matches!(
+            invalid.unwrap(),
+            Err(NodeError::InvalidExportDestination)
+        ));
+
+        let occupied = directory.path().join("occupied.kra");
+        std::fs::write(&occupied, b"existing").unwrap();
+        assert!(node.export_account_recovery_authority(&occupied).is_err());
+        assert_eq!(std::fs::read(&occupied).unwrap(), b"existing");
+
+        let destination = directory.path().join("account-authority.kra");
+        let mnemonic = node
+            .export_account_recovery_authority(&destination)
+            .unwrap();
+        assert_eq!(mnemonic.split_whitespace().count(), 24);
+        assert!(destination.is_file());
     }
 }
 

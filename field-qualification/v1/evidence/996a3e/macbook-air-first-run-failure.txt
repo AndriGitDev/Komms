@@ -1,0 +1,32 @@
+Komms 0.4.1 physical macOS first-run failure note
+
+Source revision: 996a3e4e961ae40589f303149855451430597874
+Artifact: Komms_0.4.1_universal.dmg
+Artifact bytes: 25960180
+Artifact SHA-256: 363816bc5c254f28aba5c23568f823cc89b92b3902cf3fc896133db246ac3562
+Artifact signature: ad-hoc development signature; no production team identity
+
+Host: MacBook Air (M1, 2020), MacBookAir10,1
+Architecture: arm64
+OS: macOS 26.5.2 (25F84)
+Attempt began: 2026-08-04T12:36:44Z
+
+The exact mounted application was launched with a new isolated qualification
+profile. First run reached the required offline account-authority ceremony but
+did not reach the ready state. Authority export attempts did not advance the
+ceremony. Runtime output then showed an atomic replacement panic caused by a
+destination without a final filename. That first panic ended the runtime
+worker, so later attempts in the same application process could not succeed
+even after the destination was changed. The application process was stopped
+after diagnosis.
+
+The release disposition is fail closed: v0.4.1 receives no macOS
+clean-install/first-run pass. The corrected candidate must reject invalid
+destinations without unwinding, retain the one-time authority after failed
+writes, use the native Save dialog, and complete the entire flow from another
+clean isolated profile.
+
+No screenshot, local-file listing, local path, authority package, mnemonic,
+passphrase, account identifier, safety number, contact data, or message content
+is retained. Exact step-end timing was not retained, so this is a failure note
+rather than a completed canonical field-run record.

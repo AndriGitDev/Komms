@@ -13,10 +13,10 @@ blake3 = "1"
 chacha20poly1305 = "0.10"
 ed25519-dalek = "2"
 hkdf = "0.12"
-kult-crypto = { version = "0.4.1", path = "../kult-crypto" }
-kult-protocol = { version = "0.4.1", path = "../kult-protocol" }
-kult-store = { version = "0.4.1", path = "../kult-store" }
-kult-transport = { version = "0.4.1", path = "../kult-transport" }
+kult-crypto = { version = "0.4.2", path = "../kult-crypto" }
+kult-protocol = { version = "0.4.2", path = "../kult-protocol" }
+kult-store = { version = "0.4.2", path = "../kult-store" }
+kult-transport = { version = "0.4.2", path = "../kult-transport" }
 hex = "0.4"
 postcard = { version = "1", default-features = false, features = ["alloc"] }
 rand_core = "0.6"

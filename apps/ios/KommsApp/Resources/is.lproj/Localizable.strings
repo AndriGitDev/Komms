@@ -883,6 +883,7 @@
 "System, light, or dark theme" = "Kerfis-, ljóst eða dökkt þema";
 "Target" = "Mark";
 "Teal" = "Blágrænt";
+"That file already exists. Choose a new filename; Komms never replaces an offline authority file." = "Skráin er þegar til. Veldu nýtt skráarheiti; Komms skrifar aldrei yfir ótengda heimildarskrá.";
 "The 60 second limit was reached. Recording stopped for review." = "60 sekúndna hámarkinu var náð. Upptaka stöðvaðist til yfirferðar.";
 "The backup excludes live device, session, rendezvous, and offline-authority secrets. Stable-identity recovery requires both separately held files and their different phrases." = "Öryggisafritið inniheldur ekki virk leyndarmál tækis, lotu, rendezvous eða ótengdrar heimildar. Endurheimt varanlegs auðkennis krefst beggja skráa sem eru geymdar sér og ólíkra orðasyrpa þeirra.";
 "The current group roster or identity mapping changed." = "Núverandi hópskrá eða vörpun auðkenna breyttist.";
@@ -898,6 +899,7 @@
 "The group invitation could not be accepted." = "Ekki tókst að samþykkja hópboðið.";
 "The group invitation could not be deleted." = "Ekki tókst að eyða hópboðinu.";
 "The label could not be changed. Nothing else was changed." = "Ekki tókst að breyta merkinu. Engu öðru var breytt.";
+"The offline authority could not be written there. Choose another offline or removable destination." = "Ekki tókst að vista ótengdu heimildina þar. Veldu annan ótengdan eða færanlegan áfangastað.";
 "The operation could not be completed. No state was changed." = "Ekki tókst að ljúka aðgerðinni. Engu ástandi var breytt.";
 "The owner accepted your group administration request." = "Eigandinn samþykkti beiðni þína um hópstjórnun.";
 "The owner rejected your group administration request." = "Eigandinn hafnaði beiðni þinni um hópstjórnun.";
@@ -952,7 +954,6 @@
 "This permanently stops mailbox-only lookup under your stable Alpha address. It does not change identity or delete remote copies." = "Þetta stöðvar varanlega uppflettingu sem fer aðeins um pósthólf undir stöðuga Alpha-vistfanginu þínu. Það breytir ekki auðkenni og eyðir ekki fjarlægum eintökum.";
 "This petname stays sealed on this device. It is never sent to the contact and never identifies a recipient." = "Þetta gælunafn er innsiglað í þessu tæki. Það er aldrei sent tengiliðnum og auðkennir aldrei viðtakanda.";
 "This step is required before messaging." = "Þetta skref er nauðsynlegt áður en skilaboð eru send.";
-"This step is required before messaging. Anyone holding both this encrypted file and its 24 words can take over your stable identity and revoke every current device. Save the file on offline or removable storage, separate from the words." = "Þetta skref er nauðsynlegt áður en skilaboð eru send. Hver sem hefur bæði þessa dulkóðuðu skrá og 24 orðin getur tekið yfir varanlega auðkennið þitt og afturkallað öll núverandi tæki. Vistaðu skrána á ótengdum eða færanlegum miðli, aðskilda frá orðunum.";
 "This step is required before messaging. Anyone holding both this encrypted file and its 24 words can take over your stable identity and revoke every current device. Save the file on offline or removable storage, separate from the words. It is not a routine backup." = "Þetta skref er nauðsynlegt áður en skilaboð eru send. Hver sem hefur bæði þessa dulkóðuðu skrá og 24 orð hennar getur tekið yfir varanlega auðkennið þitt og afturkallað öll núverandi tæki. Vistaðu skrána á ótengdum eða færanlegum miðli, aðskilda frá orðunum. Þetta er ekki venjulegt öryggisafrit.";
 "This stops mailbox-only lookup under the stable Alpha address. It does not change identity or delete remote copies." = "Þetta stöðvar uppflettingu sem notar aðeins pósthólf undir varanlega Alpha-vistfanginu. Það breytir ekki auðkenni og eyðir ekki fjarlægum afritum.";
 "This webview does not support Opus call audio and microphone streaming." = "Þessi vefgluggi styður ekki Opus-símtalshljóð og hljóðnemastreymi.";

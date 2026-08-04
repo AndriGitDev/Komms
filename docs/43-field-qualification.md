@@ -65,6 +65,7 @@ environments and named physical release candidates:
 | Dell Latitude 5440, Ubuntu 24.04 LTS / GNOME Wayland / ext4 | Hardware not present | `blocked` |
 | Google Pixel 8, stock Android 15 | Hardware not present | `blocked` |
 | Samsung Galaxy S24, stock Android 15 | Hardware not present | `blocked` |
+| Samsung Galaxy S23 Ultra (SM-S918B), stock Android 16 / BP4A.251205.006 / 2026-06-05 security patch | Available physical device | `pass` for rows actually exercised with an exact recorded artifact |
 | iPhone 15, current iOS 26.5 security release | Hardware not present | `blocked` |
 | iPhone SE (3rd generation), current iOS 26.5 security release | Hardware not present | `blocked` |
 | `sdk_gphone64_arm64` API 35 / Android 15 emulator | Available | `simulator-pass` |
@@ -224,9 +225,12 @@ alone is useful `observed` evidence, not that stronger pass.
 
 ## 8. Current support boundary
 
-At publication of this matrix there is no retained complete physical Android,
-iOS, Intel macOS, Windows, Linux, distinct-NAT, CGNAT, or Meshtastic run for the
-current source. Those cells remain unsupported and P0-04/P0-09 remain open.
+There is no retained complete physical Android, iOS, macOS, Windows, Linux,
+distinct-NAT, CGNAT, or Meshtastic run for the current source. A partial
+physical Android clean-install result, a physical macOS first-run failure, and
+a corrected same-Wi-Fi Android/macOS messaging result are useful development
+evidence, but no target has every applicable row at `pass`. All platform
+support cells therefore remain unsupported and P0-04/P0-09 remain open.
 The available simulators are intentionally useful for implementation checks,
 but they cannot exercise radio hardware, physical battery/thermal behavior,
 real APNs/FCM delivery, OEM scheduling, cellular handoff, audio routing,
@@ -249,3 +253,27 @@ for the locally available Android API-35 emulator and iOS 26.5 Simulators.
 Every other applicable row is open and every target remains
 `qualified: false`. These records do not establish physical-device, provider,
 accessibility, cellular, real-network, audio, or radio support.
+
+Revision `996a3e4e961ae40589f303149855451430597874` additionally retains:
+
+- a physical Galaxy S23 Ultra Android 16
+  [partial run](../field-qualification/v1/evidence/996a3e/galaxy-s23-ultra-android-16-run.json)
+  whose clean-install/first-run row passed using a debug-signed Google-free
+  APK while its other 18 rows remain open; and
+- a physical MacBook Air M1
+  [failure note](../field-qualification/v1/evidence/996a3e/macbook-air-first-run-failure.txt)
+  for the ad-hoc-signed v0.4.1 DMG. The required offline-authority export did
+  not complete, so no macOS row passed and v0.4.1 was superseded.
+
+Neither record qualifies a production-signed artifact, authenticated upgrade,
+store distribution, complete platform cell, or stable support claim.
+
+Revision `69e22e48b24983fdc3a8dd3acece4e7704fcea2d` retains a
+[physical Android/macOS development result](../field-qualification/v1/evidence/69e22e4/s23-ultra-macos-messaging.txt).
+The corrected native Save flow completed from a new Mac profile, the physical
+S23 Ultra scanned the Mac pairing bundle, the Mac kept the first message behind
+explicit request acceptance, and both directions reached Delivered. The note
+binds the exact debug APK and Mac development executable but is not a canonical
+field-run row because exact step timings were not retained. It used one local
+Wi-Fi network and neither artifact is production-signed, so it does not qualify
+a platform cell, a distinct-NAT path, or a publishable Beta package.

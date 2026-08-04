@@ -197,7 +197,7 @@ legacy bytes.
 
 After the explicit signing, qualification, and publication boundary is
 complete, download the package for your system from the
-[`v0.4.1` release page](https://github.com/AndriGitDev/Komms/releases/tag/v0.4.1):
+[`v0.4.2` release page](https://github.com/AndriGitDev/Komms/releases/tag/v0.4.2):
 
 - Windows 10/11 x64: MSI or NSIS setup EXE;
 - macOS Intel or Apple silicon: universal DMG (or app archive); and
@@ -234,7 +234,7 @@ and skips the rest.
 
 The historical `v0.3.0` prerelease was built in those formats on native Linux,
 macOS, and Windows runners with checksums. It predates the current evidence
-design. A `v0.4.1` tag push creates read-only validation artifacts, public builder records, a
+design. A `v0.4.2` tag push creates read-only validation artifacts, public builder records, a
 second controlled Linux measurement, an SBOM, and hosted attestations; they do
 not create a draft or access a signing credential. Follow the
 [release runbook](../../docs/25-release-runbook.md); a successful build alone
@@ -243,7 +243,7 @@ production-ready.
 
 ## Packaging and signing boundary
 
-The package identifier is `is.andri.komms` and the current version is `0.4.1`,
+The package identifier is `is.andri.komms` and the current version is `0.4.2`,
 aligned with the Rust, Android, and iOS surfaces.
 
 The historical 0.3 Alpha desktop packages are not release-signed or notarized: macOS and

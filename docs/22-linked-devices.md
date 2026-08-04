@@ -49,6 +49,12 @@ then seals it into a caller-selected `.kra` file. The opening phrase is shown
 once and is not stored. The live profile retains only the public account trust
 anchor, one independent device secret, and the accepted manifest.
 
+Desktop genesis obtains the destination through the operating system's Save
+dialog. Cancelling or failing the write leaves the required ceremony open and
+retains the one-time authority for a retry. A destination that does not name a
+file is rejected before atomic replacement, and an existing file is never
+overwritten.
+
 The `.kra` file and its separate 24-word phrase are not an ordinary backup.
 Anyone holding both can take over the stable identity and revoke every current
 device. They should be kept offline and separately from an unlocked device.

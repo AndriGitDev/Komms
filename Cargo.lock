@@ -1682,7 +1682,7 @@ dependencies = [
 
 [[package]]
 name = "kult-conformance"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "argon2",
  "blake3",
@@ -1705,7 +1705,7 @@ dependencies = [
 
 [[package]]
 name = "kult-crypto"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "argon2",
  "blake3",
@@ -1729,7 +1729,7 @@ dependencies = [
 
 [[package]]
 name = "kult-ffi"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "image",
  "kult-crypto",
@@ -1747,7 +1747,7 @@ dependencies = [
 
 [[package]]
 name = "kult-mailbox"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "clap",
  "kult-transport",
@@ -1761,7 +1761,7 @@ dependencies = [
 
 [[package]]
 name = "kult-node"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "async-trait",
  "atomicwrites",
@@ -1789,7 +1789,7 @@ dependencies = [
 
 [[package]]
 name = "kult-ohttp-relay"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "clap",
  "hex",
@@ -1809,7 +1809,7 @@ dependencies = [
 
 [[package]]
 name = "kult-protocol"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "blake3",
  "hmac",
@@ -1825,7 +1825,7 @@ dependencies = [
 
 [[package]]
 name = "kult-reference-service"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "clap",
  "futures",
@@ -1851,7 +1851,7 @@ dependencies = [
 
 [[package]]
 name = "kult-rendezvous"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "kult-crypto",
  "kult-protocol",
@@ -1862,7 +1862,7 @@ dependencies = [
 
 [[package]]
 name = "kult-store"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "atomicwrites",
  "fs2",
@@ -1881,7 +1881,7 @@ dependencies = [
 
 [[package]]
 name = "kult-transport"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "async-trait",
  "atomicwrites",
@@ -1913,7 +1913,7 @@ dependencies = [
 
 [[package]]
 name = "kult-wake"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "async-trait",
  "base64",
@@ -1946,7 +1946,7 @@ dependencies = [
 
 [[package]]
 name = "kultd"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "fs2",
  "kult-crypto",

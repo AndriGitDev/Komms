@@ -883,6 +883,7 @@
 "System, light, or dark theme" = "System, light, or dark theme";
 "Target" = "Target";
 "Teal" = "Teal";
+"That file already exists. Choose a new filename; Komms never replaces an offline authority file." = "That file already exists. Choose a new filename; Komms never replaces an offline authority file.";
 "The 60 second limit was reached. Recording stopped for review." = "The 60 second limit was reached. Recording stopped for review.";
 "The backup excludes live device, session, rendezvous, and offline-authority secrets. Stable-identity recovery requires both separately held files and their different phrases." = "The backup excludes live device, session, rendezvous, and offline-authority secrets. Stable-identity recovery requires both separately held files and their different phrases.";
 "The current group roster or identity mapping changed." = "The current group roster or identity mapping changed.";
@@ -898,6 +899,7 @@
 "The group invitation could not be accepted." = "The group invitation could not be accepted.";
 "The group invitation could not be deleted." = "The group invitation could not be deleted.";
 "The label could not be changed. Nothing else was changed." = "The label could not be changed. Nothing else was changed.";
+"The offline authority could not be written there. Choose another offline or removable destination." = "The offline authority could not be written there. Choose another offline or removable destination.";
 "The operation could not be completed. No state was changed." = "The operation could not be completed. No state was changed.";
 "The owner accepted your group administration request." = "The owner accepted your group administration request.";
 "The owner rejected your group administration request." = "The owner rejected your group administration request.";
@@ -952,7 +954,6 @@
 "This permanently stops mailbox-only lookup under your stable Alpha address. It does not change identity or delete remote copies." = "This permanently stops mailbox-only lookup under your stable Alpha address. It does not change identity or delete remote copies.";
 "This petname stays sealed on this device. It is never sent to the contact and never identifies a recipient." = "This petname stays sealed on this device. It is never sent to the contact and never identifies a recipient.";
 "This step is required before messaging." = "This step is required before messaging.";
-"This step is required before messaging. Anyone holding both this encrypted file and its 24 words can take over your stable identity and revoke every current device. Save the file on offline or removable storage, separate from the words." = "This step is required before messaging. Anyone holding both this encrypted file and its 24 words can take over your stable identity and revoke every current device. Save the file on offline or removable storage, separate from the words.";
 "This step is required before messaging. Anyone holding both this encrypted file and its 24 words can take over your stable identity and revoke every current device. Save the file on offline or removable storage, separate from the words. It is not a routine backup." = "This step is required before messaging. Anyone holding both this encrypted file and its 24 words can take over your stable identity and revoke every current device. Save the file on offline or removable storage, separate from the words. It is not a routine backup.";
 "This stops mailbox-only lookup under the stable Alpha address. It does not change identity or delete remote copies." = "This stops mailbox-only lookup under the stable Alpha address. It does not change identity or delete remote copies.";
 "This webview does not support Opus call audio and microphone streaming." = "This webview does not support Opus call audio and microphone streaming.";

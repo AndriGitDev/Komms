@@ -2711,6 +2711,32 @@ fn backup_and_restore_via_ffi_only() {
 }
 
 #[test]
+fn invalid_recovery_authority_destination_keeps_runtime_retryable() {
+    let directory = tempfile::tempdir().unwrap();
+    let node = KultNode::start(
+        test_config(directory.path(), "authority-path"),
+        Box::new(Recorder::default()),
+    )
+    .unwrap();
+
+    assert!(node
+        .export_account_recovery_authority(String::new())
+        .is_err());
+
+    let destination = directory
+        .path()
+        .join("account-authority.kra")
+        .display()
+        .to_string();
+    let mnemonic = node
+        .export_account_recovery_authority(destination.clone())
+        .unwrap();
+    assert_eq!(mnemonic.split_whitespace().count(), 24);
+    assert!(std::path::Path::new(&destination).is_file());
+    node.stop();
+}
+
+#[test]
 fn restart_persists_history_and_refuses_wrong_passphrase() {
     let dir = tempfile::tempdir().unwrap();
     let a_rec = Recorder::default();

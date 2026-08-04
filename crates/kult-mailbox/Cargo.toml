@@ -19,7 +19,7 @@ clap = { version = "4", default-features = false, features = [
     "usage",
     "error-context",
 ] }
-kult-transport = { version = "0.4.1", path = "../kult-transport" }
+kult-transport = { version = "0.4.2", path = "../kult-transport" }
 libc = "0.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
