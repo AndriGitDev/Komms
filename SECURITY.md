@@ -102,7 +102,7 @@ contracts are [09: Implementation Guide §4b–4c](docs/09-implementation-guide.
 [23: Live Audio Calls](docs/23-live-audio-calls.md). The historical official
 0.3 Alpha packages were published from tag `v0.3.0` and predate the current
 release-evidence design. Komms 0.4 Beta is official only if the exact package is
-published under `v0.4.0` with its completed evidence archive; a branch build or
+published under `v0.4.1` with its completed evidence archive; a branch build or
 retained validation artifact is not a release. Production signing,
 notarization, store distribution, and an update channel remain open until their
 recorded gates close. A third-party binary must not be represented as an

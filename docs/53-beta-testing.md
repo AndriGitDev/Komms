@@ -5,8 +5,8 @@ not a stable release, an independently audited build, or suitable for emergency
 or safety-critical communication. Back up disposable test data before an
 upgrade and retain every recovery file and phrase separately.
 
-The source and application version is `0.4.0`; `beta` is the release channel.
-The only eligible source tag is `v0.4.0`. A branch name, workflow artifact, or
+The source and application version is `0.4.1`; `beta` is the release channel.
+The only eligible source tag is `v0.4.1`. A branch name, workflow artifact, or
 container alias is not a release identity.
 
 ## 1. Obtain an eligible package
@@ -17,15 +17,15 @@ use source builds or explicitly labelled validation artifacts; do not represent
 them as the public Beta.
 
 When the release exists, obtain it from the
-[`v0.4.0` release page](https://github.com/AndriGitDev/Komms/releases/tag/v0.4.0).
+[`v0.4.1` release page](https://github.com/AndriGitDev/Komms/releases/tag/v0.4.1).
 Choose an asset beginning with the matching class:
 
 | Platform | Expected staged asset class | Current boundary |
 |---|---|---|
-| Windows 10/11 x64 | `Komms-0.4.0-windows-x86_64-…` | MSI or NSIS package; publication requires verified Authenticode evidence. |
-| macOS Intel or Apple silicon | `Komms-0.4.0-macos-universal-…` | Universal DMG; publication requires Developer ID and notarization evidence. |
-| Linux x86-64 | `Komms-0.4.0-linux-x86_64-…` | AppImage, DEB, or RPM bound by the release-manifest role. |
-| Android 8.0+ | `Komms-0.4.0-android-play-arm64-…` or `Komms-0.4.0-android-google-free-arm64-…` | Play and Google-free are separate signing roles; the Google-free build contains no FCM SDK. |
+| Windows 10/11 x64 | `Komms-0.4.1-windows-x86_64-…` | MSI or NSIS package; publication requires verified Authenticode evidence. |
+| macOS Intel or Apple silicon | `Komms-0.4.1-macos-universal-…` | Universal DMG; publication requires Developer ID and notarization evidence. |
+| Linux x86-64 | `Komms-0.4.1-linux-x86_64-…` | AppImage, DEB, or RPM bound by the release-manifest role. |
+| Android 8.0+ | `Komms-0.4.1-android-play-arm64-…` or `Komms-0.4.1-android-google-free-arm64-…` | Play and Google-free are separate signing roles; the Google-free build contains no FCM SDK. |
 | iOS 16+ | No public package unless a qualified `ios-arm64` IPA is present | The routine validation workflow builds an unsigned Simulator archive, not an installable IPA. |
 
 If the completed release lacks a platform asset, that platform is not supplied
@@ -34,7 +34,7 @@ binary.
 
 ## 2. Verify the exact release
 
-Download the completed `Komms-0.4.0-release-evidence.tar.gz` archive and the
+Download the completed `Komms-0.4.1-release-evidence.tar.gz` archive and the
 package from the same release. The archive must unpack to one
 `release-evidence/` directory and its `artifacts.json` must list the package's
 exact filename, byte size, and SHA-256 digest. Follow
@@ -44,13 +44,13 @@ verify it.
 On Linux or macOS, calculate the package digest with:
 
 ```sh
-shasum -a 256 Komms-0.4.0-PLATFORM-ASSET
+shasum -a 256 Komms-0.4.1-PLATFORM-ASSET
 ```
 
 On Windows PowerShell:
 
 ```powershell
-Get-FileHash .\Komms-0.4.0-PLATFORM-ASSET -Algorithm SHA256
+Get-FileHash .\Komms-0.4.1-PLATFORM-ASSET -Algorithm SHA256
 ```
 
 The value must equal the `sha256` entry for that exact path. Also inspect
@@ -133,7 +133,7 @@ interoperability, or independent security-review evidence.
 ## 6. Optional self-hosting
 
 The prepared immutable node image is
-`ghcr.io/andrigitdev/komms-kultd:0.4.0`; `0.4-beta` and `beta` are moving Beta
+`ghcr.io/andrigitdev/komms-kultd:0.4.1`; `0.4-beta` and `beta` are moving Beta
 aliases only when the separately authorized container publication has occurred.
 There is no `latest` alias. Dedicated reference, mailbox, wake, and OHTTP roles
 have separate images and runbooks and must not be collapsed into one

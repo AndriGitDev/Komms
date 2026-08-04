@@ -21,7 +21,7 @@ Update every version surface:
 Validate the intended tag:
 
 ```sh
-python3 scripts/check-release-version.py v0.4.0
+python3 scripts/check-release-version.py v0.4.1
 ```
 
 Run the complete local matrix. Require every platform SDK promised by this

@@ -24,7 +24,7 @@ exclude = [
 ]
 
 [workspace.package]
-version = "0.4.0"
+version = "0.4.1"
 edition = "2021"
 # 1.88 required by the locked time-macros; the meshtastic client crate (M4
 # mesh carrier) needs 1.85, libp2p ≥ 0.55 needs 1.83 (older libp2p pins the

@@ -271,7 +271,7 @@ the cargo workspace, mirroring the other shells' posture.
 
 The routine Komms 0.4 Beta validation path produces an unsigned iOS Simulator
 archive, not an installable IPA. No TestFlight or App Store release exists
-unless the `v0.4.0` release contains a separately signed and qualified
+unless the `v0.4.1` release contains a separately signed and qualified
 `ios-arm64` asset. Testers should follow the exact availability and evidence
 boundary in the [Beta testing guide](../../docs/53-beta-testing.md).
 
@@ -310,7 +310,7 @@ rows and evidence form are in
 ## Version and distribution boundary
 
 The generated app targets iOS 16 or newer, uses bundle identifier
-`is.andri.komms`, and reports short version `0.4.0` / build `4`, aligned with the
+`is.andri.komms`, and reports short version `0.4.1` / build `5`, aligned with the
 Rust, desktop, and Android surfaces. The documented gate is an unsigned
 Simulator build. Tagged validation runs retain that exact artifact, its builder
 record, SBOM, checksums, and hosted attestation, but never treat it as an IPA or

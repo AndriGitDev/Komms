@@ -8,8 +8,8 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-kult-crypto = { version = "0.4.0", path = "../kult-crypto" }
-kult-protocol = { version = "0.4.0", path = "../kult-protocol" }
+kult-crypto = { version = "0.4.1", path = "../kult-crypto" }
+kult-protocol = { version = "0.4.1", path = "../kult-protocol" }
 rand_core = { version = "0.6", features = ["getrandom"] }
 zeroize = "1"
 

@@ -357,8 +357,8 @@ held in zeroizing memory. The locked workspaces declare and compile-test MSRV
 1.88. Per-push CI now includes that MSRV gate, a real Android debug APK, and the
 currently authorized iOS Simulator build; a weekly workflow rechecks advisories
 for both Cargo workspaces, the core on macOS, and an informational coverage
-snapshot. All build surfaces identify as `0.4.0`, with Android and iOS build
-number `4`. The Komms 0.4 Beta candidate retains a required human visual gate
+snapshot. All build surfaces identify as `0.4.1`, with Android and iOS build
+number `5`. The Komms 0.4 Beta candidate retains a required human visual gate
 for Android, iOS, macOS, Windows, and Linux alongside native desktop packages,
 both Android distribution flavors, the unsigned iOS Simulator archive, and the
 revision-bound evidence bundle.

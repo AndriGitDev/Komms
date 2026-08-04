@@ -28,8 +28,8 @@ merely polishing them:
 - the stable-v1 protocol specification, language-neutral fixtures,
   conformance runner, release evidence controls, operator runbooks,
   localization, and accessibility checks are now part of the source tree; and
-- every application and internal crate reports version `0.4.0`, with Android
-  and iOS build number `4`.
+- every application and internal crate reports version `0.4.1`, with Android
+  and iOS build number `5`.
 
 The candidate pipeline builds native desktop packages, both Android flavors,
 an unsigned iOS Simulator archive, the headless node, and dedicated reference,
