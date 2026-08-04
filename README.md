@@ -37,27 +37,34 @@ words, with no cryptography knowledge required.
 
 <p align="center"><em>The Komms 0.4 Beta interface. Android, iOS, and desktop share the same brand and conversation-first information hierarchy.</em></p>
 
-## Test the 0.4 Beta candidate
+## Download the 0.4.2 Beta test release
 
-The source and application version is `0.4.2`; Beta is the release channel.
-After the explicit signing, qualification, and publication boundary is complete,
-the exact package set will appear on the
+Komms 0.4.2 is publicly available as an explicitly **unsigned,
+pre-production test release** on the
 [`v0.4.2` release page](https://github.com/AndriGitDev/Komms/releases/tag/v0.4.2).
-Until then, use a source build or an explicitly labelled validation artifact and
-do not represent it as the public Beta.
+It is bound to tag `v0.4.2` and commit
+`5a09190cfef9cfef92703672517bc008b6e8cc1f`. The hosted validation run passed,
+but the release is not production-signed, independently reproduced, qualified
+for stable, or suitable for emergency, safety-critical, or production
+communication.
 
-| System | Candidate package class |
+| System | Public 0.4.2 test asset |
 |---|---|
-| Windows 10/11 x64 | `windows-x86_64` MSI or NSIS package |
-| macOS Intel or Apple silicon | `macos-universal` DMG |
-| Linux x86-64 | `linux-x86_64` AppImage, DEB, or RPM |
-| Android 8.0+ | separately signed Play or Google-free package |
+| Windows 10/11 x64 | unsigned MSI or setup EXE |
+| macOS Intel or Apple silicon | unsigned and unnotarized universal DMG |
+| Linux x86-64 | unsigned AppImage, DEB, or RPM |
+| Android 8.0+ | Google-free APK signed with a test/debug certificate |
+| iOS | unsigned Simulator ZIP only; no physical-device IPA |
 
-Download the completed release-evidence archive too and verify that its exact
-artifact digest, signing, qualification, and residual-risk records match the
-package. The [Beta testing guide](docs/53-beta-testing.md) has the migration,
-verification, installation, acceptance, and issue-reporting steps. iOS remains
-source/Simulator-only unless a separately qualified IPA is present.
+Verify every download against `UNSIGNED-TEST-SHA256SUMS`. The attached
+validation archive and `VALIDATION-SHA256SUMS` preserve the exact hosted build
+record, including `production_signed: false`, `qualified_for_stable: false`,
+and `independently_reproduced: false`; they are not an offline production
+signature. The [Beta testing guide](docs/53-beta-testing.md) has the exact asset
+names, Android certificate fingerprint, migration, installation, acceptance,
+and issue-reporting steps. The
+[0.4.2 release record](docs/54-v0.4.2-unsigned-test-release.md) documents the
+one-version exception without weakening the signing policy for later releases.
 
 ## What changed in 0.4 Beta
 
@@ -92,9 +99,10 @@ The complete compatibility-oriented record is in the
 
 ## Current implementation status
 
-Komms 0.4 Beta is a prerelease candidate, not an independently audited or stable
-release. The repository contains a broad implemented core and three application
-shells, with substantial automated evidence. Simulator builds and
+Komms 0.4.2 Beta is a public unsigned test prerelease, not an independently
+audited, production-signed, or stable release. The repository contains a broad
+implemented core and three application shells, with substantial automated
+evidence. Simulator builds and
 self-round-trip tests are not physical-device qualification or independent
 interoperability.
 
@@ -104,10 +112,10 @@ interoperability.
 | **Internet, LAN, and delayed delivery** | libp2p QUIC/TCP, Kademlia discovery, NAT traversal, mDNS, and durable leased mailbox v2 are implemented. Mailbox deposits commit before acceptance; exact relay rows remain until endpoint staging and acknowledgement. A dedicated `/komms/mailbox/2`-only artifact, hardened image, restart tests, failpoints, overload/multi-operator tests, and aggregate-only health are implemented locally. Fresh installs still lack a qualified distinct-NAT golden path: bootstrap/mailbox defaults require deliberate configuration, and no public mailbox operator, observed upgrade/backup/cost record, or real-network matrix is qualified. |
 | **Off-grid delivery** | Sneakernet and the Meshtastic carrier, duty-cycle controls, retransmission, and internet↔mesh bridge paths are implemented with automated evidence. The physical two-radio bench is not yet field-qualified. |
 | **Applications and messaging** | Desktop, Android, and iOS shells expose pairwise/group text and a broad Beta feature set, including attachments, local organization, linked devices, message requests, ephemeral content, polls, roles, and direct audio-call paths. CI and simulator evidence exist; hands-on device, background lifecycle, NAT, accessibility, and independent qualification remain. |
-| **Distribution** | Version-aligned desktop, Android, and iOS Simulator validation builds plus bounded revision-bound evidence are implemented. Public Beta publication still requires the exact signing/qualification records and explicit authorization. Production credentials, signed platform artifacts, authenticated updates, external reproduction, store distribution, upgrade/rollback qualification, and stable support remain open. |
+| **Distribution** | Version-aligned desktop, Android, and iOS Simulator validation builds plus bounded revision-bound evidence are implemented. The exact `v0.4.2` validation set was published as an explicitly unsigned test-only Beta exception. Production credentials, signed platform artifacts, authenticated updates, external reproduction, store distribution, upgrade/rollback qualification, and stable support remain open; the public test release closes none of those gates. |
 | **Optional mobile convenience** | ADR-0018 rotating post-pairing rendezvous and ADR-0019 content-free native wake are implemented locally across core, services, and clients. Standard, Private, and Sovereign share one mode contract; Private currently uses loopback Tor. A dedicated fixed-mapping RFC 9458 relay artifact is implemented, but no compatible gateway/client path, deployment, distinct administrative domains, or non-collusion evidence exists, so OHTTP is not selectable or qualified. The Play flavor contains FCM support, the Google-free flavor advertises none, and Apple uses APNs directly. No reference/wake/OHTTP service or production provider credential is deployed, and no physical background/force-quit/Doze row is qualified. None of these optional services is required by the Sovereign core. |
 | **Trust and governance** | The project is founder-directed by design during construction and stabilization under a nonprofit public-benefit mission. The founder retains product and release authority. Independent security and interoperability evidence is still missing. The [stabilization program](docs/29-stabilization-program.md) defines the evidence required before stable claims. |
-| **Stable-beta readiness** | A consent, aggregate-only pilot contract and fail-closed P0/candidate decision record are implemented. No pilot has run, all P0 gates remain open, production signing is unenrolled, and no stable-beta candidate, publication, or stable claim is authorized. |
+| **Stable-beta readiness** | A consent, aggregate-only pilot contract and fail-closed P0/candidate decision record are implemented. No pilot has run, all P0 gates remain open, production signing is unenrolled, and no stable-beta or stable claim is authorized. The 0.4.2 unsigned test publication is not stable-beta evidence. |
 
 Older `KKR1` through legacy copied-root `KKR7` backups remain explicit
 migration/reset inputs: they never resume the former account, and the guided
@@ -228,6 +236,7 @@ status of any particular proposal.
 | [51: Stable-Beta Pilot and Release Decision](docs/51-stable-beta-pilot-and-release-decision.md) | Consent boundary, aggregate pilot metrics, final matrix, P0 audit, support, rollback, and founder decision |
 | [52: Oblivious HTTP Relay Operations](docs/52-ohttp-relay-operations.md) | Fixed-mapping RFC 9458 relay, metadata stripping, hardening, rotation, and non-collusion boundary |
 | [53: Beta Testing](docs/53-beta-testing.md) | 0.4 migration, package/evidence verification, acceptance walk-through, and honest test reporting |
+| [54: 0.4.2 Unsigned Test Release](docs/54-v0.4.2-unsigned-test-release.md) | Immutable release identity, validation result, public asset boundary, Android test certificate, exception decision, and gates that remain open |
 | [ADRs](docs/adr/README.md) | Decision index, status, and the alternatives each decision beat |
 
 ## Stack
@@ -285,12 +294,13 @@ division between local checks, per-push CI, weekly advisory evidence, physical
 qualification, and signing is documented in the
 [local release gate](docs/24-local-release-gate.md).
 
-The **Komms 0.4 Beta** candidate uses version `0.4.2` and source tag `v0.4.2`.
-Use the [Beta testing guide](docs/53-beta-testing.md) for the exact
-migration and evidence boundary. Container workflows prepare immutable `0.4.2`
-and moving `0.4-beta`/`beta` tags, but publication remains a separate authorized
-operation. See the [release runbook](docs/25-release-runbook.md) for package,
-signing, checksum, qualification, and publication controls, or the
+The public **Komms 0.4.2 Beta** is the unsigned test-only prerelease at source
+tag `v0.4.2`. Use the [Beta testing guide](docs/53-beta-testing.md) for the exact
+migration, package, and evidence boundary. Container publication and moving
+`0.4-beta`/`beta` tags remain separate authorized operations and were not part
+of the desktop/mobile release. See the
+[release runbook](docs/25-release-runbook.md) for the unchanged production
+signing, qualification, and publication controls, or the
 [self-hosting guide](docs/26-self-hosting.md) to run `kultd` from source.
 
 ## Contributing

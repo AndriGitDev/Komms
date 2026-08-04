@@ -1,6 +1,6 @@
 # Komms stabilization program
 
-**Status:** active  
+**Status:** active<br>
 **Scope:** Beta to a trustworthy stable release and protocol wire v1
 **Accountable owner:** lead maintainer until ownership is delegated in
 [MAINTAINERS.md](../MAINTAINERS.md)

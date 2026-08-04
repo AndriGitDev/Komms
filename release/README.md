@@ -4,6 +4,10 @@ This directory contains source-controlled policy and empty qualification
 contracts. It contains no signing private key, token, password, provisioning
 profile, store credential, or production signature.
 
+The public `v0.4.2` Beta was an explicitly unsigned, pre-production test-only
+exception and did not fill or relax these contracts. Its immutable publication
+record is [docs/54-v0.4.2-unsigned-test-release.md](../docs/54-v0.4.2-unsigned-test-release.md).
+
 - `policy-v1.json` defines validation, Alpha, Beta, and stable release channels,
   separately scoped signing roles,
   retention, artifact classes, update paths, and the records required before a

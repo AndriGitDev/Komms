@@ -101,12 +101,16 @@ contracts are [09: Implementation Guide §4b–4c](docs/09-implementation-guide.
 [22: Linked Devices](docs/22-linked-devices.md), and
 [23: Live Audio Calls](docs/23-live-audio-calls.md). The historical official
 0.3 Alpha packages were published from tag `v0.3.0` and predate the current
-release-evidence design. Komms 0.4 Beta is official only if the exact package is
-published under `v0.4.2` with its completed evidence archive; a branch build or
-retained validation artifact is not a release. Production signing,
-notarization, store distribution, and an update channel remain open until their
-recorded gates close. A third-party binary must not be represented as an
-official Komms release.
+release-evidence design. Komms 0.4.2 is an official project test release only
+when the exact package comes from the
+[`v0.4.2` release](https://github.com/AndriGitDev/Komms/releases/tag/v0.4.2)
+and matches `UNSIGNED-TEST-SHA256SUMS`. That release is explicitly unsigned and
+pre-production; its attached archive is validation evidence, not an offline
+release signature or stable qualification. A branch build or other retained
+validation artifact is not the published test release. Production signing,
+notarization, store distribution, authenticated updates, and stable support
+remain open until their recorded gates close. A third-party binary must not be
+represented as an official Komms release.
 
 Optional-service and operator reports are in scope: discovery-capability or
 rendezvous-slot leakage, DHT poisoning/eclipsing/suppression, signed-directory

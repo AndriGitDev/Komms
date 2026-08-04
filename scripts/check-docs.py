@@ -30,6 +30,7 @@ PUBLIC_COPY = [
     ROOT / "docs/50-mailbox-service-operations.md",
     ROOT / "docs/52-ohttp-relay-operations.md",
     ROOT / "docs/53-beta-testing.md",
+    ROOT / "docs/54-v0.4.2-unsigned-test-release.md",
     ROOT / "apps/desktop/README.md",
     ROOT / "apps/android/README.md",
     ROOT / "apps/ios/README.md",
