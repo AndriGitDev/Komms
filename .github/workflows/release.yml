@@ -368,11 +368,13 @@ jobs:
           gradle-version: "8.14.3"
       - name: Install pinned Android platform and NDK
         run: |
-          sdkmanager --install \
+          android_sdk="${ANDROID_SDK_ROOT:-${ANDROID_HOME:?}}"
+          sdkmanager_bin="$android_sdk/cmdline-tools/latest/bin/sdkmanager"
+          test -x "$sdkmanager_bin"
+          "$sdkmanager_bin" --install \
             "platforms;android-35" \
             "build-tools;35.0.0" \
             "ndk;27.2.12479018"
-          android_sdk="${ANDROID_SDK_ROOT:-${ANDROID_HOME:?}}"
           echo "ANDROID_NDK_HOME=$android_sdk/ndk/27.2.12479018" \
             >> "$GITHUB_ENV"
       - name: Build, test, lint, and inspect both flavors
