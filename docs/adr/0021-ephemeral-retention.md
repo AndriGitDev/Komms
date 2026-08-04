@@ -109,7 +109,7 @@ resurrects an erasure promise.
 
 Each linked installation applies the authenticated deadline and first-open rule
 to its own local copy. First open is per installation, not a synchronized claim
-that every device or recipient deleted. Implemented Alpha C2 linked-device sync carries
+that every device or recipient deleted. Implemented Beta C2 linked-device sync carries
 tombstones but not active ephemeral content; an active copy may disappear earlier after receiving one, never
 later or by resurrecting plaintext.
 

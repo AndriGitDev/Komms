@@ -22,6 +22,14 @@
         "release-manifest"
       ]
     },
+    "beta": {
+      "publication_allowed": true,
+      "stable_claim_allowed": false,
+      "require_artifact_signing_roles": true,
+      "required_signing_roles": [
+        "release-manifest"
+      ]
+    },
     "stable": {
       "publication_allowed": true,
       "stable_claim_allowed": true,

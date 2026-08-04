@@ -5,7 +5,7 @@ change an account identity, safety number, message format, ratchet, group
 trust, local history, pending work, or delivery meaning. It changes only which
 optional routes may be used and what discovery data may be published.
 
-This document describes the implemented Alpha contract. It is not evidence of
+This document describes the implemented Beta contract. It is not evidence of
 a deployed default provider, non-colluding Private ingress, distinct-NAT
 qualification, or physical-device behavior.
 

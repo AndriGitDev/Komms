@@ -1,6 +1,6 @@
 # 23: Live Audio Calls
 
-Komms ships an alpha live-audio path for already paired contacts. Calls are
+Komms ships an Beta live-audio path for already paired contacts. Calls are
 peer-to-peer, authenticated by the same identities as messages, and available
 only when both endpoints have a fresh direct QUIC route. There is no Komms call
 server, signaling service, SFU, STUN/TURN service, or reusable call link.
@@ -67,7 +67,7 @@ in 20 ms frames at 24 kbit/s through native audio APIs. An Opus packet is at
 most 1,275 bytes. The core bounds the unsent queue to eight frames, discards a
 not-yet-written packet after 200 ms, starts playout after three authenticated
 frames, and caps jitter storage at six frames. Reliable QUIC can still suffer
-head-of-line delay; the alpha does not hide that limitation.
+head-of-line delay; the Beta does not hide that limitation.
 
 ## 4. Platform behavior
 
@@ -121,6 +121,6 @@ These remain release qualification rather than implementation claims:
   debug-APK assembly and unsigned iOS Simulator builds are already automated
   compilation evidence).
 
-Failure of a qualification gate keeps calls alpha or disabled for that platform;
+Failure of a qualification gate keeps calls Beta or disabled for that platform;
 it never widens the carrier rule or invents a fallback through relay, TCP, radio,
 or a central service.

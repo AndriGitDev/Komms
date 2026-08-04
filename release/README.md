@@ -4,7 +4,8 @@ This directory contains source-controlled policy and empty qualification
 contracts. It contains no signing private key, token, password, provisioning
 profile, store credential, or production signature.
 
-- `policy-v1.json` defines release channels, separately scoped signing roles,
+- `policy-v1.json` defines validation, Alpha, Beta, and stable release channels,
+  separately scoped signing roles,
   retention, artifact classes, update paths, and the records required before a
   stable claim.
 - `qualification-matrix-v1.json` defines the install, upgrade, rollback,

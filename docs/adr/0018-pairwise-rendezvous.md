@@ -1,6 +1,6 @@
 # ADR-0018: Rotating pairwise rendezvous for post-pairing reachability
 
-- **Status**: Accepted; implemented for Alpha
+- **Status**: Accepted; implemented for Beta
 - **Date**: 2026-07-15
 
 ## Context
@@ -281,7 +281,7 @@ ADR-0017.
 - Fixed 4 KiB records trade bandwidth for bounded parsing and response-shape
   privacy. This path is internet-only and never rides an airtime transport.
 
-## Implemented Alpha profile
+## Implemented Beta profile
 
 The verified PQXDH transcript now derives the exporter exactly once beside the
 mailbox key. Ratchet serialization deliberately omits it. `kult-store` keeps
@@ -352,7 +352,7 @@ The in-tree known-answer test fixes these inputs:
 | Nonce | `0b4b6e38ee282f373c44950b4f4942f2c41253afab011f1b` |
 | SHA-256 of the 4,136-byte seal | `43424dfcf7f0cf4c190cc88f52e1feff4139c1f252838198415f137082b2723e` |
 
-Alpha implementation and local tests are not deployed-service, independent
+Beta implementation and local tests are not deployed-service, independent
 interoperability, independent security-review, hostile real-network, or
 physical-device evidence. Pinned direct TLS and loopback-Tor clients now follow
 the complete Standard/Private/Sovereign mode contract, but no qualified Tor or

@@ -64,11 +64,11 @@ receipt, the queue copy is removed and retained history becomes
 | Link protocols | QUIC (primary), TCP+Noise+Yamux (fallback) |
 | Discovery | Kademlia DHT; bootstrap from a *user-editable* list of community nodes + manual peer addresses + rendezvous points shared out-of-band (QR) |
 | NAT traversal | AutoNAT + Circuit Relay v2 + DCUtR hole punching |
-| Prekey bundles | Current Alpha: fixed 1,179,648-byte encrypted [ADR-0031](adr/0031-capability-scoped-dht-discovery.md) records under weekly Connect-capability locators. Each record contains a complete ADR-0026 proof, at most two device bundles, at most three introduction routes, and a complete active-device signature. Standard and Private records are mailbox-only. |
+| Prekey bundles | Current Beta: fixed 1,179,648-byte encrypted [ADR-0031](adr/0031-capability-scoped-dht-discovery.md) records under weekly Connect-capability locators. Each record contains a complete ADR-0026 proof, at most two device bundles, at most three introduction routes, and a complete active-device signature. Standard and Private records are mailbox-only. |
 | Mailbox relays | Ordinary nodes advertising a relay protocol; recipients pick relays and list them (as hints) in their bundle |
 
 Bootstrap deserves emphasis: a fresh internet-only install still needs one
-reachable bootstrap peer or explicit hint to join the DHT. The current Alpha
+reachable bootstrap peer or explicit hint to join the DHT. The current Beta
 ships with no default bootstrap peers, so internet discovery requires deliberate
 configuration. Any future default nodes would be censorship points for the
 first attempt and must therefore remain user-editable and replaceable rather
@@ -120,7 +120,7 @@ A timeout, dial error, malformed response, or response-write failure is neither
 answer and never becomes an acknowledgement. The sender keeps the durable
 envelope retryable and may try another supported path. Version 2 deliberately
 does not negotiate the older `/komms/envelope/1` unit response, which could not
-distinguish retention from refusal; Alpha peers must be upgraded together.
+distinguish retention from refusal; Beta peers must be upgraded together.
 Embeddings without a durable receive boundary may still read the copy through
 the ordinary transport API, but that path returns `refused`; only the staged
 receive/settlement API can claim custody.
@@ -189,7 +189,7 @@ is milestone M6: tracked, not hand-waved.
 ### 2.1 Optional post-pairing reachability and native wake
 
 The Hybrid Infrastructure Layer is a reversible convenience adjunct, not
-another message transport. The ADR-0018 Alpha implementation lets established
+another message transport. The ADR-0018 Beta implementation lets established
 peers store fixed-size encrypted `DeliveryHint` records under rotating
 provider-, direction-, and epoch-separated pairwise slots. Capability-scoped
 DHT records remain first-contact discovery, and recipient-selected mailbox
@@ -204,7 +204,7 @@ after a direct peer or mailbox acknowledged the sealed envelope. It carries no
 envelope or conversation data, and provider acknowledgement never changes
 delivery state. Sovereign mode registers with neither service. Private mode
 uses Tor or a non-colluding Oblivious HTTP ingress; Standard mode uses direct
-HTTPS. The Alpha gateway/core implementation has fixed codecs, pinned clients,
+HTTPS. The Beta gateway/core implementation has fixed codecs, pinned clients,
 sealed per-session capabilities, durable identity-free revoke retries, bounded
 generic collection, a dedicated service binary, and hardened deployment
 artifacts. A separate fixed-mapping RFC 9458 relay artifact strips client

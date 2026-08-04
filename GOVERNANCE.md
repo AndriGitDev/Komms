@@ -60,14 +60,14 @@ criteria counts as independent review.
 ## Review and release
 
 Every accepted change requires accountable approval by an owner for the affected
-area. During the single-maintainer Alpha the founder may author and approve a
+area. During the single-maintainer Beta the founder may author and approve a
 change, with that lack of independence disclosed. Changes to cryptography,
 authentication, identity, wire formats, storage migrations, release signing, or
 optional-service trust boundaries require two qualified reviewers, including
 one who did not author the change, before a stable release.
 
 While those reviewers do not exist, the project may continue clearly labelled
-Alpha research and testing, but it must not describe the affected work as
+Beta research and testing, but it must not describe the affected work as
 independently reviewed, audited, or stable. CODEOWNERS routes review requests;
 it is not evidence that independent review occurred.
 

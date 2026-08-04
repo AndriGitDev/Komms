@@ -1,4 +1,4 @@
-# Komms iOS (alpha)
+# Komms iOS (Beta)
 
 Application **A2** ([03: Architecture](../../docs/03-architecture.md)): a
 Swift shell over `kult-ffi`'s embedded node runtime, the same library
@@ -51,7 +51,7 @@ are the node's own, verbatim.
   responsive; after 30 days without a receipt, history says
   `delivery failed after 30 days`. Airtime-budgeted mesh links also expose the
   "held, will send when a faster link exists" verdict.
-- **Make alpha live-audio calls** to paired contacts only while the shared core
+- **Make Beta live-audio calls** to paired contacts only while the shared core
   observes a fresh direct QUIC route. AVFoundation voice processing and the
   native Opus codec use 48 kHz mono, 20 ms frames at 24 kbit/s. The VoiceOver/
   Dynamic-Type call bar provides ring/answer/decline/cancel/hangup state and an
@@ -267,13 +267,13 @@ Generated bindings are never committed; `scripts/generate-bindings.sh`
 produces them fresh from the crate. The package is deliberately outside
 the cargo workspace, mirroring the other shells' posture.
 
-## Alpha availability
+## Beta availability
 
-Komms 0.3 Alpha does not include a downloadable iOS package. The iOS shell is
-available for source builds and the Xcode Simulator only; there is no TestFlight
-or App Store release. Testers who need an installable package should use the
-published desktop or Android artifacts in the
-[Alpha testing guide](../../docs/27-alpha-testing.md).
+The routine Komms 0.4 Beta validation path produces an unsigned iOS Simulator
+archive, not an installable IPA. No TestFlight or App Store release exists
+unless the `v0.4.0` release contains a separately signed and qualified
+`ios-arm64` asset. Testers should follow the exact availability and evidence
+boundary in the [Beta testing guide](../../docs/53-beta-testing.md).
 
 ## Build & test
 
@@ -310,7 +310,7 @@ rows and evidence form are in
 ## Version and distribution boundary
 
 The generated app targets iOS 16 or newer, uses bundle identifier
-`is.andri.komms`, and reports short version `0.3.0` / build `3`, aligned with the
+`is.andri.komms`, and reports short version `0.4.0` / build `4`, aligned with the
 Rust, desktop, and Android surfaces. The documented gate is an unsigned
 Simulator build. Tagged validation runs retain that exact artifact, its builder
 record, SBOM, checksums, and hosted attestation, but never treat it as an IPA or

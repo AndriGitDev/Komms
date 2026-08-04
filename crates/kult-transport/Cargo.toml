@@ -15,8 +15,8 @@ meshtastic = ["dep:meshtastic"]
 test-failpoints = []
 
 [dependencies]
-kult-crypto = { version = "0.3.0", path = "../kult-crypto" }
-kult-protocol = { version = "0.3.0", path = "../kult-protocol" }
+kult-crypto = { version = "0.4.0", path = "../kult-crypto" }
+kult-protocol = { version = "0.4.0", path = "../kult-protocol" }
 async-trait = "0.1"
 atomicwrites = "0.4.4"
 cbor4ii = { version = "0.3", features = ["serde1", "use_std"] }
@@ -48,7 +48,7 @@ libp2p = { version = "0.56", features = [
     "ed25519",
 ] }
 # Generic negotiated substreams for the direct-QUIC-only call media protocol.
-# Pinned to the alpha measured and accepted in ADR-0013; the production
+# Pinned to the Beta profile measured and accepted in ADR-0013; the production
 # wrapper below adds path gating because this crate otherwise chooses an
 # arbitrary live connection to the peer.
 libp2p-stream = "0.4.0-alpha"

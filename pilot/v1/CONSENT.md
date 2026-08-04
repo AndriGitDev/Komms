@@ -1,8 +1,8 @@
-# Komms stable-v1 Alpha pilot consent
+# Komms stable-v1 Beta pilot consent
 
 **Consent version:** `stable-v1-pilot-consent/v1`
 
-Komms is Alpha software. It may fail, lose availability, delay messages, or
+Komms is Beta software. It may fail, lose availability, delay messages, or
 require recovery. Do not use this pilot for emergency, safety-critical,
 irreplaceable, or legally required communication.
 
@@ -44,7 +44,7 @@ attachment.
 
 The bounded pilot may ask you to:
 
-1. verify, install, and start the exact Alpha artifact;
+1. verify, install, and start the exact Beta artifact;
 2. create a throwaway pilot identity and keep its recovery material safe;
 3. establish contact with another consenting participant;
 4. exchange non-sensitive test messages;
@@ -72,4 +72,4 @@ The one-time code is not reused as a Komms identity, analytics identifier,
 support identifier, or future-pilot identifier.
 
 By affirming the separate consent record, you confirm that you understand the
-Alpha limitations, data boundary, voluntary nature, and withdrawal procedure.
+Beta limitations, data boundary, voluntary nature, and withdrawal procedure.

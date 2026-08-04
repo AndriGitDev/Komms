@@ -1405,9 +1405,9 @@ def verify_bundle(args: argparse.Namespace) -> None:
     tag = validate_tag(str(manifest.get("tag", "")), version)
     validate_public_record(manifest)
     channel = manifest.get("channel")
-    if channel not in {"validation", "alpha", "stable"}:
+    if channel not in {"validation", "alpha", "beta", "stable"}:
         raise EvidenceError("release evidence has an invalid channel")
-    if channel in {"alpha", "stable"}:
+    if channel in {"alpha", "beta", "stable"}:
         promotion = manifest.get("promotion")
         if (
             not isinstance(promotion, dict)
@@ -1538,7 +1538,7 @@ def verify_bundle(args: argparse.Namespace) -> None:
     android_license_path = bundle / "android-licenses.json"
     dependency_policy_path = bundle / "dependency-policy.json"
     sbom_path = bundle / "komms.cdx.json"
-    publishable = channel in {"alpha", "stable"}
+    publishable = channel in {"alpha", "beta", "stable"}
     if android_license_path.is_file():
         validate_android_license_record(repository, revision, android_license_path)
     if dependency_policy_path.is_file():
@@ -1580,7 +1580,7 @@ def verify_bundle(args: argparse.Namespace) -> None:
             )
     signing_path = bundle / "signing.json"
     qualification_path = bundle / "qualification.json"
-    if channel in {"alpha", "stable"} and (
+    if channel in {"alpha", "beta", "stable"} and (
         not signing_path.is_file() or not qualification_path.is_file()
     ):
         raise EvidenceError("publishable evidence lacks signing or qualification records")
@@ -1947,7 +1947,7 @@ def pack_bundle(args: argparse.Namespace) -> None:
     manifest = load_json(bundle / "release-evidence.json")
     if (
         isinstance(manifest, dict)
-        and manifest.get("channel") in {"alpha", "stable"}
+        and manifest.get("channel") in {"alpha", "beta", "stable"}
         and (
             not (bundle / "SHA256SUMS.sig").is_file()
             or (bundle / "SHA256SUMS.sig").is_symlink()
@@ -2434,11 +2434,12 @@ def parser() -> argparse.ArgumentParser:
     pack.set_defaults(run=pack_bundle)
 
     promote = commands.add_parser(
-        "promote", help="copy a validation bundle into a signable alpha or stable bundle"
+        "promote",
+        help="copy a validation bundle into a signable prerelease or stable bundle",
     )
     promote.add_argument("--bundle-dir", required=True)
     promote.add_argument("--output-dir", required=True)
-    promote.add_argument("--channel", choices=("alpha", "stable"), required=True)
+    promote.add_argument("--channel", choices=("alpha", "beta", "stable"), required=True)
     promote.add_argument("--repository", default=".")
     promote.add_argument("--policy", default="release/policy-v1.json")
     promote.add_argument("--matrix", default="release/qualification-matrix-v1.json")

@@ -118,7 +118,7 @@ compatibility path. See [15: Private Contact Names](15-contact-petnames.md).
 - **Revocation**: a signed revocation statement propagates through sessions and DHT;
   contacts mark the identity dead and refuse new sessions to it.
 
-## 6. Linked devices (C2, revocable-device Alpha)
+## 6. Linked devices (C2, revocable-device Beta)
 
 Each physical device holds its own certified device keypair. The stable account
 root signs only genesis and an explicit offline recovery epoch. Routine
@@ -152,7 +152,7 @@ and the offline-root authority contract in
 ## 7. First-contact abuse controls
 
 [ADR-0030](adr/0030-first-contact-admission.md) is accepted and implemented for
-Alpha:
+Beta:
 
 - a signed, expiring recipient policy advertises a bounded client puzzle for
   unsolicited public-address contact;

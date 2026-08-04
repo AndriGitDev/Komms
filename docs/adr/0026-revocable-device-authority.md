@@ -1,6 +1,6 @@
 # ADR-0026: Offline account authority and quorum-authorized devices
 
-- **Status**: Accepted; implemented for Alpha
+- **Status**: Accepted; implemented for Beta
 - **Date**: 2026-07-26
 - **Supersedes on acceptance**: the device-authority and recovery rules in
   [ADR-0024](0024-account-authorized-linked-devices.md); its per-device
@@ -19,7 +19,7 @@ remain possible without a project account service. At the same time, a
 single compromised secondary device must not be able to add a replacement
 credential, remove honest devices, or override a later recovery.
 
-This is a pre-stable alpha protocol. Preserving an insecure authority layout
+This is a pre-stable Beta protocol. Preserving an insecure authority layout
 for silent compatibility is less important than establishing a recoverable
 model before people rely on it.
 
@@ -156,14 +156,14 @@ not for choosing which attacker-controlled device set owns an identity.
   backup, and recovery-conflict tests before ADR-0024's permanent-revocation
   claim can return.
 
-## Implemented Alpha profile
+## Implemented Beta profile
 
 The accepted wire profile is `KDA2`. A manifest contains at most 64 transitions,
 at most 64 lifetime certificate/tombstone entries, at most eight active
 devices, and at most 1 MiB of encoded authority proof. Decoders reject trailing
 bytes, unknown versions, invalid ordering, incomplete state, duplicate
 signatures, non-majority transitions, and allocations above those bounds.
-This Alpha profile carries a bounded proof from genesis rather than a compact
+This Beta profile carries a bounded proof from genesis rather than a compact
 checkpoint. Reaching a lifetime bound fails closed; it does not discard old
 authority evidence or select a branch. A future checkpoint format requires a
 new version and compatibility decision.

@@ -54,7 +54,7 @@ security indicators are the node's own, verbatim.
   responsive; after 30 days without a receipt, history says
   `delivery failed after 30 days`. Airtime-budgeted mesh links also expose the
   "held, will send when a faster link exists" verdict.
-- **Make alpha live-audio calls** to paired contacts only while a fresh direct
+- **Make Beta live-audio calls** to paired contacts only while a fresh direct
   QUIC route is observed. The accessible call bar provides ring, answer,
   decline, cancel, and hangup state plus an explicit direct-QUIC/no-history
   explanation. Capture and playback use bounded 48 kHz mono 20 ms Opus packets;
@@ -193,19 +193,21 @@ restart/`KKR10`, safe fallback, local events, and zero delivery work. Rust node
 acceptance independently covers contact and group identities plus corrupt sealed
 legacy bytes.
 
-## Install the published Alpha
+## Install the 0.4 Beta
 
-Download the package for your system from the public
-[Komms 0.3 Alpha release](https://github.com/AndriGitDev/Komms/releases/tag/v0.3.0):
+After the explicit signing, qualification, and publication boundary is
+complete, download the package for your system from the
+[`v0.4.0` release page](https://github.com/AndriGitDev/Komms/releases/tag/v0.4.0):
 
 - Windows 10/11 x64: MSI or NSIS setup EXE;
 - macOS Intel or Apple silicon: universal DMG (or app archive); and
 - Linux x86-64: AppImage, DEB, or RPM.
 
-These Alpha packages are not production-signed or notarized. Download
-`SHA256SUMS`, verify the package before accepting an operating-system warning,
-and follow the [Alpha testing guide](../../docs/27-alpha-testing.md) for exact
-installation and smoke-test steps.
+Verify the exact package against the completed release-evidence archive before
+accepting an operating-system warning. Follow the
+[Beta testing guide](../../docs/53-beta-testing.md) for migration,
+installation, and acceptance steps. A retained unsigned validation package is
+not the public Beta and must not be substituted for a completed signed asset.
 
 ## Build & run
 
@@ -230,9 +232,9 @@ targets cover every desktop platform (`.deb`, `.rpm`, AppImage, `.app`,
 `.dmg`, `.msi`, NSIS); Tauri builds only the targets native to the host OS
 and skips the rest.
 
-The `v0.3.0` prerelease was built in those formats on native Linux, macOS, and
-Windows runners with checksums. It predates the current evidence design. Future
-tag pushes create read-only validation artifacts, public builder records, a
+The historical `v0.3.0` prerelease was built in those formats on native Linux,
+macOS, and Windows runners with checksums. It predates the current evidence
+design. A `v0.4.0` tag push creates read-only validation artifacts, public builder records, a
 second controlled Linux measurement, an SBOM, and hosted attestations; they do
 not create a draft or access a signing credential. Follow the
 [release runbook](../../docs/25-release-runbook.md); a successful build alone
@@ -241,10 +243,10 @@ production-ready.
 
 ## Packaging and signing boundary
 
-The package identifier is `is.andri.komms` and the current version is `0.3.0`,
+The package identifier is `is.andri.komms` and the current version is `0.4.0`,
 aligned with the Rust, Android, and iOS surfaces.
 
-The 0.3 Alpha desktop packages are not release-signed or notarized: macOS and
+The historical 0.3 Alpha desktop packages are not release-signed or notarized: macOS and
 Windows are unsigned, and the Linux package artifacts have no release-manifest
 signature. No production certificate or key enters the tree. Local Tauri
 packaging can read credentials from the environment when a maintainer

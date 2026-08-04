@@ -2,7 +2,7 @@
 
 **Inventory date:** 2026-07-30
 
-**Scope:** the implemented Alpha paths that overlap the frozen stable-v1
+**Scope:** the implemented Beta paths that overlap the frozen stable-v1
 profile, plus every adjacent persisted path found in the `kult-node` →
 `kult-store` call graph
 
@@ -11,7 +11,7 @@ Proposed
 
 This inventory is the acceptance checklist for
 [ADR-0028](adr/0028-atomic-protocol-commits.md). It distinguishes a complete
-typed transition from an adjacent Alpha path that is not yet eligible for
+typed transition from an adjacent Beta path that is not yet eligible for
 stable-v1. A row marked excluded or open is not evidence of universal protocol
 atomicity.
 

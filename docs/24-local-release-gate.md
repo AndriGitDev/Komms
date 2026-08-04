@@ -131,15 +131,20 @@ was not exercised, or one of the external gates above.
 
 ## 5. Version, packaging, and signing boundary
 
-All current build surfaces report `0.3.0`: the Cargo workspace and desktop
-crate, Tauri bundle, Android `versionName`, and iOS short version. CI and the
-local matrix enforce that alignment with `scripts/check-release-version.py`.
-The public [v0.3.0 Alpha](https://github.com/AndriGitDev/Komms/releases/tag/v0.3.0)
+All current build surfaces report `0.4.0`: the Cargo workspace and desktop
+crate, Tauri bundle, Android `versionName`, and iOS short version. Android
+`versionCode` and iOS build number advance together at `4`. CI and the local
+matrix enforce that alignment with `scripts/check-release-version.py`. The
+release channel is separate from these numeric application versions. The
+historical public
+[v0.3.0 Alpha](https://github.com/AndriGitDev/Komms/releases/tag/v0.3.0)
 predates the current evidence design. Its unsigned desktop and debug-signed
-Android assets remain test artifacts.
+Android assets remain test artifacts, not 0.4 Beta evidence.
 
 The current release controls define:
 
+- validation, Alpha, Beta, and stable channels with Beta carrying the same
+  prerelease signing and non-stable claim boundary as Alpha;
 - separate release-manifest, Android Play, Android Google-free, iOS, macOS,
   Windows, and Linux roles with rotation and compromise response;
 - dependency locks for Android core and both app flavors plus checked artifact

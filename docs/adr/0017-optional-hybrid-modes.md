@@ -1,6 +1,6 @@
 # ADR-0017: Optional hybrid modes preserve a server-independent core
 
-- **Status**: Accepted; operating modes implemented for Alpha
+- **Status**: Accepted; operating modes implemented for Beta
 - **Date**: 2026-07-15
 - **Reference deployment**:
   [ADR-0034](0034-operator-minimized-reference-discovery.md)
@@ -192,7 +192,7 @@ Applications surface degraded convenience honestly and continue the existing
 delivery ladder. A deployment in which blocking the default service prevents
 communication fails this ADR.
 
-## Implemented Alpha mode profile
+## Implemented Beta mode profile
 
 One `OperatingMode` contract now drives discovery publication, provider
 selection, rendezvous transport, daemon status, UniFFI, desktop, Android, and

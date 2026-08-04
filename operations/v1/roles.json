@@ -7,7 +7,7 @@
   "plural_operation_status": "not-demonstrated",
   "private_non_collusion_status": "not-demonstrated",
   "support_policy": {
-    "alpha": {
+    "beta": {
       "security_fixes": "best-effort",
       "compatibility_window": "no-stable-window",
       "operator_notice_target_days": 14

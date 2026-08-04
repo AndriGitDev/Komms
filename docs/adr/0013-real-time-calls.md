@@ -1,6 +1,6 @@
 # ADR-0013: Real-time voice/video calls over high-bandwidth carriers only
 
-- **Status**: Accepted; audio alpha implemented; platform qualification remains a release gate
+- **Status**: Accepted; Beta audio implemented; platform qualification remains a release gate
 - **Date**: 2026-07-13
 - **Accepted**: 2026-07-16
 
@@ -39,7 +39,7 @@ audio/video **clips** are unaffected and remain ordinary payloads on every carri
 
 **Signaling** is the fixed content-v1 kind `0x0008` `CallControl`, encrypted as an
 ordinary pairwise ratchet message. It does not add a cleartext
-`EnvelopeKind::CallSignal`: envelope kind is relay-visible in the current Alpha wire
+`EnvelopeKind::CallSignal`: envelope kind is relay-visible in the current Beta wire
 format, so a dedicated kind would unnecessarily identify call attempts. The
 fixed operations are offer, answer, decline, busy, cancel, and hangup. They bind
 one random call id, the exact physical sender device, an expiry, and the
@@ -59,7 +59,7 @@ wrong-call, wrong-direction, and post-hangup frames fail closed. Call secrets an
 decoded audio are erased on every terminal transition and are never backed up or
 included in C2 sync.
 
-**Media transport** for the audio alpha is one reliable ordered libp2p
+**Media transport** for the Beta audio is one reliable ordered libp2p
 substream negotiated as `/komms/call/1` over an already direct QUIC connection.
 The pinned `libp2p-quic 0.13.1` transport explicitly disables QUIC datagrams, so
 the proposal's earlier “QUIC datagrams inside a libp2p substream” option does
@@ -67,9 +67,9 @@ not exist. A bounded writer drops audio frames that have not entered the stream
 once they are older than the playout deadline; an endpoint jitter buffer skips
 late sequence numbers rather than growing latency without bound. Once bytes
 enter the reliable stream, packet loss can still cause head-of-line delay, which
-is an explicit alpha limitation and a measured release criterion.
+is an explicit Beta limitation and a measured release criterion.
 
-The current Alpha audio implementation therefore requires a fresh direct
+The current Beta audio implementation therefore requires a fresh direct
 `/quic-v1` route.
 TCP/Yamux, Circuit Relay, mailbox, sneakernet, and every airtime carrier do not
 qualify as `realtime`. AutoNAT, relay reservation, and DCUtR may establish and
@@ -83,7 +83,7 @@ selection, and interruption integration use the native platform audio stack;
 the core owns canonical frame bounds, encryption, replay state, jitter policy,
 and transport. Video remains out of scope until the audio release matrix passes.
 WebRTC is not the automatic fallback: without third-party STUN/TURN it cannot
-reuse the current Alpha libp2p relay path, and adding it would create a second NAT and
+reuse the current Beta libp2p relay path, and adding it would create a second NAT and
 dependency surface without solving Komms' constrained-connectivity requirement.
 
 ## Transport spike evidence
@@ -106,7 +106,7 @@ Those measurements select an implementation path; they do not establish mobile
 release quality. Real distinct-NAT/DCUtR, Wi-Fi and cellular handoff, sustained
 loss/jitter, CPU, battery, Bluetooth, speaker/earpiece, background/lock, and
 Android/iOS device results remain mandatory qualification evidence. Failure of
-those gates keeps calls alpha-disabled or reopens this ADR; it never silently
+those gates keeps calls Beta-disabled or reopens this ADR; it never silently
 widens `realtime` to relay, TCP, or mesh.
 
 ## Alternatives considered

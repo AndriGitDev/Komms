@@ -5,7 +5,7 @@ the poll travels only inside the sender-key group conversation; it does **not**
 mean an anonymous ballot. Every member who has the poll can see who voted and
 which choice their current vote selects.
 
-> **Alpha assurance boundary:** current groups authenticate each voter and
+> **Beta assurance boundary:** current groups authenticate each voter and
 > creator separately to every recipient device under
 > [ADR-0029](adr/0029-recipient-authenticated-groups.md). This remains
 > recipient-deniable rather than publicly verifiable, and legacy group history

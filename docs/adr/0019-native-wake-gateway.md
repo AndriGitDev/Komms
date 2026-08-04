@@ -1,6 +1,6 @@
 # ADR-0019: Native push is a capability-gated best-effort wake
 
-- **Status**: Accepted; gateway, core, and mobile clients implemented for Alpha; physical/deployment gates open
+- **Status**: Accepted; gateway, core, and mobile clients implemented for Beta; physical/deployment gates open
 - **Date**: 2026-07-15
 
 ## Context
@@ -200,9 +200,9 @@ Operator health metrics cover queue depth, latency, coalescing, provider status,
 and aggregate success/error classes. They never include a capability id, token,
 full client address, app-generated contact id, or per-user time series.
 
-### 7. Alpha implementation and evidence boundary
+### 7. Beta implementation and evidence boundary
 
-The accepted Alpha implementation includes:
+The accepted Beta implementation includes:
 
 - fixed-width canonical capability plaintext, opaque capability, register,
   trigger, revoke, generic response, and authenticated pairwise control codecs;

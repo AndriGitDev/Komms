@@ -199,7 +199,7 @@ intentionally blocked:
 - no externally administered reproducibility run or independent release
   evaluation exists; and
 - physical-device and supported-desktop rows remain open;
-- no bounded consent-based Alpha pilot has run against production-like signed
+- no bounded consent-based Beta pilot has run against production-like signed
   artifacts; and
 - the final P0 audit, support/update window, rollback decision, and
   candidate-only founder go/no-go record remain open.

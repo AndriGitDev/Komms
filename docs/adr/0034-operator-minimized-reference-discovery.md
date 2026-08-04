@@ -1,6 +1,6 @@
 # ADR-0034: Operator-minimized reference discovery
 
-- **Status**: Accepted
+- **Status**: Accepted; reference service implemented for Beta; deployment gate open
 - **Date**: 2026-07-26
 - **Depends on**:
   [ADR-0017](0017-optional-hybrid-modes.md),
@@ -33,7 +33,7 @@ protected durable service keys under ADR-0019.
 
 ### 1. The first reference service has two bounded roles
 
-The initial Standard-mode Alpha deployment may provide:
+The initial Standard-mode Beta deployment may provide:
 
 1. libp2p bootstrap and an ordinary Kademlia DHT cache; and
 2. the short-lived post-pairing rendezvous role in ADR-0018.
@@ -103,7 +103,7 @@ The directory and release signing keys remain offline. A compromised runtime
 service key may impersonate or disrupt that service, but cannot forge a
 client-accepted account record or decrypt messages.
 
-### 5. The first Hetzner deployment is Standard Alpha evidence
+### 5. The first Hetzner deployment is Standard Beta evidence
 
 The operator publishes the administrative domain, hosting provider, enabled
 roles, source revision, image digest, configuration, retention policy, service

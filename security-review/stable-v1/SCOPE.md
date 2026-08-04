@@ -395,7 +395,7 @@ related vulnerabilities:
 - side-channel claims are limited to intended constant-time operations and
   secret-independent structure; no comprehensive physical side-channel
   qualification exists; and
-- all public product claims remain Alpha until the evidence ledger closes the
+- all public product claims remain Beta until the evidence ledger closes the
   applicable gates.
 
 Any reviewer conclusion that one of these limits is understated, internally

@@ -195,7 +195,7 @@ jobs:
         with:
           toolchain: stable
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
-      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v4
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
         with:
           distribution: temurin
           java-version: "21"
@@ -295,7 +295,7 @@ jobs:
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
       - name: install cargo-ndk
         run: cargo install cargo-ndk --version 4.1.2 --locked
-      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v4
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
         with:
           distribution: temurin
           java-version: "21"

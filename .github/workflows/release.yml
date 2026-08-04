@@ -13,10 +13,11 @@ on:
       channel:
         description: Channel for an already completed evidence bundle
         required: true
-        default: alpha
+        default: beta
         type: choice
         options:
           - alpha
+          - beta
           - stable
       production_signing:
         description: Enter the protected production-signing enrollment boundary
@@ -358,7 +359,7 @@ jobs:
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
       - name: Install pinned cargo-ndk
         run: cargo install cargo-ndk --version 4.1.2 --locked
-      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v4
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
         with:
           distribution: temurin
           java-version: "21"
@@ -998,7 +999,7 @@ jobs:
           else
             gh release edit "$RELEASE_TAG" \
               --repo "$GITHUB_REPOSITORY" \
-              --title "Komms ${{ needs.prepare.outputs.version }} alpha" \
+              --title "Komms ${{ needs.prepare.outputs.version }} ${RELEASE_CHANNEL}" \
               --notes-file unpacked/release-evidence/release-notes.md \
               --draft=false \
               --prerelease

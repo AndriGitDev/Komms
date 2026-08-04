@@ -48,11 +48,11 @@ class StageReleaseArtifactTests(unittest.TestCase):
                 "--kind",
                 "android-play-arm64",
                 "--version",
-                "0.3.0",
+                "0.4.0",
             )
             self.assertEqual(
                 [path.name for path in output.iterdir()],
-                ["Komms-0.3.0-android-play-arm64-app-play-release.apk"],
+                ["Komms-0.4.0-android-play-arm64-app-play-release.apk"],
             )
 
     def test_wrong_platform_type_fails_closed(self) -> None:
@@ -69,7 +69,7 @@ class StageReleaseArtifactTests(unittest.TestCase):
                 "--kind",
                 "windows-x86_64",
                 "--version",
-                "0.3.0",
+                "0.4.0",
                 expected=2,
             )
 
@@ -88,7 +88,7 @@ class StageReleaseArtifactTests(unittest.TestCase):
                 "--kind",
                 "linux-x86_64",
                 "--version",
-                "0.3.0",
+                "0.4.0",
             )
             run(*arguments)
             run(*arguments, expected=2)
@@ -108,7 +108,7 @@ class StageReleaseArtifactTests(unittest.TestCase):
                 "--kind",
                 "android-play-arm64",
                 "--version",
-                "0.3.0",
+                "0.4.0",
                 expected=2,
             )
 

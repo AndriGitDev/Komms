@@ -67,9 +67,9 @@
       "required_action": "Run the versioned kit through a separately produced path and retain the exact adapter, revision, fixture, and result record."
     },
     {
-      "id": "consent-alpha-pilot",
+      "id": "consent-beta-pilot",
       "status": "open",
-      "statement": "No consent-based Alpha pilot has run against production-like signed artifacts, and no privacy-preserving aggregate outcome exists.",
+      "statement": "No consent-based Beta pilot has run against production-like signed artifacts, and no privacy-preserving aggregate outcome exists.",
       "gate": "P0-01/P0-04/P0-09",
       "owner": "Andri (FND/PROD)",
       "next_review": "2026-08-09",

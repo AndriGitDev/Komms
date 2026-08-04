@@ -1,7 +1,7 @@
 # Komms stabilization program
 
 **Status:** active  
-**Scope:** Alpha to a trustworthy stable release and protocol wire v1  
+**Scope:** Beta to a trustworthy stable release and protocol wire v1
 **Accountable owner:** lead maintainer until ownership is delegated in
 [MAINTAINERS.md](../MAINTAINERS.md)
 
@@ -73,8 +73,8 @@ Public status claims use the strongest level actually demonstrated:
 
 These levels are not interchangeable. A simulator build is automated evidence,
 not device qualification. A self-round-trip test is not independent
-interoperability. Use **available in Alpha** for a feature users can exercise in
-an Alpha package. Do not use unqualified **shipped**, **complete**, **audited**,
+interoperability. Use **available in Beta** for a feature users can exercise in
+a Beta package. Do not use unqualified **shipped**, **complete**, **audited**,
 or **production-ready** as substitutes for evidence.
 
 Each gate closes with links to durable evidence: tests and logs tied to a
@@ -160,7 +160,7 @@ claims or safety.
 
 ## 6. P2 — expansion outside the stable profile
 
-The founder may research or implement P2 work during Alpha when it is isolated
+The founder may research or implement P2 work during Beta when it is isolated
 from the stable profile. It is not enabled or represented as stable until the
 everyday messenger and the feature's own evidence are proven:
 
@@ -209,7 +209,7 @@ signal.
 - Begin independent review, publish findings and dispositions, and add external
   interoperability fixtures.
 - Reproduce release artifacts in a second controlled environment.
-- Run a small, consent-based pilot with explicit Alpha limitations and
+- Run a small, consent-based pilot with explicit Beta limitations and
   measurable install-to-delivery success.
 - Publish the gate ledger: closed, open, owner, evidence, and next review date.
 
@@ -225,7 +225,7 @@ This table prevents a prior concern from disappearing into roadmap prose.
 | Fresh installs have no practical internet bootstrap/mailbox defaults; hybrid reachability is design-only | P0-04 |
 | ADR-0030 now confines a valid first payload to bounded provisional state with explicit consent; independent adversarial, physical-device, accessibility, discovery, and mailbox-operator qualification remain open | P0-05 |
 | Revision-bound release/SBOM/signing/qualification controls now fail closed, but production keys, store paths, signed install/upgrade/rollback evidence, independent reproduction, and a safe authenticated or bounded manual update execution remain open | P0-07 |
-| The consent-based Alpha pilot, aggregate-only metric contract, final-candidate reruns, P0 closure audit, support/update window, rollback decision, and candidate-only founder go/no-go are fail-closed release records, but no pilot or final decision has run | P0-01, P0-04, P0-07, P0-09, P0-10 |
+| The consent-based Beta pilot, aggregate-only metric contract, final-candidate reruns, P0 closure audit, support/update window, rollback decision, and candidate-only founder go/no-go are fail-closed release records, but no pilot or final decision has run | P0-01, P0-04, P0-07, P0-09, P0-10 |
 | Absolute blocking, erasure, cryptographic-audit, and current-law wording exceeds demonstrated guarantees | P0-01, P0-06, P1-07 |
 | Mailbox v2 now has local durable-custody evidence plus a dedicated single-protocol artifact, hardened profile, and backup/upgrade/incident runbook, but no public operator, observed backup/upgrade/cost record, live abuse exercise, or real-network path is qualified as production infrastructure | P0-08, P1-04 |
 | Simulator/CI evidence is described beside unresolved device, NAT, radio, background, and accessibility work | P0-01, P0-09 |
@@ -247,7 +247,7 @@ This table prevents a prior concern from disappearing into roadmap prose.
 | ADR-0030 bounded first-contact admission is implemented across signed bundles, pre-KEM proof checks, direct settlement, sealed provisional storage, explicit Accept/Delete/Block and group-invite consent, RPC/UniFFI and all shells with local crash/flood/replay/simulator evidence; independent adversarial/usability review, physical battery/background/accessibility runs, mailbox-v2 operator evidence, and capability-scoped discovery remain open | P0-03, P0-05, P0-06, P0-09 |
 | RAM-only storage, disabled logs, and aggregate metrics reduce retention but remain deployment controls; a cloud operator can still observe network metadata, running memory, and availability | P0-01, P0-04, P1-07 |
 
-Until the relevant gates close, Komms is an ambitious public Alpha with
+Until the relevant gates close, Komms is an ambitious Beta candidate with
 implemented and automated evidence in many areas—not an audited stable
 messenger. That distinction protects users and gives contributors a concrete
 path to earning stronger claims.

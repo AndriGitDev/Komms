@@ -1,4 +1,4 @@
-# Komms Android (alpha)
+# Komms Android (Beta)
 
 Application **A2** ([03: Architecture](../../docs/03-architecture.md)): a
 Kotlin shell over `kult-ffi`'s embedded node runtime, the same library
@@ -50,7 +50,7 @@ own, verbatim.
   responsive; after 30 days without a receipt, history says
   `delivery failed after 30 days`. Airtime-budgeted mesh links also expose the
   "held, will send when a faster link exists" verdict.
-- **Make alpha live-audio calls** to paired contacts only while the shared core
+- **Make Beta live-audio calls** to paired contacts only while the shared core
   observes a fresh direct QUIC route. Native `AudioRecord`, `AudioTrack`, and
   MediaCodec Opus use the voice-communication path at 48 kHz mono, 20 ms, and
   24 kbit/s. The TalkBack-labelled UI provides ring/answer/decline/cancel/
@@ -268,16 +268,18 @@ lock state. `gradle/verification-metadata.xml` also binds every resolved
 Android build artifact to reviewed SHA-256 values; the release-control check
 ensures no Firebase or Play coordinate enters a Google-free configuration.
 
-## Install the published Alpha
+## Install the 0.4 Beta
 
-Download `Komms-0.3.0-android-debug.apk` and `SHA256SUMS` from the public
-[Komms 0.3 Alpha release](https://github.com/AndriGitDev/Komms/releases/tag/v0.3.0).
-It supports Android 8.0 (API 26) or newer on `arm64-v8a` phones and `x86_64`
-emulators. This is a test-only APK signed with a development certificate, not a
-store or production build. Verify its checksum, allow **Install unknown apps**
-only for the browser or file manager used to open it, then turn that permission
-off again. See the [Alpha testing guide](../../docs/27-alpha-testing.md) for the
-complete install and smoke-test steps.
+After the explicit release boundary is complete, choose the separately signed
+Play or Google-free Android asset from the
+[`v0.4.0` release page](https://github.com/AndriGitDev/Komms/releases/tag/v0.4.0).
+It supports Android 8.0 (API 26) or newer on `arm64-v8a` phones; validation also
+covers `x86_64` emulators. Verify the exact package against the completed
+release-evidence archive, allow **Install unknown apps** only when installing a
+qualified direct-distribution package, then turn that permission off again.
+The [Beta testing guide](../../docs/53-beta-testing.md) has the migration,
+verification, and acceptance steps. A retained unsigned validation APK/AAB is
+not the public Beta and must not be represented as production-signed.
 
 Android rejects an in-place upgrade from a build signed by a different key.
 Export any data you need before uninstalling an older test build.
@@ -318,20 +320,19 @@ the hands-on lifecycle, accessibility, audio-route, background, native-provider,
 and physical-device qualification matrix in
 [38: Native-wake mobile qualification](../../docs/38-native-wake-mobile-qualification.md).
 
-The `v0.3.0` prerelease includes that installable debug APK alongside the
-desktop packages and checksums. It predates the current release-evidence
-design. Future tag pushes produce retained unsigned validation APK/AAB
-artifacts and a revision-bound evidence bundle, but do not create a draft or
-access a keystore. Production signing begins only after the separate Play and
-Google-free roles are enrolled and exercised. The qualification and explicit
-publication boundaries are in the
+The historical `v0.3.0` prerelease includes an installable debug APK and
+predates the current release-evidence design. A `v0.4.0` tag push produces
+retained unsigned validation APK/AAB artifacts and a revision-bound evidence
+bundle, but does not create a draft or access a keystore. Production signing
+begins only after the separate Play and Google-free roles are enrolled and
+exercised. The qualification and explicit publication boundaries are in the
 [release runbook](../../docs/25-release-runbook.md).
 
 ## Version and release signing boundary
 
 The application id is `is.andri.komms`, the minimum Android version is API 26,
-and the current `versionName` is `0.3.0`, aligned with the Rust, desktop, and
-iOS surfaces. Local release signing is optional and deliberately keyless by
+and the current `versionName` is `0.4.0` / `versionCode` is `4`, aligned with
+the Rust, desktop, and iOS surfaces. Local release signing is optional and deliberately keyless by
 default. A local keystore can exercise packaging, but it is not production
 evidence unless its public fingerprint, custody, recovery, upgrade, and
 rollback records satisfy the source-controlled release policy.
