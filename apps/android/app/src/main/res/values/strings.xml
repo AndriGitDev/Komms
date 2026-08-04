@@ -54,7 +54,7 @@
     <string name="gate_starting_message">Opening your encrypted store and starting the node can take up to 30 seconds. Keep Komms open while this finishes.</string>
     <string name="recovery_authority_filename">komms-account-authority.kra</string>
     <string name="recovery_authority_required_title">Save your offline account authority</string>
-    <string name="recovery_authority_required_body">This step is required before messaging. Anyone holding both this encrypted file and its 24 words can take over your stable identity and revoke every current device. Save the file on offline or removable storage, separate from the words.</string>
+    <string name="recovery_authority_required_body">This step is required before messaging. Anyone holding both this encrypted file and its 24 words can take over your stable identity and revoke every current device. Save the file on offline or removable storage, separate from the words. It is not a routine backup.</string>
     <string name="recovery_authority_choose">Choose offline location</string>
     <string name="recovery_authority_retry_body">The offline authority was not saved: &#x2068;%1$s&#x2069;\n\nChoose an offline or removable location and try again. This profile cannot continue until both parts are saved.</string>
     <string name="recovery_authority_interrupted">The first-run authority handoff was interrupted. This profile stays blocked because Komms cannot prove that both recovery parts were saved. Try the export once; if it is no longer available, use the guided new-identity reset when offered.</string>
@@ -1311,6 +1311,9 @@
     <string name="gate_new_store">No data store exists here yet — create a new identity or restore from backup.</string>
     <string name="gate_opening_short">Opening… (up to 30 seconds)</string>
     <string name="gate_upgrade_choose_destination">Choose an offline or removable destination first.</string>
+    <string name="recovery_authority_destination_exists">That file already exists. Choose a new filename; Komms never replaces an offline authority file.</string>
+    <string name="recovery_authority_export_failed">The offline authority could not be written there. Choose another offline or removable destination.</string>
+    <string name="recovery_authority_save">Save offline authority…</string>
     <string name="gate_upgrade_reset_done">New identity created · re-verify every retained contact</string>
     <string name="group_invitation_accept_failed">The group invitation could not be accepted.</string>
     <string name="group_invitation_delete">Delete group invitation</string>

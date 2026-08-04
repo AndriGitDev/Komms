@@ -643,20 +643,17 @@
 
   <template id="tpl-recovery-authority">
     <section data-f="export-stage">
-      <p class="modal-note warn"><strong>This step is required before messaging.</strong> Anyone holding both this encrypted file and its 24 words can take over your stable identity and revoke every current device. Save the file on offline or removable storage, separate from the words. It is not a routine backup.</p>
-      <label>Write offline account authority to
-        <input type="text" data-f="path" data-incognito-input="technical" spellcheck="false" placeholder="/offline/path/komms-account-authority.kra" />
-      </label>
+      <p class="modal-note warn" data-l10n="recovery_authority_required_body">This step is required before messaging. Anyone holding both this encrypted file and its 24 words can take over your stable identity and revoke every current device. Save the file on offline or removable storage, separate from the words. It is not a routine backup.</p>
       <p class="error" data-f="error" role="alert" hidden></p>
       <div class="row end">
-        <button class="primary" data-act="export-authority">Write offline authority</button>
+        <button class="primary" data-act="export-authority" data-l10n="recovery_authority_save">Save offline authority…</button>
       </div>
     </section>
     <section data-f="result-stage" hidden>
       <p class="modal-note warn">Write these 24 words down separately. They are shown once and open only the offline account-authority file. Anyone with both parts controls this identity.</p>
       <ol class="mnemonic" data-f="mnemonic"></ol>
       <div class="row end">
-        <button class="primary" data-act="authority-done">I stored both parts separately</button>
+        <button class="primary" data-act="authority-done" data-l10n="recovery_authority_done_ack">I stored both parts separately</button>
       </div>
     </section>
   </template>

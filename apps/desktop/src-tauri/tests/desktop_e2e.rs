@@ -444,6 +444,28 @@ fn desktop_ephemeral_controls_match_shared_honesty_and_block_render_bypasses() {
 }
 
 #[test]
+fn desktop_first_run_authority_uses_native_save_and_retryable_errors() {
+    let html = include_str!("../../ui/index.html");
+    let frontend = include_str!("../../ui/main.js");
+    let authority_template = html
+        .split("<template id=\"tpl-recovery-authority\">")
+        .nth(1)
+        .unwrap()
+        .split("</template>")
+        .next()
+        .unwrap();
+
+    assert!(!authority_template.contains("data-f=\"path\""));
+    assert!(authority_template.contains("Save offline authority…"));
+    assert!(authority_template.contains("data-l10n=\"recovery_authority_save\""));
+    assert!(authority_template.contains("data-l10n=\"recovery_authority_required_body\""));
+    assert!(frontend.contains("const path = await savePath({"));
+    assert!(frontend.contains("defaultPath: l10n(\"recovery_authority_filename\")"));
+    assert!(frontend.contains("recovery_authority_destination_exists"));
+    assert!(frontend.contains("recovery_authority_export_failed"));
+}
+
+#[test]
 fn startup_wait_is_explained_and_kept_modal_across_apps() {
     let html = include_str!("../../ui/index.html");
     let frontend = include_str!("../../ui/main.js");
@@ -873,7 +895,7 @@ fn desktop_incognito_keyboard_covers_every_editable_text_field_before_unlock() {
         - html
             .matches("<textarea class=\"share-hex\" rows=\"4\" readonly")
             .count();
-    assert_eq!(51, editable_text_fields);
+    assert_eq!(50, editable_text_fields);
     assert_eq!(
         editable_text_fields,
         html.matches("data-incognito-input=").count()
@@ -2468,6 +2490,29 @@ fn backup_mnemonic_restore_flow() {
 
     alice.stop();
     bob.stop();
+}
+
+#[test]
+fn recovery_authority_export_failure_keeps_desktop_session_retryable() {
+    let directory = tempfile::tempdir().unwrap();
+    let events = Events::default();
+    let session = open(directory.path(), "authority-path", &events);
+
+    assert!(session
+        .export_account_recovery_authority(String::new())
+        .is_err());
+
+    let destination = directory
+        .path()
+        .join("account-authority.kra")
+        .display()
+        .to_string();
+    let mnemonic = session
+        .export_account_recovery_authority(destination.clone())
+        .unwrap();
+    assert_eq!(mnemonic.split_whitespace().count(), 24);
+    assert!(std::path::Path::new(&destination).is_file());
+    session.stop();
 }
 
 #[test]

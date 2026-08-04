@@ -1,0 +1,38 @@
+Komms 0.4.1 physical Android clean-install result
+
+Source revision: 996a3e4e961ae40589f303149855451430597874
+Source tree: 6598720a6a0e237a9ec2ab395fe4f7b2b2cbaab6
+Artifact: app-googleFree-debug.apk
+Artifact bytes: 44046164
+Artifact SHA-256: 0a677db0b3c5f3a5bcb10af2a23be3444a3cf2f79f7188c211fba20707f1d567
+Artifact signature: Android Debug certificate; APK Signature Scheme v2
+
+Device: Samsung Galaxy S23 Ultra (SM-S918B)
+Architecture: arm64-v8a
+OS: Android 16 / API 36
+Build: BP4A.251205.006 / S918BXXSAFZF5
+Security patch: 2026-06-05
+Network exercised: local Wi-Fi only
+
+The package was absent before installation. ADB installed the exact recorded
+artifact without an existing profile or release credential. Package Manager
+reported versionName 0.4.1, versionCode 5, minSdk 26, and targetSdk 35. The
+cold GateActivity launch completed in 578 ms (573 ms activity total time).
+
+The first-run surface disclosed encrypted device-local state and the absence
+of a central account. A generated throwaway passphrase was entered twice and
+was not recorded. Identity creation required the offline account-authority
+step before messaging. The human reviewer completed the platform document
+picker and saved the encrypted authority; neither its location nor contents
+were captured. The one-time 24-word phrase was acknowledged without a UI
+dump, screenshot, log, or retained copy. MainActivity then resumed and Android
+reported notification permission granted.
+
+No device serial, provider token, capability, passphrase, recovery phrase,
+account identifier, safety number, contact data, message content, local-file
+listing, or screenshot is retained in this evidence.
+
+Qualification boundary: this is a locally debug-signed development artifact
+built from the exact v0.4.1 source tree. It is physical-device functional and
+visual evidence, but it is not the unsigned hosted validation APK, a
+production-signed APK, Play-store evidence, or authenticated-upgrade evidence.

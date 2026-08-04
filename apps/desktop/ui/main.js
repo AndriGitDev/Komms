@@ -5740,9 +5740,18 @@ function openRecoveryAuthorityOnboarding() {
     if (event.target.matches('[data-act="export-authority"]')) {
       const error = root.querySelector('[data-f="error"]');
       error.hidden = true;
+      event.target.disabled = true;
       try {
+        const path = await savePath({
+          title: l10n("recovery_authority_required_title"),
+          defaultPath: l10n("recovery_authority_filename"),
+        });
+        if (!path) {
+          event.target.disabled = false;
+          return;
+        }
         const mnemonic = await invoke("export_account_recovery_authority", {
-          path: root.querySelector('[data-f="path"]').value.trim(),
+          path,
         });
         const list = root.querySelector('[data-f="mnemonic"]');
         list.replaceChildren(...mnemonic.split(/\s+/).map((word) => {
@@ -5753,8 +5762,13 @@ function openRecoveryAuthorityOnboarding() {
         root.querySelector('[data-f="export-stage"]').hidden = true;
         root.querySelector('[data-f="result-stage"]').hidden = false;
       } catch (failure) {
-        error.textContent = localizedError(failure);
+        const reason = String(failure ?? "").toLocaleLowerCase("en-US");
+        error.textContent = reason.includes("already exists")
+          || reason.includes("file exists")
+          ? l10n("recovery_authority_destination_exists")
+          : l10n("recovery_authority_export_failed");
         error.hidden = false;
+        event.target.disabled = false;
       }
     }
     if (event.target.matches('[data-act="authority-done"]')) {

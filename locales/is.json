@@ -56,7 +56,7 @@
     "gate_starting_message": "Það getur tekið allt að 30 sekúndur að opna dulkóðuðu gagnageymsluna og ræsa hnútinn. Hafðu Komms opið á meðan.",
     "recovery_authority_filename": "komms-account-authority.kra",
     "recovery_authority_required_title": "Vistaðu ótengdu reikningsheimildina",
-    "recovery_authority_required_body": "Þetta skref er nauðsynlegt áður en skilaboð eru send. Hver sem hefur bæði þessa dulkóðuðu skrá og 24 orðin getur tekið yfir varanlega auðkennið þitt og afturkallað öll núverandi tæki. Vistaðu skrána á ótengdum eða færanlegum miðli, aðskilda frá orðunum.",
+    "recovery_authority_required_body": "Þetta skref er nauðsynlegt áður en skilaboð eru send. Hver sem hefur bæði þessa dulkóðuðu skrá og 24 orð hennar getur tekið yfir varanlega auðkennið þitt og afturkallað öll núverandi tæki. Vistaðu skrána á ótengdum eða færanlegum miðli, aðskilda frá orðunum. Þetta er ekki venjulegt öryggisafrit.",
     "recovery_authority_choose": "Velja ótengda staðsetningu",
     "recovery_authority_retry_body": "Ekki tókst að vista ótengdu heimildina: %1$s\\n\\nVeldu ótengda eða færanlega staðsetningu og reyndu aftur. Ekki er hægt að halda áfram með þetta snið fyrr en báðir hlutarnir hafa verið vistaðir.",
     "recovery_authority_interrupted": "Afhending reikningsheimildar við fyrstu ræsingu rofnaði. Þetta snið helst lokað því Komms getur ekki staðfest að báðir endurheimtarhlutarnir hafi verið vistaðir. Reyndu útflutninginn einu sinni; ef hann er ekki lengur tiltækur skaltu nota leiðsögn um endurstillingu með nýju auðkenni þegar hún býðst.",

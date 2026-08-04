@@ -2830,6 +2830,18 @@
       "en-US": "Choose an offline or removable destination first.",
       "is": "Veldu fyrst ótengdan eða færanlegan áfangastað."
     },
+    "recovery_authority_destination_exists": {
+      "en-US": "That file already exists. Choose a new filename; Komms never replaces an offline authority file.",
+      "is": "Skráin er þegar til. Veldu nýtt skráarheiti; Komms skrifar aldrei yfir ótengda heimildarskrá."
+    },
+    "recovery_authority_export_failed": {
+      "en-US": "The offline authority could not be written there. Choose another offline or removable destination.",
+      "is": "Ekki tókst að vista ótengdu heimildina þar. Veldu annan ótengdan eða færanlegan áfangastað."
+    },
+    "recovery_authority_save": {
+      "en-US": "Save offline authority…",
+      "is": "Vista ótengda heimild…"
+    },
     "gate_upgrade_reset_done": {
       "en-US": "New identity created · re-verify every retained contact",
       "is": "Nýtt auðkenni stofnað · staðfestu alla varðveitta tengiliði aftur"

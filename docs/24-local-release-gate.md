@@ -131,9 +131,9 @@ was not exercised, or one of the external gates above.
 
 ## 5. Version, packaging, and signing boundary
 
-All current build surfaces report `0.4.1`: the Cargo workspace and desktop
+All current build surfaces report `0.4.2`: the Cargo workspace and desktop
 crate, Tauri bundle, Android `versionName`, and iOS short version. Android
-`versionCode` and iOS build number advance together at `5`. CI and the local
+`versionCode` and iOS build number advance together at `6`. CI and the local
 matrix enforce that alignment with `scripts/check-release-version.py`. The
 release channel is separate from these numeric application versions. The
 historical public

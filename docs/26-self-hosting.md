@@ -11,7 +11,7 @@ After separately authorized container publication, the
 supports `linux/amd64` and `linux/arm64`. Pull the immutable release tag with:
 
 ```sh
-docker pull ghcr.io/andrigitdev/komms-kultd:0.4.1
+docker pull ghcr.io/andrigitdev/komms-kultd:0.4.2
 ```
 
 > **Artifact boundary:** the historical `0.3.0` image predates
@@ -22,7 +22,7 @@ docker pull ghcr.io/andrigitdev/komms-kultd:0.4.1
 > qualified as stable infrastructure.
 
 The `0.4-beta` and `beta` tags are moving Beta aliases after publication; the
-committed Compose file tracks `0.4-beta`, while deployments should pin `0.4.1`
+committed Compose file tracks `0.4-beta`, while deployments should pin `0.4.2`
 or an image digest.
 The image runs the daemon as numeric user/group `10001`, stores its sealed
 database in `/var/lib/komms`, and listens on TCP and QUIC/UDP port `4404` by

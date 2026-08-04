@@ -4,7 +4,7 @@ Release notes describe product and compatibility changes. Security assurance,
 platform support, and operator availability are earned only by the exact
 revision-bound records linked from a completed release.
 
-## 0.4.1 Beta — release candidate
+## 0.4.2 Beta — release candidate
 
 Publication date: pending explicit release authorization.
 
@@ -58,11 +58,14 @@ Publication date: pending explicit release authorization.
 - Added bounded contributor profiles, English/Icelandic localization parity,
   accessibility checks, operator policies, licensing/trademark inventory,
   funding transparency, and privacy/legal/incident runbooks.
+- Replaced the desktop first-run authority path field with the native Save
+  dialog and made invalid, cancelled, occupied, and failed destinations
+  retryable without consuming the one-time authority or stopping the runtime.
 
 ### Compatibility and migration
 
-- All internal crates and application surfaces report `0.4.1`; Android and iOS
-  use build number `5`.
+- All internal crates and application surfaces report `0.4.2`; Android and iOS
+  use build number `6`.
 - Current backups are root-free `KKR10`. Root-free `KKR8` and `KKR9` remain
   compatible inputs. `KKR1`–`KKR7` remain decode-only former-identity migration
   inputs and never resume the old account.
@@ -81,12 +84,21 @@ Publication date: pending explicit release authorization.
 - The 0.4 Beta candidate is not a stable release and is not suitable for
   emergency or safety-critical communication.
 
+## 0.4.1 Beta — failed physical-validation candidate
+
+The immutable `v0.4.1` tag completed its hosted validation workflow but was not
+published. A physical macOS clean-install run exposed a first-run offline
+authority export failure: an invalid initial destination could unwind the
+runtime worker, making every later retry in that process fail. The candidate
+therefore received no macOS pass and no public package set. The corrected
+candidate is `v0.4.2`.
+
 ## 0.4.0 Beta — failed validation candidate
 
 The immutable `v0.4.0` tag was not published. Its Android package job could not
 resolve the installed SDK manager, and both Linux builds rejected an unrelated
 AppImage bundle symlink before evidence assembly. No release draft or public
-package set was created. The corrected candidate is `v0.4.1`.
+package set was created. Its successor was `v0.4.1`.
 
 ## 0.3.0 Alpha — historical
 

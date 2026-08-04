@@ -13,8 +13,8 @@ test-failpoints = []
 legacy-test-fixtures = []
 
 [dependencies]
-kult-crypto = { version = "0.4.1", path = "../kult-crypto" }
-kult-protocol = { version = "0.4.1", path = "../kult-protocol" }
+kult-crypto = { version = "0.4.2", path = "../kult-crypto" }
+kult-protocol = { version = "0.4.2", path = "../kult-protocol" }
 rusqlite = { version = "0.31", features = ["bundled"] }
 rand_core = { version = "0.6", features = ["getrandom"] }
 serde = { version = "1", features = ["derive"] }

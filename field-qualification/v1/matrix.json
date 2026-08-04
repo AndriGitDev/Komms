@@ -1,6 +1,6 @@
 {
   "schema": "komms-field-qualification-matrix/v1",
-  "matrix_version": 1,
+  "matrix_version": 2,
   "target_cells": [
     {
       "id": "macbook-air-m1-macos-26-5-2",
@@ -61,6 +61,16 @@
       "architecture": "arm64-v8a",
       "qualification_candidate": true,
       "availability": "open-hardware"
+    },
+    {
+      "id": "galaxy-s23-ultra-android-16",
+      "platform": "android",
+      "environment_kind": "physical-device",
+      "device": "Samsung Galaxy S23 Ultra (SM-S918B), stock build",
+      "os_version": "Android 16 / BP4A.251205.006 / 2026-06-05 security patch",
+      "architecture": "arm64-v8a",
+      "qualification_candidate": true,
+      "availability": "available"
     },
     {
       "id": "iphone-15-ios-26-5",
