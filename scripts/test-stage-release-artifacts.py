@@ -94,6 +94,49 @@ class StageReleaseArtifactTests(unittest.TestCase):
             run(*arguments, expected=2)
             self.assertEqual(next(output.iterdir()).read_bytes(), b"first")
 
+    def test_unrelated_bundle_symlink_is_ignored(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "source"
+            source.mkdir()
+            (source / "Komms.AppImage").write_bytes(b"package")
+            (source / "icon.png").write_bytes(b"icon")
+            (source / ".DirIcon").symlink_to("icon.png")
+            output = root / "output"
+            run(
+                "--source",
+                str(source),
+                "--output",
+                str(output),
+                "--kind",
+                "linux-x86_64",
+                "--version",
+                "0.4.0",
+            )
+            self.assertEqual(
+                [path.name for path in output.iterdir()],
+                ["Komms-0.4.0-linux-x86_64-Komms.AppImage"],
+            )
+
+    def test_package_symlink_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "source"
+            source.mkdir()
+            (root / "outside.AppImage").write_bytes(b"outside")
+            (source / "Komms.AppImage").symlink_to(root / "outside.AppImage")
+            run(
+                "--source",
+                str(source),
+                "--output",
+                str(root / "output"),
+                "--kind",
+                "linux-x86_64",
+                "--version",
+                "0.4.0",
+                expected=2,
+            )
+
     def test_prefixed_release_name_must_remain_bounded(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

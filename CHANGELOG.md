@@ -4,7 +4,7 @@ Release notes describe product and compatibility changes. Security assurance,
 platform support, and operator availability are earned only by the exact
 revision-bound records linked from a completed release.
 
-## 0.4.0 Beta — release candidate
+## 0.4.1 Beta — release candidate
 
 Publication date: pending explicit release authorization.
 
@@ -61,8 +61,8 @@ Publication date: pending explicit release authorization.
 
 ### Compatibility and migration
 
-- All internal crates and application surfaces report `0.4.0`; Android and iOS
-  use build number `4`.
+- All internal crates and application surfaces report `0.4.1`; Android and iOS
+  use build number `5`.
 - Current backups are root-free `KKR10`. Root-free `KKR8` and `KKR9` remain
   compatible inputs. `KKR1`–`KKR7` remain decode-only former-identity migration
   inputs and never resume the old account.
@@ -80,6 +80,13 @@ Publication date: pending explicit release authorization.
   accessibility assessment, and the physical two-radio bench remain open.
 - The 0.4 Beta candidate is not a stable release and is not suitable for
   emergency or safety-critical communication.
+
+## 0.4.0 Beta — failed validation candidate
+
+The immutable `v0.4.0` tag was not published. Its Android package job could not
+resolve the installed SDK manager, and both Linux builds rejected an unrelated
+AppImage bundle symlink before evidence assembly. No release draft or public
+package set was created. The corrected candidate is `v0.4.1`.
 
 ## 0.3.0 Alpha — historical
 

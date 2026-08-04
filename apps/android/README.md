@@ -272,7 +272,7 @@ ensures no Firebase or Play coordinate enters a Google-free configuration.
 
 After the explicit release boundary is complete, choose the separately signed
 Play or Google-free Android asset from the
-[`v0.4.0` release page](https://github.com/AndriGitDev/Komms/releases/tag/v0.4.0).
+[`v0.4.1` release page](https://github.com/AndriGitDev/Komms/releases/tag/v0.4.1).
 It supports Android 8.0 (API 26) or newer on `arm64-v8a` phones; validation also
 covers `x86_64` emulators. Verify the exact package against the completed
 release-evidence archive, allow **Install unknown apps** only when installing a
@@ -321,7 +321,7 @@ and physical-device qualification matrix in
 [38: Native-wake mobile qualification](../../docs/38-native-wake-mobile-qualification.md).
 
 The historical `v0.3.0` prerelease includes an installable debug APK and
-predates the current release-evidence design. A `v0.4.0` tag push produces
+predates the current release-evidence design. A `v0.4.1` tag push produces
 retained unsigned validation APK/AAB artifacts and a revision-bound evidence
 bundle, but does not create a draft or access a keystore. Production signing
 begins only after the separate Play and Google-free roles are enrolled and
@@ -331,7 +331,7 @@ exercised. The qualification and explicit publication boundaries are in the
 ## Version and release signing boundary
 
 The application id is `is.andri.komms`, the minimum Android version is API 26,
-and the current `versionName` is `0.4.0` / `versionCode` is `4`, aligned with
+and the current `versionName` is `0.4.1` / `versionCode` is `5`, aligned with
 the Rust, desktop, and iOS surfaces. Local release signing is optional and deliberately keyless by
 default. A local keystore can exercise packaging, but it is not production
 evidence unless its public fingerprint, custody, recovery, upgrade, and

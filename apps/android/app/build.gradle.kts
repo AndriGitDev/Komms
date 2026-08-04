@@ -77,10 +77,10 @@ android {
         applicationId = "is.andri.komms"
         minSdk = 26
         targetSdk = 35
-        versionCode = 4
-        // Plain 0.4.0 matches the workspace, desktop, and iOS version family;
+        versionCode = 5
+        // Plain 0.4.1 matches the workspace, desktop, and iOS version family;
         // the Beta channel is carried by release metadata, not this value.
-        versionName = "0.4.0"
+        versionName = "0.4.1"
     }
 
     compileOptions {

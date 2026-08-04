@@ -68,7 +68,7 @@ python3 scripts/release-evidence.py inventory \
 
 python3 scripts/release-qualification.py prepare \
   --revision "$revision" \
-  --version 0.4.0 \
+  --version 0.4.1 \
   --artifact-manifest target/artifacts.json \
   --output target/qualification.json
 
@@ -79,7 +79,7 @@ python3 scripts/release-signing.py prepare \
 
 python3 scripts/stable-beta-readiness.py prepare \
   --revision "$revision" \
-  --version 0.4.0 \
+  --version 0.4.1 \
   --artifact-manifest target/artifacts.json \
   --release-notes .github/release-body.md \
   --output target/stable-beta.json
@@ -111,7 +111,7 @@ them as passed. Generate the SBOM and dependency record:
 python3 scripts/release-evidence.py sbom \
   --repository . \
   --revision "$revision" \
-  --version 0.4.0 \
+  --version 0.4.1 \
   --android-license-report target/android-licenses.json \
   --output target/komms.cdx.json
 
@@ -133,8 +133,8 @@ python3 scripts/release-evidence.py bundle \
   --artifact-dir target/release-artifacts \
   --output-dir target/release-evidence \
   --revision "$revision" \
-  --version 0.4.0 \
-  --tag v0.4.0 \
+  --version 0.4.1 \
+  --tag v0.4.1 \
   --source-date-epoch "$epoch" \
   --builder target/builder.json \
   --channel validation \
@@ -294,7 +294,7 @@ Package the completed directory with the exact top-level layout and name:
 ```sh
 python3 scripts/release-evidence.py pack \
   --bundle-dir target/promoted-evidence \
-  --output target/Komms-0.4.0-release-evidence.tar.gz
+  --output target/Komms-0.4.1-release-evidence.tar.gz
 ```
 
 The release draft must contain exactly the final top-level package files plus

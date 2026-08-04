@@ -39,10 +39,10 @@ words, with no cryptography knowledge required.
 
 ## Test the 0.4 Beta candidate
 
-The source and application version is `0.4.0`; Beta is the release channel.
+The source and application version is `0.4.1`; Beta is the release channel.
 After the explicit signing, qualification, and publication boundary is complete,
 the exact package set will appear on the
-[`v0.4.0` release page](https://github.com/AndriGitDev/Komms/releases/tag/v0.4.0).
+[`v0.4.1` release page](https://github.com/AndriGitDev/Komms/releases/tag/v0.4.1).
 Until then, use a source build or an explicitly labelled validation artifact and
 do not represent it as the public Beta.
 
@@ -285,9 +285,9 @@ division between local checks, per-push CI, weekly advisory evidence, physical
 qualification, and signing is documented in the
 [local release gate](docs/24-local-release-gate.md).
 
-The **Komms 0.4 Beta** candidate uses version `0.4.0` and the future `v0.4.0`
-source tag. Use the [Beta testing guide](docs/53-beta-testing.md) for the exact
-migration and evidence boundary. Container workflows prepare immutable `0.4.0`
+The **Komms 0.4 Beta** candidate uses version `0.4.1` and source tag `v0.4.1`.
+Use the [Beta testing guide](docs/53-beta-testing.md) for the exact
+migration and evidence boundary. Container workflows prepare immutable `0.4.1`
 and moving `0.4-beta`/`beta` tags, but publication remains a separate authorized
 operation. See the [release runbook](docs/25-release-runbook.md) for package,
 signing, checksum, qualification, and publication controls, or the

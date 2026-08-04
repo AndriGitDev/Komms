@@ -56,8 +56,8 @@ jobs:
             type=sha
             type=raw,value=mailbox-ci,enable=${{ !inputs.push }}
             type=semver,pattern={{version}},value=${{ inputs.release_tag }},enable=${{ inputs.push }}
-            type=raw,value=0.4-beta,enable=${{ inputs.push && inputs.release_tag == 'v0.4.0' }}
-            type=raw,value=beta,enable=${{ inputs.push && inputs.release_tag == 'v0.4.0' }}
+            type=raw,value=0.4-beta,enable=${{ inputs.push && inputs.release_tag == 'v0.4.1' }}
+            type=raw,value=beta,enable=${{ inputs.push && inputs.release_tag == 'v0.4.1' }}
           labels: |
             org.opencontainers.image.title=Komms mailbox-v2 service
             org.opencontainers.image.description=Least-authority durable leased ciphertext mailbox

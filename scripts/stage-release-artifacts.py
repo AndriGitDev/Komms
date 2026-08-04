@@ -46,13 +46,16 @@ def stage(args: argparse.Namespace) -> None:
     matches: list[Path] = []
     total = 0
     for candidate in sorted(source.rglob("*")):
+        matches_suffix = candidate.name.endswith(suffixes)
         if candidate.is_symlink():
-            raise StageError(f"{candidate}: symlinks are forbidden")
+            if matches_suffix:
+                raise StageError(f"{candidate}: package symlinks are forbidden")
+            continue
         if candidate.is_dir():
             continue
         if not candidate.is_file():
             raise StageError(f"{candidate}: unsupported filesystem entry")
-        if candidate.name.endswith(suffixes):
+        if matches_suffix:
             matches.append(candidate)
             total += candidate.stat().st_size
             if len(matches) > MAX_FILES or total > MAX_BYTES:
