@@ -4,9 +4,27 @@ Release notes describe product and compatibility changes. Security assurance,
 platform support, and operator availability are earned only by the exact
 revision-bound records linked from a completed release.
 
-## 0.4.2 Beta — release candidate
+## 0.4.2 Beta — unsigned test release
 
-Publication date: pending explicit release authorization.
+Published 2026-08-04 as a public prerelease from tag `v0.4.2`, commit
+`5a09190cfef9cfef92703672517bc008b6e8cc1f`.
+
+### Distribution status
+
+- Published the exact green hosted validation set as an explicitly unsigned,
+  pre-production test exception for version 0.4.2 only. This did not enroll or
+  exercise any production signing role and does not weaken the release policy
+  for later versions.
+- Added unsigned Windows, macOS, and Linux packages; an unsigned iOS Simulator
+  archive; unsigned Android validation packages; and a Google-free Android APK
+  signed with the existing test/debug certificate for physical-device testing.
+- Attached `UNSIGNED-TEST-SHA256SUMS`, the original
+  `VALIDATION-SHA256SUMS`, and the revision-bound validation evidence archive.
+  The evidence continues to report `production_signed: false`,
+  `qualified_for_stable: false`, and `independently_reproduced: false`.
+- Recorded the exact exception, checksums, test certificate, hosted validation
+  run, and remaining gates in
+  [the 0.4.2 release record](docs/54-v0.4.2-unsigned-test-release.md).
 
 ### Security and trust
 
@@ -81,7 +99,7 @@ Publication date: pending explicit release authorization.
 - Independent security review, independent interoperability/reproduction,
   qualified public operators, real-network and named physical-device matrices,
   accessibility assessment, and the physical two-radio bench remain open.
-- The 0.4 Beta candidate is not a stable release and is not suitable for
+- The public 0.4.2 Beta is not a stable release and is not suitable for
   emergency or safety-critical communication.
 
 ## 0.4.1 Beta — failed physical-validation candidate

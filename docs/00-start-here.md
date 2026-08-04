@@ -61,18 +61,22 @@ Our full, frank list is in the [threat model](02-threat-model.md).
 
 ## Can I use it today?
 
-Yes, as a careful Beta tester. Komms 0.4 is being prepared as a version-aligned
-Beta candidate for Windows, macOS, Linux, Android, and an unsigned iOS
-Simulator path. Follow the [Beta testing guide](53-beta-testing.md) to identify
-an eligible package, verify its exact evidence, migrate safely, and report what
-you find. A source build or retained validation artifact is not the public Beta,
-and a platform with no completed release asset is not supplied. Hands-on device
-qualification, production signing and store distribution, the physical radio
-bench, qualified operators, and an external audit remain before a stable
-release. Fresh internet installs also need deliberate bootstrap/mailbox
+Yes, as a careful Beta tester. Komms 0.4.2 is a public, explicitly unsigned
+pre-production test release for Windows, macOS, Linux, Android, and the iOS
+Simulator. Download it only from the
+[`v0.4.2` release](https://github.com/AndriGitDev/Komms/releases/tag/v0.4.2),
+then follow the [Beta testing guide](53-beta-testing.md) to select the exact
+asset, verify its checksum and test-signing boundary, migrate safely, and
+report what you find. A source build or other retained validation artifact is
+not the published 0.4.2 test set, and a platform with no listed release asset is
+not supplied. Hands-on device qualification, production signing and store
+distribution, the physical radio bench, qualified operators, and an external
+audit remain before a stable release. Fresh internet installs also need deliberate bootstrap/mailbox
 configuration today. Deterministic local Standard-blackhole, replacement, and
 pure-core journeys exist, but clean supported devices behind distinct real NATs
 and qualified operators remain P0 work, not a current plug-and-play claim. The
+[0.4.2 release record](54-v0.4.2-unsigned-test-release.md) explains the
+one-version unsigned exception and every gate it leaves open. The
 [0.3 Alpha](https://github.com/AndriGitDev/Komms/releases/tag/v0.3.0) remains a
 historical test release and predates the 0.4 trust and evidence design.
 
@@ -166,6 +170,7 @@ Platform build instructions:
 | If you want to know… | Read… |
 |---|---|
 | how to migrate, verify, install, and test the 0.4 Beta | [Beta Testing](53-beta-testing.md) |
+| what was actually published for 0.4.2 and which gates remain open | [0.4.2 Unsigned Test Release](54-v0.4.2-unsigned-test-release.md) |
 | what Komms promises and why | [Why Komms](01-why.md) |
 | what it protects—and what it cannot | [Threat Model](02-threat-model.md) |
 | how the system is layered | [Architecture](03-architecture.md) |

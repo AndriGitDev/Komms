@@ -1,6 +1,12 @@
-**Komms 0.4 Beta** is a prerelease for careful testing. Back up important data,
-keep the separately protected recovery authority available, and do not rely on
-this build for emergency or safety-critical communication.
+> [!WARNING]
+> **Komms 0.4.2 Beta is an unsigned, pre-production test release.** It bypasses
+> the production-signing and protected-publication gates for version 0.4.2
+> only. Do not use it for emergency, safety-critical, or production
+> communication.
+
+The public assets are bound to tag `v0.4.2` and commit
+`5a09190cfef9cfef92703672517bc008b6e8cc1f`. Back up disposable test data and
+keep the separately protected recovery authority available.
 
 This release replaces the 0.3 Alpha trust and delivery foundations rather than
 merely polishing them:
@@ -33,13 +39,12 @@ merely polishing them:
 - desktop first run uses the native Save dialog for the offline authority and
   keeps failed or cancelled destinations safely retryable.
 
-The candidate pipeline builds native desktop packages, both Android flavors,
-an unsigned iOS Simulator archive, the headless node, and dedicated reference,
-mailbox, wake, and OHTTP service images. A completed public release may contain
-only the exact packages bound into its revision-specific evidence archive.
-Container publication, store submission, and service deployment remain
-separate maintainer-authorized operations; the prepared moving aliases are
-`0.4-beta` and `beta`, never `latest`.
+The complete hosted validation pipeline passed. This public test set contains
+unsigned native desktop packages, unsigned Android validation packages, a
+Google-free Android APK signed with a test/debug certificate, and an unsigned
+iOS Simulator archive. Container publication, store submission, and service
+deployment remain separate maintainer-authorized operations; the prepared
+moving aliases are `0.4-beta` and `beta`, never `latest`.
 
 This Beta does **not** claim an independent security audit, independent
 interoperability, production operator qualification, physical mobile/radio
@@ -48,7 +53,10 @@ stable support. No qualified default operator currently ships. `queued`,
 `sent`, and `delivered` retain their exact custody meanings, and optional wake
 or rendezvous acknowledgement never advances them.
 
-Before installing, verify the package digest and completed evidence archive,
-then follow the Beta testing guide, release runbook, and security documentation.
-Production signing and publication require their explicit evidence and
-authorization boundaries; validation artifacts are not substitutes for them.
+Before installing, verify the package against `UNSIGNED-TEST-SHA256SUMS` and
+follow the Beta testing guide. The attached validation archive correctly
+reports `production_signed: false`, `qualified_for_stable: false`, and
+`independently_reproduced: false`; it is not an offline release signature.
+Production signing, authenticated updates, qualification, store distribution,
+and stable publication remain open. The 0.4.2 exception does not authorize a
+later release to bypass those gates.

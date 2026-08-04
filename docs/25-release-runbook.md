@@ -9,6 +9,14 @@ The historical public `v0.3.0` Alpha predates this release-evidence design. Its
 unsigned desktop and debug-signed Android packages remain test artifacts, not
 evidence that the production-signing or stable gates are closed.
 
+The public `v0.4.2` Beta is a separately documented one-version exception: the
+exact green hosted validation set was published as an explicitly unsigned,
+pre-production test release without completing the production-signing,
+promotion, offline-manifest, or protected-publication steps below. It closes no
+production or stable gate and does not authorize the same path for a later
+version. See
+[54: 0.4.2 Unsigned Test Release](54-v0.4.2-unsigned-test-release.md).
+
 ## 1. Prepare source and versions
 
 Update every version surface:
@@ -81,6 +89,15 @@ Review:
 
 The first hosted comparison is not independent reproduction. The iOS
 Simulator archive and unsigned packages are validation evidence only.
+
+For `v0.4.2`, the completed tag-triggered validation is
+[workflow run 30938415216](https://github.com/AndriGitDev/Komms/actions/runs/30938415216).
+All validation jobs passed. The hosted candidate archive had SHA-256
+`c25aa8f6f3ac0723c3edd4a1b6c37e36c7feb70fbc1a883efab841ce8a38cb50`;
+the separately retained release-evidence artifact had SHA-256
+`3ab0f46f99892bfb1eb76fe2abab3ec298c69de533485a4b4e8064e7d2bea87c`.
+Those hosted artifacts expire on 2026-11-02, while the public release retains
+the selected files and a packed validation-evidence archive.
 
 ## 3. Optionally create an empty private draft
 
@@ -233,8 +250,11 @@ and store submission remain separately authorized operations.
 ## 7. Current stopping point
 
 Validation artifacts and evidence can be produced locally and in hosted CI.
-Production signing, store submission, and stable publication are blocked on the
+The exact 0.4.2 validation set has also been published under unmistakable
+unsigned test-only wording. Production signing, store submission, and stable
+publication remain blocked on the
 credential enrollment, supported-system qualification, independent evidence,
 and physical field rows listed in the
 [release evidence ledger](31-release-evidence-ledger.md). Do not bypass those
-blocks by publishing unsigned packages under stable wording.
+blocks by publishing unsigned packages under production or stable wording, and
+do not treat the 0.4.2 exception as precedent for another version.

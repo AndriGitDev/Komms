@@ -269,11 +269,14 @@ the cargo workspace, mirroring the other shells' posture.
 
 ## Beta availability
 
-The routine Komms 0.4 Beta validation path produces an unsigned iOS Simulator
-archive, not an installable IPA. No TestFlight or App Store release exists
-unless the `v0.4.2` release contains a separately signed and qualified
-`ios-arm64` asset. Testers should follow the exact availability and evidence
-boundary in the [Beta testing guide](../../docs/53-beta-testing.md).
+The public `v0.4.2` release contains
+`Komms-0.4.2-ios-simulator-validation.zip`, an unsigned iOS Simulator archive,
+not an installable IPA. It was published under the explicit unsigned test-only
+exception. No TestFlight, App Store, physical-device IPA, distribution
+certificate, or provisioning qualification exists. Testers should follow the
+exact availability and evidence boundary in the
+[Beta testing guide](../../docs/53-beta-testing.md) and
+[0.4.2 release record](../../docs/54-v0.4.2-unsigned-test-release.md).
 
 ## Build & test
 

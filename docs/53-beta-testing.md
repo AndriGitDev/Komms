@@ -1,63 +1,76 @@
 # 53: Install and Test Komms 0.4 Beta
 
-Komms 0.4 Beta is a prerelease candidate for careful hands-on testing. It is
-not a stable release, an independently audited build, or suitable for emergency
-or safety-critical communication. Back up disposable test data before an
-upgrade and retain every recovery file and phrase separately.
+Komms 0.4.2 Beta is a public prerelease for careful hands-on testing. It is an
+explicitly unsigned, pre-production test release—not a stable release, an
+independently audited build, or software for emergency, safety-critical, or
+production communication. Back up disposable test data before an upgrade and
+retain every recovery file and phrase separately.
 
 The source and application version is `0.4.2`; `beta` is the release channel.
-The only eligible source tag is `v0.4.2`. A branch name, workflow artifact, or
-container alias is not a release identity.
+The release source is tag `v0.4.2` at commit
+`5a09190cfef9cfef92703672517bc008b6e8cc1f`. A branch name, workflow artifact,
+or container alias is not that public release identity.
 
 ## 1. Obtain an eligible package
 
-The release page is authoritative only after a maintainer publishes a completed
-Beta whose evidence archive binds the exact package set. Before that happens,
-use source builds or explicitly labelled validation artifacts; do not represent
-them as the public Beta.
-
-When the release exists, obtain it from the
+Obtain the public test release only from the
 [`v0.4.2` release page](https://github.com/AndriGitDev/Komms/releases/tag/v0.4.2).
-Choose an asset beginning with the matching class:
+Choose the exact asset for the test environment:
 
-| Platform | Expected staged asset class | Current boundary |
+| Platform | Public 0.4.2 test asset | Current boundary |
 |---|---|---|
-| Windows 10/11 x64 | `Komms-0.4.2-windows-x86_64-…` | MSI or NSIS package; publication requires verified Authenticode evidence. |
-| macOS Intel or Apple silicon | `Komms-0.4.2-macos-universal-…` | Universal DMG; publication requires Developer ID and notarization evidence. |
-| Linux x86-64 | `Komms-0.4.2-linux-x86_64-…` | AppImage, DEB, or RPM bound by the release-manifest role. |
-| Android 8.0+ | `Komms-0.4.2-android-play-arm64-…` or `Komms-0.4.2-android-google-free-arm64-…` | Play and Google-free are separate signing roles; the Google-free build contains no FCM SDK. |
-| iOS 16+ | No public package unless a qualified `ios-arm64` IPA is present | The routine validation workflow builds an unsigned Simulator archive, not an installable IPA. |
+| Windows 10/11 x64 | `Komms-0.4.2-windows-x86_64-Komms_0.4.2_x64_en-US.msi` or `Komms-0.4.2-windows-x86_64-Komms_0.4.2_x64-setup.exe` | Both are unsigned; expect SmartScreen warnings. |
+| macOS Intel or Apple silicon | `Komms-0.4.2-macos-universal-Komms_0.4.2_universal.dmg` | The universal DMG is unsigned and not notarized; expect Gatekeeper warnings. |
+| Linux x86-64 | the AppImage, DEB, or RPM whose name begins `Komms-0.4.2-linux-x86_64-` | All three are unsigned. |
+| Android 8.0+ arm64 | `Komms-0.4.2-android-google-free-test-signed.apk` | Installable Google-free APK signed with a test/debug certificate, not a production release key. |
+| iOS Simulator | `Komms-0.4.2-ios-simulator-validation.zip` | Unsigned Simulator application only; it cannot be installed on a physical iPhone. |
 
-If the completed release lacks a platform asset, that platform is not supplied
-by this Beta. Do not substitute a retained validation package or third-party
-binary.
+The Android files containing `release-unsigned` and the Play AAB are retained
+validation artifacts, not ordinary install packages. There is no public
+physical-device iOS IPA. Do not substitute a third-party binary.
 
 ## 2. Verify the exact release
 
-Download the completed `Komms-0.4.2-release-evidence.tar.gz` archive and the
-package from the same release. The archive must unpack to one
-`release-evidence/` directory and its `artifacts.json` must list the package's
-exact filename, byte size, and SHA-256 digest. Follow
-[Release Evidence Bundles](40-release-evidence-bundles.md) to safely unpack and
-verify it.
-
-On Linux or macOS, calculate the package digest with:
+Download `UNSIGNED-TEST-SHA256SUMS` and the package from the same release. On
+Linux or macOS, verify the files present in the directory with:
 
 ```sh
-shasum -a 256 Komms-0.4.2-PLATFORM-ASSET
+shasum -a 256 -c UNSIGNED-TEST-SHA256SUMS
 ```
 
-On Windows PowerShell:
+On Windows PowerShell, calculate the selected package digest and compare it to
+the matching line in `UNSIGNED-TEST-SHA256SUMS`:
 
 ```powershell
 Get-FileHash .\Komms-0.4.2-PLATFORM-ASSET -Algorithm SHA256
 ```
 
-The value must equal the `sha256` entry for that exact path. Also inspect
-`signing.json`, `qualification.json`, `residual-risks.json`, and
-`release-notes.md`; a successful hash does not close an open signing or
-physical-qualification row. Stop if the package, evidence archive, tag, source
-revision, version, or digest disagrees.
+The public checksum manifest itself has SHA-256
+`48ba6a499bdfcb03d10fb79e7ef1000996658b916a722ff4775cfbaf3705c1f4`.
+Stop if the filename, version, source revision, or digest disagrees.
+
+The attached `Komms-0.4.2-validation-evidence.tar.gz` has SHA-256
+`b639a1ad81210a17f4dc8bc5d47d981ab0011aa45357b99638350e4d9d99e58f`.
+It and `VALIDATION-SHA256SUMS` preserve the original hosted validation set. The
+archive is validation evidence, not a completed production evidence bundle or
+offline release signature. Its records correctly say:
+
+- `production_signed: false`;
+- `qualified_for_stable: false`; and
+- `independently_reproduced: false`.
+
+For Android, the test certificate SHA-256 is
+`ec07a2d6a873d4b921c03c63a4c38888db582ee8b9e00517c124b4e395083cb7`.
+The test-signed Google-free APK has the same normalized unsigned payload as the
+hosted Google-free validation APK; only its test signature differs. Uninstall
+it before a future production-signed build because an authenticated in-place
+upgrade from this certificate is not promised.
+
+The [0.4.2 release record](54-v0.4.2-unsigned-test-release.md) binds the hosted
+workflow, artifact checksums, one-version exception, and open gates. Follow
+[Release Evidence Bundles](40-release-evidence-bundles.md) when inspecting the
+attached archive, but do not reinterpret its validation channel as a signed
+release channel.
 
 ## 3. Upgrade carefully from 0.3 Alpha
 
@@ -83,7 +96,7 @@ storage to make an upgrade appear seamless.
 
 ## 4. Run the Beta acceptance walk-through
 
-Use two fresh test identities on separate candidate devices when possible:
+Use two fresh test identities on separate test devices when possible:
 
 1. Create, lock, restart, and unlock both profiles. Store the offline recovery
    authority, backup, and their different phrases separately.

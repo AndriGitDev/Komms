@@ -270,16 +270,22 @@ ensures no Firebase or Play coordinate enters a Google-free configuration.
 
 ## Install the 0.4 Beta
 
-After the explicit release boundary is complete, choose the separately signed
-Play or Google-free Android asset from the
+The public 0.4.2 Beta is an explicitly unsigned, pre-production test release.
+For an arm64 physical device running Android 8.0 (API 26) or newer, download
+`Komms-0.4.2-android-google-free-test-signed.apk` from the
 [`v0.4.2` release page](https://github.com/AndriGitDev/Komms/releases/tag/v0.4.2).
-It supports Android 8.0 (API 26) or newer on `arm64-v8a` phones; validation also
-covers `x86_64` emulators. Verify the exact package against the completed
-release-evidence archive, allow **Install unknown apps** only when installing a
-qualified direct-distribution package, then turn that permission off again.
-The [Beta testing guide](../../docs/53-beta-testing.md) has the migration,
-verification, and acceptance steps. A retained unsigned validation APK/AAB is
-not the public Beta and must not be represented as production-signed.
+It uses an Android test/debug certificate whose SHA-256 is
+`ec07a2d6a873d4b921c03c63a4c38888db582ee8b9e00517c124b4e395083cb7`;
+it is not production-signed. Verify the APK against
+`UNSIGNED-TEST-SHA256SUMS`, allow **Install unknown apps** only for the explicit
+install, then turn that permission off again.
+
+The files containing `release-unsigned` and the Play AAB are validation
+artifacts, not ordinary install packages. The
+[Beta testing guide](../../docs/53-beta-testing.md) has the migration,
+verification, and acceptance steps, and the
+[0.4.2 release record](../../docs/54-v0.4.2-unsigned-test-release.md) preserves
+the exact exception and evidence boundary.
 
 Android rejects an in-place upgrade from a build signed by a different key.
 Export any data you need before uninstalling an older test build.
@@ -321,11 +327,13 @@ and physical-device qualification matrix in
 [38: Native-wake mobile qualification](../../docs/38-native-wake-mobile-qualification.md).
 
 The historical `v0.3.0` prerelease includes an installable debug APK and
-predates the current release-evidence design. A `v0.4.2` tag push produces
+predates the current release-evidence design. The `v0.4.2` tag push produced
 retained unsigned validation APK/AAB artifacts and a revision-bound evidence
-bundle, but does not create a draft or access a keystore. Production signing
-begins only after the separate Play and Google-free roles are enrolled and
-exercised. The qualification and explicit publication boundaries are in the
+bundle without accessing a keystore. A copy of the exact Google-free payload
+was then test-signed and published under the explicit 0.4.2-only exception.
+Production signing begins only after the separate Play and Google-free roles
+are enrolled and exercised. The qualification and protected publication
+boundaries are in the
 [release runbook](../../docs/25-release-runbook.md).
 
 ## Version and release signing boundary

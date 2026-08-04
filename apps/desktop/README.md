@@ -195,19 +195,23 @@ legacy bytes.
 
 ## Install the 0.4 Beta
 
-After the explicit signing, qualification, and publication boundary is
-complete, download the package for your system from the
+The public 0.4.2 Beta is an explicitly unsigned, pre-production test release.
+Download the package for your disposable test system from the
 [`v0.4.2` release page](https://github.com/AndriGitDev/Komms/releases/tag/v0.4.2):
 
 - Windows 10/11 x64: MSI or NSIS setup EXE;
 - macOS Intel or Apple silicon: universal DMG (or app archive); and
 - Linux x86-64: AppImage, DEB, or RPM.
 
-Verify the exact package against the completed release-evidence archive before
-accepting an operating-system warning. Follow the
+The Windows installers are unsigned, the macOS DMG is unsigned and not
+notarized, and the Linux packages are unsigned. Verify the exact package
+against `UNSIGNED-TEST-SHA256SUMS` before accepting an operating-system
+warning. Follow the
 [Beta testing guide](../../docs/53-beta-testing.md) for migration,
-installation, and acceptance steps. A retained unsigned validation package is
-not the public Beta and must not be substituted for a completed signed asset.
+installation, and acceptance steps. The
+[0.4.2 release record](../../docs/54-v0.4.2-unsigned-test-release.md) binds the
+public files to the green validation run and lists the production/stable gates
+that remain open.
 
 ## Build & run
 
@@ -234,21 +238,23 @@ and skips the rest.
 
 The historical `v0.3.0` prerelease was built in those formats on native Linux,
 macOS, and Windows runners with checksums. It predates the current evidence
-design. A `v0.4.2` tag push creates read-only validation artifacts, public builder records, a
-second controlled Linux measurement, an SBOM, and hosted attestations; they do
-not create a draft or access a signing credential. Follow the
+design. The `v0.4.2` tag push created read-only validation artifacts, public
+builder records, a second controlled Linux measurement, an SBOM, and hosted
+attestations without accessing a signing credential. The exact files were then
+published under an explicit unsigned test-only exception. Follow the
 [release runbook](../../docs/25-release-runbook.md); a successful build alone
-is not permission to publish or a claim that an unsigned package is
-production-ready.
+is not a production-signing or stable-qualification claim, and the 0.4.2
+exception is not reusable for another version.
 
 ## Packaging and signing boundary
 
 The package identifier is `is.andri.komms` and the current version is `0.4.2`,
 aligned with the Rust, Android, and iOS surfaces.
 
-The historical 0.3 Alpha desktop packages are not release-signed or notarized: macOS and
-Windows are unsigned, and the Linux package artifacts have no release-manifest
-signature. No production certificate or key enters the tree. Local Tauri
+The public 0.4.2 test packages and historical 0.3 Alpha desktop packages are
+not release-signed or notarized: macOS and Windows are unsigned, and the Linux
+package artifacts have no release-manifest signature. No production
+certificate or key enters the tree. Local Tauri
 packaging can read credentials from the environment when a maintainer
 deliberately exercises a test identity:
 

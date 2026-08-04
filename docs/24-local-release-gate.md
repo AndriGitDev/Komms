@@ -141,6 +141,14 @@ historical public
 predates the current evidence design. Its unsigned desktop and debug-signed
 Android assets remain test artifacts, not 0.4 Beta evidence.
 
+The public
+[`v0.4.2` Beta](https://github.com/AndriGitDev/Komms/releases/tag/v0.4.2)
+is likewise an explicitly unsigned, pre-production test release. Its exact
+hosted validation run passed and its public checksum manifests bind the
+downloadable files, but no production signing role or stable qualification was
+claimed. The bounded one-version exception is recorded in
+[54: 0.4.2 Unsigned Test Release](54-v0.4.2-unsigned-test-release.md).
+
 The current release controls define:
 
 - validation, Alpha, Beta, and stable channels with Beta carrying the same
@@ -156,7 +164,8 @@ The current release controls define:
   independence; and
 - protected draft, offline signature, and publication boundaries.
 
-No production role is enrolled. The `production_signing` workflow input
+No production role is enrolled. Publishing the 0.4.2 unsigned test set did not
+enroll or exercise one. The `production_signing` workflow input
 therefore stops at a protected enrollment boundary. The iOS gate remains an
 unsigned Simulator build, desktop/Android release packages remain validation
 artifacts, and Windows hardware-backed signing has no chosen provider. See
@@ -183,3 +192,8 @@ Do not create repeated fixup pushes to use hosted CI as an interactive compiler.
 If a final hosted run is authorized, push the already-green local checkpoint
 once, cancel obsolete duplicate runs, and treat remote-only failures as new local
 reproduction work before another publication attempt.
+
+The documented 0.4.2 test-only exception is historical evidence, not a reusable
+shortcut. A later production or stable release must satisfy the unchanged
+signing, qualification, evidence, visual-review, and protected-publication
+controls.

@@ -24,7 +24,7 @@ independently reviewed, or stable. Build order details per crate:
 spec, transport spec, identity model, storage model, ADRs, implementation guide.
 
 **Acceptance**: docs internally consistent; every architectural decision has an ADR;
-implementation guide sufficient for a competent Rust developer (or coding agent) to start
+implementation guide sufficient for a competent Rust developer to start
 M1 without design questions.
 
 ## M1: Cryptographic core (`kult-crypto`) *(implemented; assurance open)*
@@ -358,10 +358,11 @@ held in zeroizing memory. The locked workspaces declare and compile-test MSRV
 currently authorized iOS Simulator build; a weekly workflow rechecks advisories
 for both Cargo workspaces, the core on macOS, and an informational coverage
 snapshot. All build surfaces identify as `0.4.2`, with Android and iOS build
-number `6`. The Komms 0.4 Beta candidate retains a required human visual gate
-for Android, iOS, macOS, Windows, and Linux alongside native desktop packages,
-both Android distribution flavors, the unsigned iOS Simulator archive, and the
-revision-bound evidence bundle.
+number `6`. The exact `v0.4.2` hosted validation matrix passed and its desktop,
+Android, unsigned iOS Simulator, checksum, and revision-bound evidence assets
+were published as an explicitly unsigned test-only Beta exception. The public
+test set is not production signing, named-platform qualification, or stable
+evidence.
 
 The next release-control slice is also implemented locally: immutable action,
 container, bootstrap, and packaging-tool pins; read-only tag builds; Android
@@ -369,11 +370,13 @@ application dependency locks and artifact verification; exact-class
 builder/signing/qualification records; aggregate CycloneDX SBOM; deterministic
 safe evidence archives; controlled and independently administered reproduction
 records; hosted-attestation wiring; empty draft creation; exact completed-asset
-verification; and separately protected publication.
-Production keys, store roles, signed platform artifacts, independent
-reproduction, supported-system upgrade/rollback evidence, and publication
-remain open. No updater, bit-for-bit reproducibility, or stable distribution
-claim is made. See [24: Local Release Gate](24-local-release-gate.md),
+verification; and separately protected production publication. The 0.4.2 test
+exception did not exercise that protected path. Production keys, store roles,
+signed platform artifacts, independent reproduction, supported-system
+upgrade/rollback evidence, and production/stable publication remain open. No
+updater, bit-for-bit reproducibility, or stable distribution claim is made. See
+[54: 0.4.2 Unsigned Test Release](54-v0.4.2-unsigned-test-release.md),
+[24: Local Release Gate](24-local-release-gate.md),
 [39: Release Security and Recovery](39-release-security-and-recovery.md), and
 [40: Release Evidence Bundles](40-release-evidence-bundles.md).
 

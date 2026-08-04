@@ -1,7 +1,8 @@
 # 39: Release security and recovery
 
-**Status:** implemented validation controls; production credential enrollment
-and supported-platform qualification are open
+**Status:** implemented validation controls; public 0.4.2 unsigned test
+exception recorded; production credential enrollment and supported-platform
+qualification are open
 
 **Accountable owner:** Andri
 
@@ -16,6 +17,14 @@ machine-readable policy is
 No production signing private key, store credential, provisioning profile, or
 publication token is stored in the repository. None was generated while
 preparing this policy.
+
+Komms 0.4.2 was published as an explicitly unsigned, pre-production test-only
+exception after its complete hosted validation run passed. That manual decision
+did not use the protected production-signing/promotion path, enroll a release
+key, or confer stable qualification. Its immutable boundary is recorded in
+[54: 0.4.2 Unsigned Test Release](54-v0.4.2-unsigned-test-release.md). The
+workflow and policy below remain the required path for later production and
+stable releases.
 
 ## 1. Release authority is split by operation
 
@@ -208,6 +217,11 @@ The exact next external action is a maintainer enrollment decision for the
 first signing role. Until that happens, selecting `production_signing` fails at
 the protected enrollment boundary and no stable distribution claim is
 available.
+
+The public 0.4.2 unsigned test packages do not change this blocker. In
+particular, the Android test/debug certificate is not an enrolled Google-free
+release identity, and the attached validation checksum/evidence files are not
+an offline release-manifest signature.
 
 After signing and field entry conditions are met, the independent final
 decision path is documented in
