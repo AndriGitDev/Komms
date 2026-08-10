@@ -185,7 +185,7 @@ jobs:
             libwebkit2gtk-4.1-dev libgtk-3-dev \
             libayatana-appindicator3-dev librsvg2-dev patchelf rpm \
             dbus-x11 xvfb
-      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
         with:
           toolchain: ${{ env.RELEASE_RUST }}
           targets: ${{ matrix.rust_targets }}
@@ -283,7 +283,7 @@ jobs:
             libwebkit2gtk-4.1-dev libgtk-3-dev \
             libayatana-appindicator3-dev librsvg2-dev patchelf rpm \
             dbus-x11 xvfb
-      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
         with:
           toolchain: ${{ env.RELEASE_RUST }}
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
@@ -352,7 +352,7 @@ jobs:
         with:
           ref: ${{ env.RELEASE_TAG }}
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
         with:
           toolchain: ${{ env.RELEASE_RUST }}
           targets: aarch64-linux-android,x86_64-linux-android
@@ -483,7 +483,7 @@ jobs:
             exit 1
           fi
           printf '%s\n' "$xcode_info"
-      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
         with:
           toolchain: ${{ env.RELEASE_RUST }}
           targets: aarch64-apple-ios,aarch64-apple-ios-sim,x86_64-apple-ios
@@ -594,7 +594,7 @@ jobs:
         with:
           ref: ${{ env.RELEASE_TAG }}
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
         with:
           toolchain: ${{ env.RELEASE_RUST }}
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
