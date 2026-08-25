@@ -61,8 +61,8 @@ pub fn safety_number(a: &IdentityPublic, b: &IdentityPublic) -> SafetyNumber {
     util::hkdf_expand(None, &d, FP_INFO, &mut okm);
 
     let mut digits = String::with_capacity(30);
-    for chunk in okm[..24].chunks_exact(4) {
-        let v = u32::from_be_bytes(chunk.try_into().expect("chunk of 4")) % 100_000;
+    for chunk in okm[..24].as_chunks::<4>().0 {
+        let v = u32::from_be_bytes(*chunk) % 100_000;
         // Zero-padded 5-digit group.
         let mut buf = [b'0'; 5];
         let mut v = v;

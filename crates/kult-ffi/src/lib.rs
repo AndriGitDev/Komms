@@ -5953,7 +5953,7 @@ fn parse_fixed_lower_hex<const N: usize>(value: &str) -> Result<[u8; N], String>
         ));
     }
     let mut out = [0u8; N];
-    for (index, pair) in value.as_bytes().chunks_exact(2).enumerate() {
+    for (index, pair) in value.as_bytes().as_chunks::<2>().0.iter().enumerate() {
         let nibble = |byte| match byte {
             b'0'..=b'9' => byte - b'0',
             b'a'..=b'f' => byte - b'a' + 10,
@@ -6160,7 +6160,7 @@ fn parse_message(s: &str) -> Result<[u8; 16], FfiError> {
         .collect::<Option<_>>()
         .ok_or_else(fail)?;
     let mut out = [0u8; 16];
-    for (i, pair) in digits.chunks_exact(2).enumerate() {
+    for (i, pair) in digits.as_chunks::<2>().0.iter().enumerate() {
         out[i] = ((pair[0] << 4) | pair[1]) as u8;
     }
     Ok(out)
@@ -6191,7 +6191,7 @@ fn parse_review_token(s: &str) -> Result<[u8; 16], FfiError> {
         .collect::<Option<_>>()
         .ok_or_else(fail)?;
     let mut out = [0u8; 16];
-    for (i, pair) in digits.chunks_exact(2).enumerate() {
+    for (i, pair) in digits.as_chunks::<2>().0.iter().enumerate() {
         out[i] = ((pair[0] << 4) | pair[1]) as u8;
     }
     Ok(out)
@@ -6210,7 +6210,7 @@ fn parse_transfer(s: &str) -> Result<[u8; 16], FfiError> {
         .collect::<Option<_>>()
         .ok_or_else(fail)?;
     let mut out = [0u8; 16];
-    for (i, pair) in digits.chunks_exact(2).enumerate() {
+    for (i, pair) in digits.as_chunks::<2>().0.iter().enumerate() {
         out[i] = ((pair[0] << 4) | pair[1]) as u8;
     }
     Ok(out)

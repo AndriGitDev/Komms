@@ -476,11 +476,7 @@ fn decode_create(bytes: &[u8]) -> DecodedPoll<'_> {
         return DecodedPoll::Malformed;
     }
     let voter_bytes = &bytes[cursor..];
-    if !strictly_sorted_voters(voter_bytes.chunks_exact(32).map(|chunk| {
-        let mut voter = [0u8; 32];
-        voter.copy_from_slice(chunk);
-        voter
-    })) {
+    if !strictly_sorted_voters(voter_bytes.as_chunks::<32>().0.iter().copied()) {
         return DecodedPoll::Malformed;
     }
     DecodedPoll::Poll(Poll::Create(PollCreate {
@@ -531,7 +527,7 @@ fn decode_close(bytes: &[u8]) -> DecodedPoll<'_> {
     }
     let head_bytes = &bytes[CLOSE_HEADER_LEN..];
     let mut previous = None;
-    for chunk in head_bytes.chunks_exact(CLOSE_HEAD_LEN) {
+    for chunk in head_bytes.as_chunks::<CLOSE_HEAD_LEN>().0 {
         let mut voter = [0u8; 32];
         voter.copy_from_slice(&chunk[..32]);
         if previous.is_some_and(|value| value >= voter) {
@@ -572,7 +568,7 @@ fn decode_moderated_close(bytes: &[u8]) -> DecodedPoll<'_> {
     let signature_at = bytes.len() - 64;
     let head_bytes = &bytes[MODERATED_CLOSE_HEADER_LEN..signature_at];
     let mut previous = None;
-    for chunk in head_bytes.chunks_exact(CLOSE_HEAD_LEN) {
+    for chunk in head_bytes.as_chunks::<CLOSE_HEAD_LEN>().0 {
         let mut voter = [0u8; 32];
         voter.copy_from_slice(&chunk[..32]);
         if previous.is_some_and(|value| value >= voter) {

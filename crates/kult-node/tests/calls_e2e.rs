@@ -77,14 +77,13 @@ impl Transport for DirectLink {
     }
 
     async fn recv(&self) -> kult_transport::Result<Vec<Envelope>> {
-        Ok(self
-            .net
-            .lock()
-            .unwrap()
-            .entry(self.me.to_owned())
-            .or_default()
-            .drain(..)
-            .collect())
+        Ok(std::mem::take(
+            self.net
+                .lock()
+                .unwrap()
+                .entry(self.me.to_owned())
+                .or_default(),
+        ))
     }
 
     fn call_ready(&self, hint: &DeliveryHint) -> bool {
