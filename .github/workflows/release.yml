@@ -616,9 +616,9 @@ jobs:
           name: android-license-report
           path: target/android-license
       - name: Enforce Cargo dependency policy
-        uses: EmbarkStudios/cargo-deny-action@b66acf5e9fe20f8aba065be86778a8a4c846f902 # v2
+        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2
       - name: Enforce desktop Cargo dependency policy
-        uses: EmbarkStudios/cargo-deny-action@b66acf5e9fe20f8aba065be86778a8a4c846f902 # v2
+        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2
         with:
           manifest-path: apps/desktop/src-tauri/Cargo.toml
       - name: Create revision-bound public records
