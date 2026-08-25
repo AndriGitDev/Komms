@@ -94,7 +94,7 @@ impl CapabilityControl {
                 .get(offset..offset + kinds_len)
                 .ok_or(ProtocolError::Malformed)?;
             let mut kinds = Vec::with_capacity(kind_count);
-            for pair in encoded_kinds.chunks_exact(2) {
+            for pair in encoded_kinds.as_chunks::<2>().0 {
                 kinds.push(u16::from_le_bytes([pair[0], pair[1]]));
             }
             offset += kinds_len;

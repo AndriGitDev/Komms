@@ -285,7 +285,7 @@ fn decode_operation(code: u8, payload: &[u8]) -> Result<AttachmentBulkOperation<
                 return Err(ProtocolError::Malformed);
             }
             let mut ranges = Vec::with_capacity(count);
-            for encoded in payload[2..].chunks_exact(8) {
+            for encoded in payload[2..].as_chunks::<8>().0 {
                 ranges.push(MissingRange {
                     start: u32::from_le_bytes(encoded[..4].try_into().expect("fixed slice")),
                     count: u32::from_le_bytes(encoded[4..].try_into().expect("fixed slice")),

@@ -246,7 +246,7 @@ fn decode_v1(bytes: &[u8]) -> Result<Mention<'_>> {
 
     let targets = &bytes[MENTION_HEADER_LEN..text_start];
     let mut previous_target: Option<&[u8]> = None;
-    for target in targets.chunks_exact(MENTION_TARGET_LEN) {
+    for target in targets.as_chunks::<MENTION_TARGET_LEN>().0 {
         if previous_target.is_some_and(|previous| previous >= target) {
             return Err(ProtocolError::Malformed);
         }
@@ -258,7 +258,12 @@ fn decode_v1(bytes: &[u8]) -> Result<Mention<'_>> {
     let encoded_spans = &bytes[spans_start..];
     let mut previous_end = 0usize;
     let mut used_targets = 0u64;
-    for (index, span) in encoded_spans.chunks_exact(MENTION_SPAN_LEN).enumerate() {
+    for (index, span) in encoded_spans
+        .as_chunks::<MENTION_SPAN_LEN>()
+        .0
+        .iter()
+        .enumerate()
+    {
         let start = u32::from_le_bytes(span[..4].try_into().map_err(|_| ProtocolError::Malformed)?)
             as usize;
         let end = u32::from_le_bytes(

@@ -8,7 +8,9 @@ fuzz_target!(|data: &[u8]| {
     }
     let chunk_count = u32::from_le_bytes(data[..4].try_into().unwrap());
     let ranges: Vec<_> = data[4..]
-        .chunks_exact(8)
+        .as_chunks::<8>()
+        .0
+        .iter()
         .take(80)
         .map(|encoded| kult_protocol::MissingRange {
             start: u32::from_le_bytes(encoded[..4].try_into().unwrap()),

@@ -103,11 +103,11 @@ impl Transport for MockLink {
     }
 
     async fn recv(&self) -> kult_transport::Result<Vec<Envelope>> {
-        Ok(self.inbox.lock().unwrap().drain(..).collect())
+        Ok(std::mem::take(&mut *self.inbox.lock().unwrap()))
     }
 
     async fn recv_transit(&self) -> kult_transport::Result<Vec<Envelope>> {
-        Ok(self.transit.lock().unwrap().drain(..).collect())
+        Ok(std::mem::take(&mut *self.transit.lock().unwrap()))
     }
 
     fn broadcast_hint(&self) -> Option<DeliveryHint> {

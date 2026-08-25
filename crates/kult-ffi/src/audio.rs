@@ -185,8 +185,8 @@ fn derive_info(file: &mut File, data: WaveData, encoded_bytes: u64) -> Result<Au
         let take = usize::try_from(remaining.min(buffer.len() as u64)).unwrap_or(buffer.len());
         file.read_exact(&mut buffer[..take])
             .map_err(|_| audio_error("truncated PCM data"))?;
-        for bytes in buffer[..take].chunks_exact(2) {
-            let sample = i16::from_le_bytes([bytes[0], bytes[1]]);
+        for bytes in buffer[..take].as_chunks::<2>().0 {
+            let sample = i16::from_le_bytes(*bytes);
             let amplitude = sample.unsigned_abs();
             let bin =
                 usize::try_from(sample_index.saturating_mul(AUDIO_WAVEFORM_BINS as u64) / samples)

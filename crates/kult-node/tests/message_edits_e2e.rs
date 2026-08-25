@@ -67,14 +67,9 @@ impl Transport for Link {
     }
 
     async fn recv(&self) -> kult_transport::Result<Vec<Envelope>> {
-        Ok(self
-            .net
-            .lock()
-            .unwrap()
-            .entry(self.me)
-            .or_default()
-            .drain(..)
-            .collect())
+        Ok(std::mem::take(
+            self.net.lock().unwrap().entry(self.me).or_default(),
+        ))
     }
 }
 

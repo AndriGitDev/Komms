@@ -170,7 +170,7 @@ impl Transport for StagedDirectTransport {
     }
 
     async fn recv_staged(&self) -> kult_transport::Result<Vec<ReceivedEnvelope>> {
-        Ok(self.inbox.lock().unwrap().drain(..).collect())
+        Ok(std::mem::take(&mut *self.inbox.lock().unwrap()))
     }
 
     async fn settle_recv(
