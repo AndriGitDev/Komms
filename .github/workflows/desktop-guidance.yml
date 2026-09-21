@@ -22,13 +22,8 @@ jobs:
   guidance:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # The hosted Ubuntu runner supplies Node and Python; no package install is needed.
       - run: node --test apps/desktop/ui/connection-guide.test.cjs
       - run: node --check apps/desktop/ui/main.js
       - run: python3 scripts/localization.py check
