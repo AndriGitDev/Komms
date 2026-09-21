@@ -82,6 +82,7 @@ const state = {
   callMedia: null,
   pendingCallStream: null,
   statusTimer: null,
+  connectionGuideId: "connection_guide_checking",
   messageRenderGeneration: 0,
 };
 
@@ -1178,6 +1179,7 @@ async function leaveApp() {
   closeModal();
   clearInterval(state.statusTimer);
   state.statusTimer = null;
+  renderConnectionGuide("connection_guide_checking");
   state.currentKind = null;
   state.currentId = null;
   state.call = null;
@@ -1258,12 +1260,26 @@ invoke("incognito_keyboard_policy").then((policy) => {
 
 $("#btn-copy-address").addEventListener("click", () => copyText(state.address));
 
+// Presentation only: read existing node status; never infer delivery or mutate routes.
+function renderConnectionGuide(id) {
+  state.connectionGuideId = id;
+  const element = $("#connection-guide-next");
+  const text = l10n(id);
+  // Avoid re-announcing identical advice on each status poll.
+  if (element.textContent !== text) element.textContent = text;
+}
+
+$("#btn-welcome-share").addEventListener("click", () => $("#btn-share").click());
+$("#btn-welcome-add").addEventListener("click", () => $("#btn-add-contact").click());
+$("#btn-welcome-settings").addEventListener("click", () => $("#btn-settings").click());
+
 async function refreshStatus() {
   let s;
   try {
     s = await invoke("status");
   } catch (error) {
     if ($("#app").hidden) return; // locked or shutting down
+    renderConnectionGuide("connection_guide_unavailable");
     const message = l10n("status_unavailable");
     const discovery = $("#stat-discovery");
     discovery.textContent = l10n("status_discovery_unavailable");
@@ -1275,6 +1291,8 @@ async function refreshStatus() {
     nat.title = message;
     return;
   }
+  if ($("#app").hidden) return;
+  renderConnectionGuide(KommsConnectionGuide.nextStep(s));
   state.peer = s.peer;
   state.address = s.connect_code;
   $("#my-address").textContent = s.connect_code;
@@ -3714,6 +3732,7 @@ async function resynchronizePresentation() {
 }
 
 document.addEventListener("kommslocalechange", () => {
+  renderConnectionGuide(state.connectionGuideId);
   $("#gate-locale").value = KommsLocalization.localePreference();
   const modalLocale = $('#modal-body [data-f="locale"]');
   if (modalLocale) {
@@ -5826,3 +5845,4 @@ probeGate().catch((err) => {
   $("#gate-error").textContent = localizedError(err);
   $("#gate-error").hidden = false;
 });
+

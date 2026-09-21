@@ -18,6 +18,7 @@
   <link rel="stylesheet" href="style.css" />
   <script src="locales.generated.js" defer></script>
   <script src="localization.js" defer></script>
+  <script src="connection-guide.js" defer></script>
   <script src="main.js" defer></script>
 </head>
 <body>
@@ -271,7 +272,19 @@
       <div id="chat-empty">
         <div class="empty-state">
           <span class="brand-badge large" aria-hidden="true"><svg viewBox="0 0 192 192"><path d="M24 25h43v55l49-55h53l-61 66H24V25zm0 74h84l61 68h-53l-37-50-12 13v37H24V99z"/></svg></span>
-          <p>Select a contact, or share your bundle to pair with someone.</p>
+          <h1>Start a conversation.</h1>
+          <p>Share your Connect code with someone you trust, or add theirs. Check Message Requests when a new person writes to you.</p>
+          <div class="first-conversation-actions">
+            <button id="btn-welcome-share" class="primary">Share my code</button>
+            <button id="btn-welcome-add" class="ghost">Add someone</button>
+          </div>
+          <p class="first-conversation-note">Before trusting a new contact, compare the full safety number through a separate trusted channel.</p>
+          <section class="connection-guide" aria-labelledby="connection-guide-title">
+            <h2 id="connection-guide-title">Your connection</h2>
+            <p id="connection-guide-next" role="status" aria-live="polite">Checking the node. Connection status is not a delivery receipt.</p>
+            <button id="btn-welcome-settings" class="ghost">Connection settings</button>
+            <p class="first-conversation-note">Queued stays on this device. Sent means next-hop custody. Delivered means an authenticated end-to-end receipt, not that the person has read it.</p>
+          </section>
         </div>
       </div>
       <div id="chat-pane" hidden>
@@ -1023,3 +1036,4 @@
 
 </body>
 </html>
+

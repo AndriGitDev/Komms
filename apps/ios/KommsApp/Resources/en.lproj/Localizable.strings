@@ -26,6 +26,7 @@
 "A member session changed, so mention support was revalidated." = "A member session changed, so mention support was revalidated.";
 "A mention range is no longer on an exact Unicode boundary. Choose the member again." = "A mention range is no longer on an exact Unicode boundary. Choose the member again.";
 "A message is held — it will send when a faster link exists." = "A message is held — it will send when a faster link exists.";
+"A peer connection is available. Your contact still needs a reachable route; only Delivered confirms an end-to-end receipt." = "A peer connection is available. Your contact still needs a reachable route; only Delivered confirms an end-to-end receipt.";
 "Accept" = "Accept";
 "Accept detached approval" = "Accept detached approval";
 "Accept offer" = "Accept offer";
@@ -42,6 +43,7 @@
 "Add member" = "Add member";
 "Add privacy region" = "Add privacy region";
 "Add region" = "Add region";
+"Add someone" = "Add someone";
 "Additional active-device approval" = "Additional active-device approval";
 "Advanced" = "Advanced";
 "Advanced network & transports" = "Advanced network & transports";
@@ -90,6 +92,7 @@
 "Backup mnemonic (24 words)" = "Backup mnemonic (24 words)";
 "Backup written — recovery mnemonic" = "Backup written — recovery mnemonic";
 "Backup…" = "Backup…";
+"Before trusting a new contact, compare the full safety number through a separate trusted channel." = "Before trusting a new contact, compare the full safety number through a separate trusted channel.";
 "Best-effort native wake" = "Best-effort native wake";
 "Block" = "Block";
 "Block this sender?" = "Block this sender?";
@@ -134,6 +137,7 @@
 "Changes apply after the next lock and unlock." = "Changes apply after the next lock and unlock.";
 "Check the entered information and try again." = "Check the entered information and try again.";
 "Checking direct call route…" = "Checking direct call route…";
+"Checking the node. Connection status is not a delivery receipt." = "Checking the node. Connection status is not a delivery receipt.";
 "Checking…" = "Checking…";
 "Choices" = "Choices";
 "Choose .kkr backup file" = "Choose .kkr backup file";
@@ -191,6 +195,8 @@
 "Connect code rotated" = "Connect code rotated";
 "Connected" = "Connected";
 "Connecting direct audio…" = "Connecting direct audio…";
+"Connection settings" = "Connection settings";
+"Connection status is unavailable. Open connection settings and check that the node is running. No delivery result can be inferred." = "Connection status is unavailable. Open connection settings and check that the node is running. No delivery result can be inferred.";
 "Connection: starting" = "Connection: starting";
 "Connection: unavailable" = "Connection: unavailable";
 "Contact is busy" = "Contact is busy";
@@ -528,6 +534,7 @@
 "Native wake is unavailable right now. Ordinary delivery and fallbacks remain active." = "Native wake is unavailable right now. Ordinary delivery and fallbacks remain active.";
 "Native-wake gateways" = "Native-wake gateways";
 "Native-wake gateways (separate service keys; origin,leaf-certificate-sha256,standard|private|both)" = "Native-wake gateways (separate service keys; origin,leaf-certificate-sha256,standard|private|both)";
+"Nearby peers are visible. Keep both apps open on the same trusted local network and exchange pairing details. Discovery alone does not confirm delivery." = "Nearby peers are visible. Keep both apps open on the same trusted local network and exchange pairing details. Discovery alone does not confirm delivery.";
 "Network & transports" = "Network & transports";
 "Network settings" = "Network settings";
 "Neutral" = "Neutral";
@@ -557,6 +564,7 @@
 "No labels yet" = "No labels yet";
 "No labels yet." = "No labels yet.";
 "No labels. Create one to organize conversations locally." = "No labels. Create one to organize conversations locally.";
+"No peer route is confirmed yet. For a first test, keep both apps open on the same trusted local network. Separate networks may need configured bootstrap or mailbox services." = "No peer route is confirmed yet. For a first test, keep both apps open on the same trusted local network. Separate networks may need configured bootstrap or mailbox services.";
 "No pending requests" = "No pending requests";
 "No pending requests." = "No pending requests.";
 "No pinned conversations" = "No pinned conversations";
@@ -677,6 +685,7 @@
 "QR generation failed" = "QR generation failed";
 "QR payload or bundle hex" = "QR payload or bundle hex";
 "Question" = "Question";
+"Queued stays on this device. Sent means next-hop custody. Delivered means an authenticated end-to-end receipt, not that the person has read it." = "Queued stays on this device. Sent means next-hop custody. Delivered means an authenticated end-to-end receipt, not that the person has read it.";
 "Queued: 0" = "Queued: 0";
 "Reachability" = "Reachability";
 "Record" = "Record";
@@ -832,6 +841,8 @@
 "Serve a mailbox for others" = "Serve a mailbox for others";
 "Settings" = "Settings";
 "Share" = "Share";
+"Share my code" = "Share my code";
+"Share your Connect code with someone you trust, or add theirs. Check Message Requests when a new person writes to you." = "Share your Connect code with someone you trust, or add theirs. Check Message Requests when a new person writes to you.";
 "Share your identity" = "Share your identity";
 "Sharing details could not be prepared." = "Sharing details could not be prepared.";
 "Shield" = "Shield";
@@ -863,6 +874,7 @@
 "Standard can contact disclosed, replaceable providers. Those operators can observe your network address, timing, and service requests, but not message contents or your contact list." = "Standard can contact disclosed, replaceable providers. Those operators can observe your network address, timing, and service requests, but not message contents or your contact list.";
 "Standard — disclosed, replaceable convenience providers" = "Standard — disclosed, replaceable convenience providers";
 "Star" = "Star";
+"Start a conversation." = "Start a conversation.";
 "Start an authenticated direct QUIC audio call" = "Start an authenticated direct QUIC audio call";
 "Starting Komms" = "Starting Komms";
 "Static “New activity” notice" = "Static “New activity” notice";
@@ -908,6 +920,7 @@
 "The pin could not be changed. Nothing else was changed." = "The pin could not be changed. Nothing else was changed.";
 "The poll question is longer than 1,024 UTF-8 bytes." = "The poll question is longer than 1,024 UTF-8 bytes.";
 "The protected selected folder is unavailable. Showing All conversations." = "The protected selected folder is unavailable. Showing All conversations.";
+"The provider directory has a conflict. Review connection settings; do not assume its defaults can be used. Existing configured routes may still work." = "The provider directory has a conflict. Review connection settings; do not assume its defaults can be used. Existing configured routes may still work.";
 "The request could not be changed." = "The request could not be changed.";
 "The roster, identity mapping, or capability support changed. Review the exact text and selected mentions, then press Send again." = "The roster, identity mapping, or capability support changed. Review the exact text and selected mentions, then press Send again.";
 "The security-scoped source was copied into protected app-private storage. It is deleted after send or discard." = "The security-scoped source was copied into protected app-private storage. It is deleted after send or discard.";
@@ -1011,6 +1024,7 @@
 "Votes are visible to every member. This is not anonymous. The current roster is fixed as the electorate, and only the poll creator can close it with a final vote snapshot." = "Votes are visible to every member. This is not anonymous. The current roster is fixed as the electorate, and only the poll creator can close it with a final vote snapshot.";
 "Votes are visible to every member. This is not anonymous. The current roster is fixed as the electorate. The creator may close it; an owner can commit signed moderation, and an admin can request it." = "Votes are visible to every member. This is not anonymous. The current roster is fixed as the electorate. The creator may close it; an owner can commit signed moderation, and an admin can request it.";
 "Votes are visible to every member. This is not anonymous. The current roster is fixed as the electorate. The poll creator can close it; a group owner can also commit a signed moderation snapshot, and an admin can request one." = "Votes are visible to every member. This is not anonymous. The current roster is fixed as the electorate. The poll creator can close it; a group owner can also commit a signed moderation snapshot, and an admin can request one.";
+"Waiting for a private route. Check that your local Tor setup is running and your configured peers are reachable. Changing mode alone does not create a route." = "Waiting for a private route. Check that your local Tor setup is running and your configured peers are reachable. Changing mode alone does not create a route.";
 "Waiting for a route" = "Waiting for a route";
 "Wake carries no sender, conversation, message, unread count, or timestamp and never changes sent or delivered state." = "Wake carries no sender, conversation, message, unread count, or timestamp and never changes sent or delivered state.";
 "Wake is optional and carries no sender, message, conversation, unread count, or timestamp. Android may delay it in Doze, after force-stop, under OEM restrictions, or after provider deprioritization. It never changes sent or delivered state; mailbox and direct retry remain authoritative." = "Wake is optional and carries no sender, message, conversation, unread count, or timestamp. Android may delay it in Doze, after force-stop, under OEM restrictions, or after provider deprioritization. It never changes sent or delivered state; mailbox and direct retry remain authoritative.";
@@ -1036,6 +1050,7 @@
 "You" = "You";
 "You were mentioned in a group." = "You were mentioned in a group.";
 "Your Connect code" = "Your Connect code";
+"Your connection" = "Your connection";
 "Your identity and conversations stay encrypted on this device. No central account required." = "Your identity and conversations stay encrypted on this device. No central account required.";
 "Your node, your keys" = "Your node, your keys";
 "Your private inbox starts here" = "Your private inbox starts here";
