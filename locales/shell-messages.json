@@ -796,11 +796,11 @@
     },
     "poll_remove_choice": {
       "en-US": "Remove choice %1$d",
-      "is": "Fjarlægja valkost %1$d"
+      "is": "Fjarlægja svarmöguleika %1$d"
     },
     "poll_unavailable_choice": {
       "en-US": "unavailable choice",
-      "is": "ótiltækur valkostur"
+      "is": "ótiltækur svarmöguleiki"
     },
     "input_privacy_status_unavailable": {
       "en-US": "Input privacy status unavailable.",
@@ -2932,14 +2932,6 @@
       "en-US": "Encrypted session renewed with %1$s — their key or device changed; re-verify if unexpected",
       "is": "Dulkóðuð seta endurnýjuð við %1$s — lykill eða tæki þeirra breyttist; staðfestu aftur ef það var óvænt"
     },
-    "icons_contact_target": {
-      "en-US": "Contact · %1$s",
-      "is": "Tengiliður · %1$s"
-    },
-    "icons_group_target": {
-      "en-US": "Group · %1$s",
-      "is": "Hópur · %1$s"
-    },
     "icons_initials_fallback": {
       "en-US": "Generated initials fallback · %1$s",
       "is": "Sjálfgefnir upphafsstafir · %1$s"
@@ -3072,10 +3064,6 @@
       "en-US": "Conversation unpinned.",
       "is": "Samtal losað úr festingu."
     },
-    "poll_accessibility": {
-      "en-US": "Poll: %1$s",
-      "is": "Könnun: %1$s"
-    },
     "poll_choice_accessibility": {
       "en-US": "Poll choice %1$d",
       "is": "Svarmöguleiki könnunar %1$d"
@@ -3103,14 +3091,6 @@
     "mention_remove_token": {
       "en-US": "%1$s ×",
       "is": "%1$s ×"
-    },
-    "poll_remove_choice": {
-      "en-US": "Remove choice %1$d",
-      "is": "Fjarlægja svarmöguleika %1$d"
-    },
-    "poll_unavailable_choice": {
-      "en-US": "unavailable choice",
-      "is": "ótiltækur svarmöguleiki"
     },
     "poll_updated": {
       "en-US": "%1$s poll updated. Votes are visible to members.",
@@ -3263,6 +3243,66 @@
     "ui_your_root_free_backup_is_sealed_with_these_24": {
       "en-US": "Your root-free backup is sealed with these 24 backup words. They are shown exactly once and stored nowhere — write them down separately.",
       "is": "Rótarlyklalausa öryggisafritið þitt er innsiglað með þessum 24 endurheimtarorðum. Þau eru sýnd nákvæmlega einu sinni og hvergi vistuð — skrifaðu þau niður og geymdu sér."
+    },
+    "first_conversation_title": {
+      "en-US": "Start a conversation.",
+      "is": "Byrjaðu samtal."
+    },
+    "first_conversation_intro": {
+      "en-US": "Share your Connect code with someone you trust, or add theirs. Check Message Requests when a new person writes to you.",
+      "is": "Deildu Connect-kóðanum þínum með einhverjum sem þú treystir, eða bættu við kóða viðkomandi. Athugaðu skilaboðabeiðnir þegar nýr aðili skrifar þér."
+    },
+    "first_conversation_share": {
+      "en-US": "Share my code",
+      "is": "Deila kóðanum mínum"
+    },
+    "first_conversation_add": {
+      "en-US": "Add someone",
+      "is": "Bæta við aðila"
+    },
+    "first_conversation_settings": {
+      "en-US": "Connection settings",
+      "is": "Tengistillingar"
+    },
+    "first_conversation_verify": {
+      "en-US": "Before trusting a new contact, compare the full safety number through a separate trusted channel.",
+      "is": "Áður en þú treystir nýjum tengilið skaltu bera saman allt öryggisnúmerið eftir annarri traustri samskiptaleið."
+    },
+    "connection_guide_title": {
+      "en-US": "Your connection",
+      "is": "Tengingin þín"
+    },
+    "connection_guide_checking": {
+      "en-US": "Checking the node. Connection status is not a delivery receipt.",
+      "is": "Athuga stöðu hnútsins. Tengistaða er ekki afhendingarkvittun."
+    },
+    "connection_guide_unavailable": {
+      "en-US": "Connection status is unavailable. Open connection settings and check that the node is running. No delivery result can be inferred.",
+      "is": "Tengistaða er ekki tiltæk. Opnaðu tengistillingar og athugaðu hvort hnúturinn sé í gangi. Ekki er hægt að álykta um afhendingu."
+    },
+    "connection_guide_connected": {
+      "en-US": "A peer connection is available. Your contact still needs a reachable route; only Delivered confirms an end-to-end receipt.",
+      "is": "Tenging við jafningja er tiltæk. Enn þarf færa leið til tengiliðarins; aðeins staðan Afhent staðfestir afhendingarkvittun milli enda."
+    },
+    "connection_guide_lan": {
+      "en-US": "Nearby peers are visible. Keep both apps open on the same trusted local network and exchange pairing details. Discovery alone does not confirm delivery.",
+      "is": "Nálægir jafningjar sjást. Hafðu bæði forrit opin á sama trausta staðarneti og skiptist á pörunarupplýsingum. Uppgötvun ein og sér staðfestir ekki afhendingu."
+    },
+    "connection_guide_private": {
+      "en-US": "Waiting for a private route. Check that your local Tor setup is running and your configured peers are reachable. Changing mode alone does not create a route.",
+      "is": "Beðið eftir einkaleið. Athugaðu hvort staðbundin Tor-uppsetning sé í gangi og hvort stilltir jafningjar séu aðgengilegir. Breyttur hamur einn og sér býr ekki til leið."
+    },
+    "connection_guide_waiting": {
+      "en-US": "No peer route is confirmed yet. For a first test, keep both apps open on the same trusted local network. Separate networks may need configured bootstrap or mailbox services.",
+      "is": "Engin leið til jafningja hefur verið staðfest enn. Við fyrstu prófun skaltu hafa bæði forrit opin á sama trausta staðarneti. Aðskilin net geta þurft stillta ræsihnúta eða pósthólfsþjónustu."
+    },
+    "connection_guide_conflict": {
+      "en-US": "The provider directory has a conflict. Review connection settings; do not assume its defaults can be used. Existing configured routes may still work.",
+      "is": "Árekstur er í þjónustuaðilaskránni. Farðu yfir tengistillingar; ekki gera ráð fyrir að hægt sé að nota sjálfgefnar leiðir hennar. Leiðir sem þegar eru stilltar geta enn virkað."
+    },
+    "connection_guide_delivery": {
+      "en-US": "Queued stays on this device. Sent means next-hop custody. Delivered means an authenticated end-to-end receipt, not that the person has read it.",
+      "is": "Í bið helst á þessu tæki. Sent merkir að næsti hnútur hafi tekið við vörslu. Afhent merkir staðfesta afhendingarkvittun milli enda, ekki að viðkomandi hafi lesið skilaboðin."
     }
   },
   "schema": "komms-localization-shell-messages/v1"

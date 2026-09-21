@@ -1,0 +1,30 @@
+name: Desktop connection guidance
+
+on:
+  pull_request:
+    paths:
+      - 'apps/desktop/ui/**'
+      - 'locales/**'
+      - 'scripts/localization.py'
+      - '.github/workflows/desktop-guidance.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'apps/desktop/ui/**'
+      - 'locales/**'
+      - 'scripts/localization.py'
+      - '.github/workflows/desktop-guidance.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  guidance:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # The hosted Ubuntu runner supplies Node and Python; no package install is needed.
+      - run: node --test apps/desktop/ui/connection-guide.test.cjs
+      - run: node --check apps/desktop/ui/main.js
+      - run: python3 scripts/localization.py check
+      - run: python3 scripts/check-localization-sources.py

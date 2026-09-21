@@ -317,3 +317,24 @@ added only with separately scoped signing and rollback evidence.
   verified bounded data URLs. `KKR10` preserves them exactly and C2 can converge
   them only between authorized owned devices; message pins and message labels
   are not implemented.
+
+
+## First-conversation guidance
+
+The empty inbox provides Share, Add, and connection-settings actions through
+existing dialogs. Its connection guide reads the existing node status and
+explains the next useful step, including unavailable status, provider-directory
+conflicts, local discovery, and a missing Private-mode route. Peer connectivity
+and LAN discovery never imply a recipient route or delivery receipt. The guide
+is localized in English and Icelandic, resets on lock, and avoids repeated
+screen-reader announcements when a status poll yields unchanged advice.
+
+Run the presentation regression cases with:
+
+```sh
+node --test apps/desktop/ui/connection-guide.test.cjs
+```
+
+These tests cover status-to-guidance selection, not physical networking or
+native-window qualification. No transport configuration, protocol behavior,
+release version, or stable gate changes here.

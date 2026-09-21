@@ -96,6 +96,19 @@ storage to make an upgrade appear seamless.
 
 ## 4. Run the Beta acceptance walk-through
 
+For a first conversation, use two disposable identities on the same trusted
+local network with both apps open. Guest Wi-Fi isolation or local firewalls
+can prevent discovery. Fresh installs have no qualified public bootstrap or
+mailbox defaults; testing across separate networks may need deliberately
+configured routes or optional operators. A Connect code does not itself
+establish a reachable route.
+
+The desktop empty inbox now links directly to Share, Add, and connection
+settings. Its guidance distinguishes node connectivity from recipient delivery
+and gives next steps for waiting, unavailable status, local discovery, Private
+mode, and provider-directory conflict. This presentation change is not new
+network or field-qualification evidence.
+
 Use two fresh test identities on separate test devices when possible:
 
 1. Create, lock, restart, and unlock both profiles. Store the offline recovery

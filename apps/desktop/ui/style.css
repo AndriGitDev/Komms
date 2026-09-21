@@ -1133,3 +1133,18 @@ fieldset.hints legend { color: var(--text-dim); font-size: 0.85em; padding: 0 0.
   .msg { max-width: 92%; }
   .composer-select { width: 100%; margin-left: 0; justify-content: flex-end; }
 }
+
+
+/* Useful first-run actions without changing protocol or delivery state. */
+#chat-empty { overflow-y: auto; padding: clamp(1rem, 4vw, 3rem); }
+.empty-state { width: min(100%, 620px); margin: auto; }
+.empty-state h1 { color: var(--text); font-size: clamp(1.5rem, 3vw, 2rem); margin: .8rem 0 0; }
+.empty-state > p { max-width: 520px; line-height: 1.6; margin: .5rem 0; }
+.first-conversation-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: .75rem; margin: .8rem 0; }
+.first-conversation-actions button, .connection-guide button { min-height: 44px; }
+.first-conversation-note { font-size: .875rem; line-height: 1.6; color: var(--text-dim); }
+.connection-guide { width: 100%; text-align: left; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 1.2rem; margin-top: 1rem; }
+.connection-guide h2 { margin: 0 0 .6rem; color: var(--text); font-size: 1rem; }
+.connection-guide p { line-height: 1.6; }
+.connection-guide #connection-guide-next { margin: 0 0 .8rem; color: var(--text); }
+.connection-guide .first-conversation-note { margin-bottom: 0; }
