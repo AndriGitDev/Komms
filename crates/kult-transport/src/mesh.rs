@@ -131,6 +131,8 @@ struct Counters {
 }
 
 fn saturating_add(counter: &AtomicU64, value: u64) {
+    // `try_update` is not available on our Rust 1.88 MSRV yet.
+    #[allow(deprecated)]
     let _ = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
         Some(current.saturating_add(value))
     });
