@@ -31,6 +31,10 @@ ignore = [
     # Compile-time proc-macro, archived by its author with no successor risk;
     # pulled in by if-watch (libp2p QUIC/TCP). Not a vulnerability.
     { id = "RUSTSEC-2024-0436", reason = "paste is an unmaintained build-time proc-macro, not a runtime dependency" },
+    # UniFFI 0.29's opt-in `bindgen` CLI uses askama -> basic-toml to read
+    # repository-controlled code-generation configuration. No compatible
+    # upstream replacement exists; migrate with the UniFFI toolchain.
+    { id = "RUSTSEC-2026-0374", reason = "basic-toml is confined to UniFFI's opt-in code-generation CLI, not runtime builds; no compatible upstream fix" },
 ]
 
 [bans]

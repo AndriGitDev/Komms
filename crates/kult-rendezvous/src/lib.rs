@@ -326,6 +326,8 @@ impl RendezvousService {
             })
     }
 
+    // `try_update` is unavailable on the declared Rust 1.88 MSRV.
+    #[allow(deprecated)]
     fn try_enter(&self) -> Option<ActiveRequest<'_>> {
         self.active_requests
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |active| {
