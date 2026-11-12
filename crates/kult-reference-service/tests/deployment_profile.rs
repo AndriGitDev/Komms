@@ -42,7 +42,7 @@ fn container_profile_has_no_persistent_or_privileged_role() {
     }
     assert!(!DOCKERFILE.contains("VOLUME "));
     assert!(DOCKERFILE.contains("USER 10002:10002"));
-    assert!(DOCKERFILE.contains("rust:1.88-bookworm@sha256:"));
+    assert!(DOCKERFILE.contains("rust:1.89-bookworm@sha256:"));
     assert!(DOCKERFILE.contains("debian:bookworm-slim@sha256:"));
 }
 
