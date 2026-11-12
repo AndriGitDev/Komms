@@ -62,7 +62,7 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
-  RELEASE_RUST: "1.88.0"
+  RELEASE_RUST: "1.89.0"
 
 jobs:
   prepare:

@@ -29,7 +29,7 @@ does not make an operator unable to observe or interfere.
 
 ## 1. Build and artifact identity
 
-The dedicated Dockerfile pins multi-platform Rust 1.88 and Debian Bookworm
+The dedicated Dockerfile pins multi-platform Rust 1.89 and Debian Bookworm
 inputs by index digest. It builds only `kult-reference-service`, embeds the
 complete source revision, removes the ELF build id, and adds no endpoint
 daemon or persistent data directory to the pinned Debian slim runtime. Its

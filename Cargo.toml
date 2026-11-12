@@ -26,10 +26,10 @@ exclude = [
 [workspace.package]
 version = "0.4.2"
 edition = "2021"
-# 1.88 required by the locked time-macros; the meshtastic client crate (M4
+# 1.89 required by patched rusqlite 0.41; the meshtastic client crate (M4
 # mesh carrier) needs 1.85, libp2p ≥ 0.55 needs 1.83 (older libp2p pins the
 # unmaintained ring 0.16). CI's msrv job verifies this floor stays honest.
-rust-version = "1.88"
+rust-version = "1.89"
 license = "AGPL-3.0-only"
 repository = "https://github.com/AndriGitDev/Komms"
 

@@ -46,7 +46,7 @@ python3 scripts/contributor-check.py PROFILE
 
 ## Implementation changes
 
-- Install Rust 1.88 or newer; CI compiles the workspace at exactly 1.88 to keep
+- Install Rust 1.89 or newer; CI compiles the workspace at exactly 1.89 to keep
   the declared MSRV honest. The full fuzz gate also needs nightly Rust,
   `cargo-fuzz`, and `cargo-deny`. Platform-specific prerequisites are listed in
   each app README.

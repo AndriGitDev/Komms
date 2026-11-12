@@ -14,8 +14,8 @@ bounded code contribution reproduce every platform. The commands are pinned in
 
 ## 1. Toolchains and platform prerequisites
 
-The core and desktop Cargo workspaces require Rust **1.88 or newer**. CI has a
-dedicated build-compatibility job at exactly 1.88; normal local work should use a
+The core and desktop Cargo workspaces require Rust **1.89 or newer**. CI has a
+dedicated build-compatibility job at exactly 1.89; normal local work should use a
 current stable toolchain. The complete matrix also needs:
 
 - nightly Rust with `cargo-fuzz`, plus `cargo-deny`;
@@ -100,7 +100,7 @@ Hosted automation complements the local checkpoint:
 
 - `.github/workflows/ci.yml` repeats core/desktop format, lint, tests,
   `no_std`, dependency policy, release-control tests, fuzz smoke, generated
-  Android/iOS host suites, MSRV 1.88, Windows core-storage tests, and Android
+  Android/iOS host suites, MSRV 1.89, Windows core-storage tests, and Android
   debug-APK assembly;
 - the iOS Simulator job remains gated by the `IOS_APP_CI=1` repository variable;
   it is enabled for the current per-push release evidence;
