@@ -275,7 +275,7 @@ for the complete operator surface.
 
 ## Build and validation
 
-Rust **1.88 or newer** is required by the locked dependency graph and verified
+Rust **1.89 or newer** is required by the locked dependency graph and verified
 as the minimum supported Rust version in CI. A current stable toolchain is the
 normal developer choice; the complete fuzz gate additionally needs nightly
 Rust and `cargo-fuzz`. Platform SDK requirements live in the

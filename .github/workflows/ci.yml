@@ -80,7 +80,7 @@ jobs:
   # drifts across compiler versions and this job answers exactly one
   # question — does the declared rust-version still compile the workspace?
   msrv:
-    name: MSRV 1.88 check
+    name: MSRV 1.89 check
     runs-on: ubuntu-latest
     env:
       RUSTFLAGS: ""
@@ -88,7 +88,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master
         with:
-          toolchain: "1.88"
+          toolchain: "1.89"
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - name: cargo check
         run: cargo check --workspace --all-features --all-targets

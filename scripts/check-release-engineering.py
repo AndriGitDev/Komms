@@ -329,8 +329,8 @@ def check_toolchain_policy(errors: list[str]) -> None:
         errors.append("release toolchain policy has the wrong schema")
         return
     expected = {
-        ("rust", "release"): "1.88.0",
-        ("rust", "msrv"): "1.88.0",
+        ("rust", "release"): "1.89.0",
+        ("rust", "msrv"): "1.89.0",
         ("android", "java"): "21",
         ("android", "gradle"): "8.14.3",
         ("android", "cargo_ndk"): "4.1.2",
@@ -355,7 +355,7 @@ def check_toolchain_policy(errors: list[str]) -> None:
         )
     )
     required_literals = {
-        "1.88.0",
+        "1.89.0",
         "8.14.3",
         "4.1.2",
         "35.0.0",
@@ -365,7 +365,7 @@ def check_toolchain_policy(errors: list[str]) -> None:
         "2.45.4",
         "090ec29491aad50aec10631bf6e62253fed733c50f3aab0f5ffc86bc170bdbef",
         "a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e",
-        "af306cfa71d987911a781c37b59d7d67d934f49684058f96cf72079c3626bfe0",
+        "948f9b08a66e7fe01b03a98ef1c7568292e07ec2e4fe90d88c07bb14563c84ff",
         "7b140f374b289a7c2befc338f42ebe6441b7ea838a042bbd5acbfca6ec875818",
     }
     for literal in sorted(required_literals):

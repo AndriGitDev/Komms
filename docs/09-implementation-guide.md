@@ -28,7 +28,7 @@ design doc wins and the conflict is a bug—file it.
    warnings) + tests + no_std + bindings/shell builds + fuzz smoke (60 s per
    target) + cargo-deny. Hosted CI repeats an already-green checkpoint only
    after explicit publication authorization.
-6. **The toolchain floor is explicit.** Both Cargo workspaces declare Rust 1.88;
+6. **The toolchain floor is explicit.** Both Cargo workspaces declare Rust 1.89;
    the MSRV CI job compiles at exactly that version, while normal lint/test jobs
    follow stable. Raising the floor requires updating both manifests, CI, the
    README, and release documentation in the same change.
