@@ -26,12 +26,11 @@ fs2 = "0.4"
 # a generated client, per docs/09-implementation-guide.md §3.3 ("do not
 # hand-roll the serial framing").
 meshtastic = { version = "0.1.9", optional = true }
-# NOTE: no "mdns" feature — libp2p-mdns still pins hickory-proto 0.25
-# (RUSTSEC-2026-0118/0119, unpatched on that line) and this workspace ships
-# zero ignored vulnerabilities. LAN auto-discovery is instead the small
-# in-tree responder in src/mdns.rs (ADR-0008), speaking the same libp2p
-# mDNS discovery profile.
-libp2p = { version = "0.56", features = [
+# Keep upstream "mdns"/"dns" disabled: LAN auto-discovery remains the
+# in-tree responder in src/mdns.rs (ADR-0008), with the same libp2p mDNS
+# discovery profile. libp2p 0.57 resolves its optional Hickory metadata to
+# the patched 0.26 line; this upgrade does not enable those resolvers.
+libp2p = { version = "0.57.1", features = [
     "tokio",
     "quic",
     "tcp",
@@ -51,7 +50,7 @@ libp2p = { version = "0.56", features = [
 # Pinned to the Beta profile measured and accepted in ADR-0013; the production
 # wrapper below adds path gating because this crate otherwise chooses an
 # arbitrary live connection to the peer.
-libp2p-stream = "0.4.0-alpha"
+libp2p-stream = "0.5.0-alpha"
 libc = "0.2"
 postcard = { version = "1", default-features = false, features = ["alloc"] }
 rand_core = { version = "0.6", features = ["getrandom"] }
