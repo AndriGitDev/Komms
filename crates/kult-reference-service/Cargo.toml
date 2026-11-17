@@ -26,7 +26,7 @@ kult-crypto = { version = "0.4.2", path = "../kult-crypto" }
 kult-protocol = { version = "0.4.2", path = "../kult-protocol" }
 kult-rendezvous = { version = "0.4.2", path = "../kult-rendezvous" }
 libc = "0.2"
-libp2p = { version = "0.56", features = [
+libp2p = { version = "0.57.1", features = [
     "tokio",
     "quic",
     "tcp",
