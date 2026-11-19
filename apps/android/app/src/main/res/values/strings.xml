@@ -18,6 +18,7 @@
     <string name="language_english">English</string>
     <string name="language_icelandic">Icelandic</string>
     <string name="error_generic">The operation could not be completed. No state was changed.</string>
+    <string name="error_contact_discovery">Komms could not find a verified contact bundle for this code. Ask the contact to open Share and send a fresh pairing bundle or show the Bundle QR.</string>
     <string name="error_startup">Komms could not start. Check the encrypted store and network settings, then try again.</string>
     <string name="error_node_stopped">Komms is locked or stopped. Unlock and try again.</string>
     <string name="error_folder">The folder could not be changed. Nothing else was changed.</string>

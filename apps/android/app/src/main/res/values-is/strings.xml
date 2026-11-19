@@ -18,6 +18,7 @@
     <string name="language_english">Enska</string>
     <string name="language_icelandic">Íslenska</string>
     <string name="error_generic">Ekki tókst að ljúka aðgerðinni. Engu ástandi var breytt.</string>
+    <string name="error_contact_discovery">Komms fann engan staðfestan samskiptapakka fyrir þennan kóða. Biddu tengiliðinn að opna Deila og senda nýjan pörunarpakka eða sýna QR-kóða pakkans.</string>
     <string name="error_startup">Ekki tókst að ræsa Komms. Kannaðu dulkóðuðu gagnageymsluna og netstillingarnar og reyndu aftur.</string>
     <string name="error_node_stopped">Komms er læst eða stöðvað. Aflæstu og reyndu aftur.</string>
     <string name="error_folder">Ekki tókst að breyta möppunni. Engu öðru var breytt.</string>

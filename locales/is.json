@@ -20,6 +20,7 @@
     "language_english": "Enska",
     "language_icelandic": "Íslenska",
     "error_generic": "Ekki tókst að ljúka aðgerðinni. Engu ástandi var breytt.",
+    "error_contact_discovery": "Komms fann engan staðfestan samskiptapakka fyrir þennan kóða. Biddu tengiliðinn að opna Deila og senda nýjan pörunarpakka eða sýna QR-kóða pakkans.",
     "error_startup": "Ekki tókst að ræsa Komms. Kannaðu dulkóðuðu gagnageymsluna og netstillingarnar og reyndu aftur.",
     "error_node_stopped": "Komms er læst eða stöðvað. Aflæstu og reyndu aftur.",
     "error_folder": "Ekki tókst að breyta möppunni. Engu öðru var breytt.",

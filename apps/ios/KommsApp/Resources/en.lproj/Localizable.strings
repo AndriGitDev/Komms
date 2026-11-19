@@ -401,6 +401,7 @@
 "Kind" = "Kind";
 "Komms" = "Komms";
 "Komms can use the internet, your local network, or an attached mesh radio. Transport details remain under your control." = "Komms can use the internet, your local network, or an attached mesh radio. Transport details remain under your control.";
+"Komms could not find a verified contact bundle for this code. Ask the contact to open Share and send a fresh pairing bundle or show the Bundle QR." = "Komms could not find a verified contact bundle for this code. Ask the contact to open Share and send a fresh pairing bundle or show the Bundle QR.";
 "Komms could not start. Check the encrypted store and network settings, then try again." = "Komms could not start. Check the encrypted store and network settings, then try again.";
 "Komms covers inactive scenes and live captured screens with a privacy shield." = "Komms covers inactive scenes and live captured screens with a privacy shield.";
 "Komms does not recognize this file type." = "Komms does not recognize this file type.";

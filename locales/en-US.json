@@ -20,6 +20,7 @@
     "language_english": "English",
     "language_icelandic": "Icelandic",
     "error_generic": "The operation could not be completed. No state was changed.",
+    "error_contact_discovery": "Komms could not find a verified contact bundle for this code. Ask the contact to open Share and send a fresh pairing bundle or show the Bundle QR.",
     "error_startup": "Komms could not start. Check the encrypted store and network settings, then try again.",
     "error_node_stopped": "Komms is locked or stopped. Unlock and try again.",
     "error_folder": "The folder could not be changed. Nothing else was changed.",
