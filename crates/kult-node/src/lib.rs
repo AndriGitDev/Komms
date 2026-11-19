@@ -6449,8 +6449,19 @@ impl Node {
                 if advertised {
                     endpoint_bundle = bundle.prekey.encode();
                     let advertised_hints = bundle.prekey.transport_hints();
-                    if !advertised_hints.is_empty() || hints.is_empty() {
-                        hints = advertised_hints;
+                    if !advertised_hints.is_empty() {
+                        // Pairing and Delivery settings can supply a route that
+                        // this device cannot advertise itself. Keep those
+                        // contact routes only on the endpoint they belonged to.
+                        if let Some(previous) =
+                            prior.and_then(|endpoint| PrekeyBundle::decode(&endpoint.bundle).ok())
+                        {
+                            let old_routes = previous.transport_hints();
+                            hints.retain(|hint| {
+                                !old_routes.contains(hint) || advertised_hints.contains(hint)
+                            });
+                        }
+                        hints = pairing_return_hints(&hints, &contact.hints, advertised_hints);
                     }
                 }
                 let endpoint = ContactDeviceRecord {
@@ -7574,7 +7585,30 @@ impl Node {
                         after_endpoint.introduction_capability = Some(control.capability);
                         after_endpoint.introduction_generation = control.generation;
                         if after_endpoint.device == peer_device && control.routes_complete {
-                            after_endpoint.hints.clone_from(&control.routes);
+                            // The first capability control repeats the return
+                            // advertisement from the handshake. Reapplying it
+                            // must not erase the local routes just retained.
+                            // A changed or withdrawn advertisement replaces it.
+                            let repeats_pairing_routes = !control.routes.is_empty()
+                                && PrekeyBundle::decode(&sender.bundle).is_ok_and(|bundle| {
+                                    let mut routes = bundle.transport_hints();
+                                    routes.sort();
+                                    routes.dedup();
+                                    routes == control.routes
+                                });
+                            after_endpoint.hints = if repeats_pairing_routes {
+                                let configured = self
+                                    .store
+                                    .get_contact(&peer)?
+                                    .map_or_else(Vec::new, |contact| contact.hints);
+                                pairing_return_hints(
+                                    &sender.hints,
+                                    &configured,
+                                    control.routes.clone(),
+                                )
+                            } else {
+                                control.routes.clone()
+                            };
                         }
                         if after_endpoint != *before_endpoint {
                             changed.push((before_endpoint.clone(), after_endpoint));
@@ -10401,6 +10435,24 @@ fn bounded_request_preview(text: &str) -> String {
         boundary -= 1;
     }
     text[..boundary].to_owned()
+}
+
+fn pairing_return_hints(
+    endpoint: &[Vec<u8>],
+    configured: &[Vec<u8>],
+    advertised: Vec<Vec<u8>>,
+) -> Vec<Vec<u8>> {
+    let mut hints: Vec<_> = configured
+        .iter()
+        .filter(|hint| endpoint.contains(hint))
+        .cloned()
+        .collect();
+    for hint in advertised {
+        if !hints.contains(&hint) {
+            hints.push(hint);
+        }
+    }
+    hints
 }
 
 fn encode_hints(hints: &[DeliveryHint]) -> Vec<Vec<u8>> {

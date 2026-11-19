@@ -401,6 +401,7 @@
   "Kind": "ui_kind",
   "Komms": "app_name",
   "Komms can use the internet, your local network, or an attached mesh radio. Transport details remain under your control.": "ui_komms_can_use_the_internet_your_local_network_or",
+  "Komms could not find a verified contact bundle for this code. Ask the contact to open Share and send a fresh pairing bundle or show the Bundle QR.": "error_contact_discovery",
   "Komms could not start. Check the encrypted store and network settings, then try again.": "error_startup",
   "Komms covers inactive scenes and live captured screens with a privacy shield.": "screen_security_ios_mechanism",
   "Komms does not recognize this file type.": "attachment_warning_unrecognized",

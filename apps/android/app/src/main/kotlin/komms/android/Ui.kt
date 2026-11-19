@@ -13,7 +13,11 @@ fun Context.errorText(e: Throwable): String = when (e) {
     is FfiException.Folder -> getString(R.string.error_folder)
     is FfiException.Label -> getString(R.string.error_label)
     is FfiException.Pin -> getString(R.string.error_pin)
-    is FfiException.Node -> getString(R.string.error_generic)
+    is FfiException.Node -> when (e.reason) {
+        "no usable discovery plane",
+        "no verifiable prekey bundle found for address" -> getString(R.string.error_contact_discovery)
+        else -> getString(R.string.error_generic)
+    }
     is IllegalArgumentException -> getString(R.string.error_input)
     else -> getString(R.string.error_generic)
 }

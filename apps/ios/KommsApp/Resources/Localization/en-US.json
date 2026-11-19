@@ -304,6 +304,7 @@
     "ephemeral_unopened_after": "Remove unopened copy after",
     "ephemeral_view_once": "View once",
     "ephemeral_view_once_honesty": "Opening is terminal on this installation. The item is removed here before it is shown; recipients, other devices, screenshots, and external applications may retain copies.",
+    "error_contact_discovery": "Komms could not find a verified contact bundle for this code. Ask the contact to open Share and send a fresh pairing bundle or show the Bundle QR.",
     "error_folder": "The folder could not be changed. Nothing else was changed.",
     "error_generic": "The operation could not be completed. No state was changed.",
     "error_input": "Check the entered information and try again.",

@@ -84,7 +84,18 @@ async fn nodes_exchange_over_localhost_quic() {
     bob.add_transport(b_net);
 
     // Out-of-band exchange: bundles + each other's multiaddrs.
-    let alice_bundle = alice.handshake_bundle(NOW, &mut rng).unwrap();
+    // Alice also advertises an unavailable return route. Bob's explicit
+    // delivery setting must still work for receipts and replies.
+    let alice_bundle = alice
+        .handshake_bundle_with_hints(
+            &[
+                DeliveryHint::Multiaddr(b_addr.clone()),
+                DeliveryHint::Multiaddr(b_addr.clone()),
+            ],
+            NOW,
+            &mut rng,
+        )
+        .unwrap();
     let bob_bundle = bob.handshake_bundle(NOW, &mut rng).unwrap();
     let bob_id = alice
         .add_contact(
@@ -96,13 +107,9 @@ async fn nodes_exchange_over_localhost_quic() {
         )
         .unwrap();
     let alice_id = bob
-        .add_contact(
-            "alice",
-            &alice_bundle,
-            &[DeliveryHint::Multiaddr(a_addr)],
-            NOW,
-            &mut rng,
-        )
+        .add_contact("alice", &alice_bundle, &[], NOW, &mut rng)
+        .unwrap();
+    bob.set_hints(&alice_id, &[DeliveryHint::Multiaddr(a_addr)], &mut rng)
         .unwrap();
 
     // Alice → Bob: handshake flight + session message, one tick each side.

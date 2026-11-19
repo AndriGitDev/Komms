@@ -401,6 +401,7 @@
 "Kind" = "Tegund";
 "Komms" = "Komms";
 "Komms can use the internet, your local network, or an attached mesh radio. Transport details remain under your control." = "Komms getur notað internetið, staðarnetið þitt eða tengda mesh-talstöð. Þú ræður áfram flutningsupplýsingunum.";
+"Komms could not find a verified contact bundle for this code. Ask the contact to open Share and send a fresh pairing bundle or show the Bundle QR." = "Komms fann engan staðfestan samskiptapakka fyrir þennan kóða. Biddu tengiliðinn að opna Deila og senda nýjan pörunarpakka eða sýna QR-kóða pakkans.";
 "Komms could not start. Check the encrypted store and network settings, then try again." = "Ekki tókst að ræsa Komms. Kannaðu dulkóðuðu gagnageymsluna og netstillingarnar og reyndu aftur.";
 "Komms covers inactive scenes and live captured screens with a privacy shield." = "Komms hylur óvirkar senur og skjái sem verið er að taka upp með friðhelgishlíf.";
 "Komms does not recognize this file type." = "Komms þekkir ekki þessa skráartegund.";

@@ -223,6 +223,9 @@
     if (reason.includes("locked") || reason.includes("stopped")) {
       return l10n("error_node_stopped");
     }
+    if (reason === "no usable discovery plane" || reason === "no verifiable prekey bundle found for address") {
+      return l10n("error_contact_discovery");
+    }
     if (reason.includes("folder")) return l10n("error_folder");
     if (reason.includes("label")) return l10n("error_label");
     if (reason.includes("pin")) return l10n("error_pin");
