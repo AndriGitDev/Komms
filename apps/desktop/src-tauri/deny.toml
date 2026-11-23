@@ -40,17 +40,6 @@ ignore = [
     # Compile-time proc-macro, archived by its author with no successor
     # risk; pulled in by if-watch (libp2p) — same waiver as the root config.
     { id = "RUSTSEC-2024-0436", reason = "paste is an unmaintained build-time proc-macro, not a runtime dependency" },
-    # gtk-rs GTK3 bindings family (atk/gdk/gtk and their -sys crates).
-    { id = "RUSTSEC-2024-0411", reason = "GTK3 bindings: required by Tauri's Linux webview until its GTK4 move" },
-    { id = "RUSTSEC-2024-0412", reason = "GTK3 bindings: required by Tauri's Linux webview until its GTK4 move" },
-    { id = "RUSTSEC-2024-0413", reason = "GTK3 bindings: required by Tauri's Linux webview until its GTK4 move" },
-    { id = "RUSTSEC-2024-0414", reason = "GTK3 bindings: required by Tauri's Linux webview until its GTK4 move" },
-    { id = "RUSTSEC-2024-0415", reason = "GTK3 bindings: required by Tauri's Linux webview until its GTK4 move" },
-    { id = "RUSTSEC-2024-0416", reason = "GTK3 bindings: required by Tauri's Linux webview until its GTK4 move" },
-    { id = "RUSTSEC-2024-0417", reason = "GTK3 bindings: required by Tauri's Linux webview until its GTK4 move" },
-    { id = "RUSTSEC-2024-0418", reason = "GTK3 bindings: required by Tauri's Linux webview until its GTK4 move" },
-    { id = "RUSTSEC-2024-0419", reason = "GTK3 bindings: required by Tauri's Linux webview until its GTK4 move" },
-    { id = "RUSTSEC-2024-0420", reason = "GTK3 bindings: required by Tauri's Linux webview until its GTK4 move" },
     # proc-macro-error, a build-time proc-macro helper via gtk3-macros.
     { id = "RUSTSEC-2024-0370", reason = "unmaintained build-time proc-macro via gtk3-macros, not a runtime dependency" },
     # unic-* Unicode property crates via tauri-utils → urlpattern.
